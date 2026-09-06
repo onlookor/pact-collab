@@ -1,0 +1,13 @@
+[package]
+name = "pact-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT 域声明文法（论文 §3.1）解析器：文本 -> 良构 Domain"
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+logos = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

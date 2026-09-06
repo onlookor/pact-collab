@@ -1,0 +1,14 @@
+[package]
+name = "pact-analysis"
+description = "PACT 域静态分析（论文 Appendix A，A.1–A.6）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+petgraph = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+pact-parser = { path = "../pact-parser" }

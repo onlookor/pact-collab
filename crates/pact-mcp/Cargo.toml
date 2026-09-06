@@ -1,0 +1,24 @@
+[package]
+name = "pact-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT MCP server：rmcp stdio，15 个 pact_ 工具，经 REST 接入 daemon"
+
+[[bin]]
+name = "pact-mcp"
+path = "src/main.rs"
+
+[dependencies]
+pact-http = { path = "../pact-http" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+pact-engine = { path = "../pact-engine" }
+pact-store = { path = "../pact-store" }

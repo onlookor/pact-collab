@@ -1,0 +1,39 @@
+[package]
+name = "pact-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT REST 线上格式 DTO、HTTP daemon（unix socket/TCP）与类型化 client"
+
+[lib]
+name = "pact_http"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pactd"
+path = "src/bin/pactd.rs"
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+pact-parser = { path = "../pact-parser" }
+pact-analysis = { path = "../pact-analysis" }
+pact-compose = { path = "../pact-compose" }
+pact-store = { path = "../pact-store" }
+pact-engine = { path = "../pact-engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+bytes = { workspace = true }
+tower-service = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+toml = { workspace = true }
+clap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

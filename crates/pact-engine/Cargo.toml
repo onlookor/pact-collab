@@ -1,0 +1,21 @@
+[package]
+name = "pact-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT 引擎 actor：命令串行化、多域会话、订阅总线、Rule-T 检测"
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+pact-parser = { path = "../pact-parser" }
+pact-analysis = { path = "../pact-analysis" }
+pact-compose = { path = "../pact-compose" }
+pact-store = { path = "../pact-store" }
+serde = { workspace = true }
+tokio = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

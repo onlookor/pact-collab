@@ -1,0 +1,12 @@
+[package]
+name = "pact-compose"
+description = "PACT 片段并行组合（论文 §1.8，四条件一致性）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+
+[dev-dependencies]
+pact-parser = { path = "../pact-parser" }

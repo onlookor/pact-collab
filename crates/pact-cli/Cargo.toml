@@ -1,0 +1,26 @@
+[package]
+name = "pact-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT CLI：daemon 管理、注入点与领域操作（REST client）、离线 analyze/compose/replay"
+
+[[bin]]
+name = "pact"
+path = "src/main.rs"
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+pact-parser = { path = "../pact-parser" }
+pact-analysis = { path = "../pact-analysis" }
+pact-compose = { path = "../pact-compose" }
+pact-store = { path = "../pact-store" }
+pact-engine = { path = "../pact-engine" }
+pact-http = { path = "../pact-http" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

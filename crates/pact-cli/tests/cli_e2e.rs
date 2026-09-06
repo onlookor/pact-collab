@@ -1,0 +1,296 @@
+//! pact-cli 端到端：真实 daemon 子进程 + `pact` 命令全生命周期（§9.3）。
+//!
+//! - 在线：`daemon start --config` 起子进程 → load/seed/produce/read/consume/查询 → 错误路径；
+//! - 离线：analyze / compose / replay（不经 daemon），并用 daemon 产出的事件日志做回放对照。
+
+use serde_json::Value;
+use std::path::Path;
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
+
+const DECL: &str = r#"
+types { requirement; design; implementation }
+
+preconditions {
+    requirement → design;
+    design → implementation
+}
+
+gates {
+    architect: reads requirement, consumes requirement, produces design;
+    developer: consumes design, produces implementation;
+    user: consumes implementation
+}
+
+seed_authority { external: seeds requirement }
+"#;
+
+/// 起一个真实 `pact daemon start` 子进程（临时配置），返回子进程句柄与套接字路径。
+fn start_daemon(dir: &Path) -> (Child, std::path::PathBuf) {
+    let bin = env!("CARGO_BIN_EXE_pact");
+    let sock = dir.join("pact.sock");
+    let data = dir.join("data");
+    let config = dir.join("pact.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "data_dir = \"{}\"\nlisten_unix = \"{}\"\n",
+            data.display(),
+            sock.display()
+        ),
+    )
+    .unwrap();
+    let child = Command::new(bin)
+        .args(["daemon", "start", "--config"])
+        .arg(&config)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("启动 daemon 子进程失败");
+    // 轮询套接字就绪
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
+            return (child, sock);
+        }
+        if Instant::now() > deadline {
+            panic!("daemon 套接字未就绪");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// 执行一条 `pact` 命令。
+fn pact(sock: &Path, json: bool, args: &[&str]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pact"));
+    cmd.arg("--unix").arg(sock);
+    if json {
+        cmd.arg("--json");
+    }
+    cmd.args(args)
+        .output()
+        .expect("执行 pact 命令失败")
+}
+
+fn ok_json(out: &Output) -> Value {
+    assert!(
+        out.status.success(),
+        "命令应成功，stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("输出应为合法 JSON")
+}
+
+#[test]
+fn lifecycle_through_real_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut daemon, sock) = start_daemon(dir.path());
+
+    // —— 校验与加载 ——
+    let decl_file = dir.path().join("proj.pact");
+    std::fs::write(&decl_file, DECL).unwrap();
+    // 文件不存在 → §6.3 错误体，exit 1
+    let out = pact(&sock, true, &["domain", "validate", "nonexistent.pact"]);
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "Io");
+
+    let v = ok_json(&pact(&sock, true, &["domain", "validate", decl_file.to_str().unwrap()]));
+    assert_eq!(v["ok"], true);
+    let summary = ok_json(&pact(
+        &sock,
+        true,
+        &["domain", "load", decl_file.to_str().unwrap(), "--name", "proj"],
+    ));
+    assert_eq!(summary["name"], "proj");
+    assert_eq!(summary["types"], 3);
+
+    // —— Rule-S（含错误路径：非授权参与者） ——
+    let out = pact(
+        &sock,
+        true,
+        &["seed", "--domain", "proj", "--participant", "architect", "--type", "requirement"],
+    );
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "SeedAuthorityDenied");
+    let seed = ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "seed",
+            "--domain",
+            "proj",
+            "--participant",
+            "external",
+            "--type",
+            "requirement",
+            "--thing-ref",
+            "REQ-1",
+        ],
+    ));
+    let req_id = seed["token"]["id"].as_str().unwrap().to_owned();
+
+    // —— Rule-W（enabled）与 Rule-P ——
+    let enabled = ok_json(&pact(
+        &sock,
+        true,
+        &["enabled", "--domain", "proj", "--participant", "architect"],
+    ));
+    assert_eq!(enabled["options"][0]["type"], "design");
+    let prod = ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "produce",
+            "--domain",
+            "proj",
+            "--participant",
+            "architect",
+            "--type",
+            "design",
+            "--predecessors",
+            &req_id,
+        ],
+    ));
+    let design_id = prod["token"]["id"].as_str().unwrap().to_owned();
+    assert_ne!(design_id, req_id);
+
+    // —— Rule-R / Rule-E ——
+    let read = ok_json(&pact(
+        &sock,
+        true,
+        &["read", "--domain", "proj", "--participant", "architect", "--token", &req_id],
+    ));
+    assert_eq!(read["token"]["id"], req_id);
+    let entry = ok_json(&pact(
+        &sock,
+        true,
+        &["consume", "--domain", "proj", "--participant", "developer", "--token", &design_id],
+    ));
+    assert_eq!(entry["entry"]["token"]["id"], design_id);
+    assert_eq!(entry["entry"]["exhausted_by"], "developer");
+
+    // —— 查询 ——
+    let counter = ok_json(&pact(&sock, true, &["counter", "ls", "--domain", "proj"]));
+    assert_eq!(counter["size"], 1);
+    let archive = ok_json(&pact(&sock, true, &["archive", "ls", "--domain", "proj"]));
+    assert_eq!(archive["size"], 1);
+    let gates = ok_json(&pact(
+        &sock,
+        true,
+        &["gates", "show", "--domain", "proj", "--participant", "developer"],
+    ));
+    assert_eq!(gates["gates"].as_array().unwrap().len(), 2);
+    let status = ok_json(&pact(&sock, true, &["status", "--domain", "proj"]));
+    assert_eq!(status["counter_size"], 1);
+    assert_eq!(status["archive_size"], 1);
+
+    // —— 人类模式冒烟 ——
+    let out = pact(&sock, false, &["status", "--domain", "proj"]);
+    assert!(out.status.success());
+    let human = String::from_utf8_lossy(&out.stdout);
+    assert!(human.contains("terminated="), "人类输出: {human}");
+
+    // —— 离线 replay 对照：daemon 产出的事件日志重放后状态一致 ——
+    let log = dir.path().join("data").join("proj.events.jsonl");
+    assert!(log.exists(), "事件日志应存在");
+    let replay = ok_json(&Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["replay"])
+        .arg(&log)
+        .output()
+        .unwrap());
+    assert_eq!(replay["counter"].as_object().unwrap().len(), 1);
+    assert_eq!(replay["archive"].as_array().unwrap().len(), 1);
+
+    daemon.kill().unwrap();
+    let _ = daemon.wait();
+}
+
+#[test]
+fn offline_commands_without_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // —— analyze（离线，不经 daemon） ——
+    let decl_file = dir.path().join("lifecycle.pact");
+    std::fs::write(&decl_file, DECL).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["analyze"])
+        .arg(&decl_file)
+        .output()
+        .unwrap();
+    let report = ok_json(&out);
+    assert!(report["reachability"]["unreachable"].as_array().unwrap().is_empty());
+    assert!(report["source_production_legality"].as_array().unwrap().is_empty());
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .args(["analyze"])
+        .arg(&decl_file)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("reachability"));
+
+    // —— compose（离线，≥2 片段；片段为完整四段声明） ——
+    let frag1 = dir.path().join("frag1.pact");
+    let frag2 = dir.path().join("frag2.pact");
+    std::fs::write(
+        &frag1,
+        "types { a; b }\npreconditions { a → b }\ngates { p: consumes a, produces b }\nseed_authority { e: seeds a }",
+    )
+    .unwrap();
+    // frag2 与 frag1 共享类型 b（D18：单侧缺席前置无约束，取并合法）
+    std::fs::write(
+        &frag2,
+        "types { b }\npreconditions { }\ngates { q: reads b }\nseed_authority { }",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["compose"])
+        .arg(&frag1)
+        .arg(&frag2)
+        .output()
+        .unwrap();
+    let composed = ok_json(&out);
+    assert_eq!(composed["types"], 2);
+    // gates 按 (参与者, 动作, 类型) 子句计数：p-consumes-a、p-produces-b、q-reads-b
+    assert_eq!(composed["gates"], 3);
+    // 人类模式输出完整合并声明
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .args(["compose"])
+        .arg(&frag1)
+        .arg(&frag2)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&out.stdout).contains("seed_authority"));
+
+    // —— compose 冲突路径（C2：共享类型 b 双侧前置规则不同） ——
+    let bad = dir.path().join("frag-bad.pact");
+    std::fs::write(
+        &bad,
+        "types { b; c }\npreconditions { c → b }\ngates { }\nseed_authority { }",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["compose"])
+        .arg(&frag1)
+        .arg(&bad)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "ComposeConflict");
+
+    // —— replay：不存在的日志 → Io 错误 ——
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["replay", "/nonexistent/x.events.jsonl"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "Io");
+}

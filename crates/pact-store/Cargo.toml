@@ -1,0 +1,18 @@
+[package]
+name = "pact-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT 事件溯源存储：JSONL 真相源、快照、turso 派生索引、重放"
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+turso = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }

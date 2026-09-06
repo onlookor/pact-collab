@@ -1,0 +1,6 @@
+/target
+/data
+pact.sock
+
+# 论文手稿：不入公开仓库（仅本地保留）
+/docs/pactv1_rev1.md
