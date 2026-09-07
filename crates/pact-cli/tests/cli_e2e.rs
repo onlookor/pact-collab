@@ -40,7 +40,7 @@ fn start_daemon(dir: &Path) -> (Child, std::path::PathBuf) {
         ),
     )
     .unwrap();
-    let child = Command::new(bin)
+    let mut child = Command::new(bin)
         .args(["daemon", "start", "--config"])
         .arg(&config)
         .stdout(Stdio::null())
@@ -49,15 +49,21 @@ fn start_daemon(dir: &Path) -> (Child, std::path::PathBuf) {
         .expect("启动 daemon 子进程失败");
     // 轮询套接字就绪
     let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    let mut ready = false;
+    while Instant::now() <= deadline {
         if std::os::unix::net::UnixStream::connect(&sock).is_ok() {
-            return (child, sock);
-        }
-        if Instant::now() > deadline {
-            panic!("daemon 套接字未就绪");
+            ready = true;
+            break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    if !ready {
+        // 防僵尸：失败路径必须回收子进程
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("daemon 套接字未就绪");
+    }
+    (child, sock)
 }
 
 /// 执行一条 `pact` 命令。
@@ -67,9 +73,7 @@ fn pact(sock: &Path, json: bool, args: &[&str]) -> Output {
     if json {
         cmd.arg("--json");
     }
-    cmd.args(args)
-        .output()
-        .expect("执行 pact 命令失败")
+    cmd.args(args).output().expect("执行 pact 命令失败")
 }
 
 fn ok_json(out: &Output) -> Value {
@@ -95,12 +99,22 @@ fn lifecycle_through_real_daemon() {
     let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
     assert_eq!(err["error"]["code"], "Io");
 
-    let v = ok_json(&pact(&sock, true, &["domain", "validate", decl_file.to_str().unwrap()]));
+    let v = ok_json(&pact(
+        &sock,
+        true,
+        &["domain", "validate", decl_file.to_str().unwrap()],
+    ));
     assert_eq!(v["ok"], true);
     let summary = ok_json(&pact(
         &sock,
         true,
-        &["domain", "load", decl_file.to_str().unwrap(), "--name", "proj"],
+        &[
+            "domain",
+            "load",
+            decl_file.to_str().unwrap(),
+            "--name",
+            "proj",
+        ],
     ));
     assert_eq!(summary["name"], "proj");
     assert_eq!(summary["types"], 3);
@@ -109,7 +123,15 @@ fn lifecycle_through_real_daemon() {
     let out = pact(
         &sock,
         true,
-        &["seed", "--domain", "proj", "--participant", "architect", "--type", "requirement"],
+        &[
+            "seed",
+            "--domain",
+            "proj",
+            "--participant",
+            "architect",
+            "--type",
+            "requirement",
+        ],
     );
     assert!(!out.status.success());
     let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
@@ -160,13 +182,29 @@ fn lifecycle_through_real_daemon() {
     let read = ok_json(&pact(
         &sock,
         true,
-        &["read", "--domain", "proj", "--participant", "architect", "--token", &req_id],
+        &[
+            "read",
+            "--domain",
+            "proj",
+            "--participant",
+            "architect",
+            "--token",
+            &req_id,
+        ],
     ));
     assert_eq!(read["token"]["id"], req_id);
     let entry = ok_json(&pact(
         &sock,
         true,
-        &["consume", "--domain", "proj", "--participant", "developer", "--token", &design_id],
+        &[
+            "consume",
+            "--domain",
+            "proj",
+            "--participant",
+            "developer",
+            "--token",
+            &design_id,
+        ],
     ));
     assert_eq!(entry["entry"]["token"]["id"], design_id);
     assert_eq!(entry["entry"]["exhausted_by"], "developer");
@@ -179,7 +217,14 @@ fn lifecycle_through_real_daemon() {
     let gates = ok_json(&pact(
         &sock,
         true,
-        &["gates", "show", "--domain", "proj", "--participant", "developer"],
+        &[
+            "gates",
+            "show",
+            "--domain",
+            "proj",
+            "--participant",
+            "developer",
+        ],
     ));
     assert_eq!(gates["gates"].as_array().unwrap().len(), 2);
     let status = ok_json(&pact(&sock, true, &["status", "--domain", "proj"]));
@@ -195,12 +240,14 @@ fn lifecycle_through_real_daemon() {
     // —— 离线 replay 对照：daemon 产出的事件日志重放后状态一致 ——
     let log = dir.path().join("data").join("proj.events.jsonl");
     assert!(log.exists(), "事件日志应存在");
-    let replay = ok_json(&Command::new(env!("CARGO_BIN_EXE_pact"))
-        .arg("--json")
-        .args(["replay"])
-        .arg(&log)
-        .output()
-        .unwrap());
+    let replay = ok_json(
+        &Command::new(env!("CARGO_BIN_EXE_pact"))
+            .arg("--json")
+            .args(["replay"])
+            .arg(&log)
+            .output()
+            .unwrap(),
+    );
     assert_eq!(replay["counter"].as_object().unwrap().len(), 1);
     assert_eq!(replay["archive"].as_array().unwrap().len(), 1);
 
@@ -222,8 +269,14 @@ fn offline_commands_without_daemon() {
         .output()
         .unwrap();
     let report = ok_json(&out);
-    assert!(report["reachability"]["unreachable"].as_array().unwrap().is_empty());
-    assert!(report["source_production_legality"].as_array().unwrap().is_empty());
+    assert!(report["reachability"]["unreachable"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(report["source_production_legality"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let out = Command::new(env!("CARGO_BIN_EXE_pact"))
         .args(["analyze"])
         .arg(&decl_file)

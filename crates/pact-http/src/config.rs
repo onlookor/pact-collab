@@ -52,7 +52,9 @@ impl Config {
     }
 
     pub fn data_dir(&self) -> PathBuf {
-        self.data_dir.clone().unwrap_or_else(|| PathBuf::from("./data"))
+        self.data_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("./data"))
     }
 
     /// unix socket 路径：显式配置 > 默认；配置为空串视为禁用。
@@ -72,7 +74,10 @@ impl Config {
 
     /// 参与者 → 令牌（空表 = 信任声明模式，不校验）。
     pub fn auth_tokens(&self) -> BTreeMap<String, String> {
-        self.auth.as_ref().map(|a| a.tokens.clone()).unwrap_or_default()
+        self.auth
+            .as_ref()
+            .map(|a| a.tokens.clone())
+            .unwrap_or_default()
     }
 }
 

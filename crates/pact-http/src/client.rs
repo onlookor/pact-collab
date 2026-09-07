@@ -4,9 +4,8 @@
 //! 手动解析 `data:` 行为 [`Notification`]。
 
 use crate::dto::{
-    ComposeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody, ErrorDetail,
-    GatesResp, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp, ValidateReq,
-    ValidateResp,
+    ComposeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody, ErrorDetail, GatesResp,
+    LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp, ValidateReq, ValidateResp,
 };
 use bytes::Bytes;
 use http::uri::Uri;
@@ -73,7 +72,9 @@ impl Service<Uri> for UnixConnector {
     fn call(&mut self, _req: Uri) -> Self::Future {
         let path = self.path.clone();
         Box::pin(async move {
-            tokio::net::UnixStream::connect(path).await.map(TokioIo::new)
+            tokio::net::UnixStream::connect(path)
+                .await
+                .map(TokioIo::new)
         })
     }
 }
@@ -98,14 +99,22 @@ impl Client {
         let conn = UnixConnector { path: path.into() };
         let client: Hyper<UnixConnector> =
             hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build(conn);
-        Self { inner: Inner::Unix(client), authority: "pactd".to_owned(), bearer: None }
+        Self {
+            inner: Inner::Unix(client),
+            authority: "pactd".to_owned(),
+            bearer: None,
+        }
     }
 
     /// 连接 TCP daemon（如 "127.0.0.1:8787"）。
     pub fn tcp(addr: impl Into<String>) -> Self {
         let client: Hyper<HttpConnector> =
             hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build_http();
-        Self { inner: Inner::Tcp(client), authority: addr.into(), bearer: None }
+        Self {
+            inner: Inner::Tcp(client),
+            authority: addr.into(),
+            bearer: None,
+        }
     }
 
     /// 设置参与者令牌（信任声明模式下可省略）。
@@ -124,7 +133,10 @@ impl Client {
         let req = self.json_request(
             Method::POST,
             "/domains",
-            Some(&LoadDomainReq { name: name.to_owned(), declaration: declaration.to_owned() }),
+            Some(&LoadDomainReq {
+                name: name.to_owned(),
+                declaration: declaration.to_owned(),
+            }),
         )?;
         decode(self.dispatch(req).await?).await
     }
@@ -134,7 +146,9 @@ impl Client {
         let req = self.json_request(
             Method::POST,
             "/validate",
-            Some(&ValidateReq { declaration: declaration.to_owned() }),
+            Some(&ValidateReq {
+                declaration: declaration.to_owned(),
+            }),
         )?;
         decode(self.dispatch(req).await?).await
     }
@@ -161,7 +175,11 @@ impl Client {
         decode(self.dispatch(req).await?).await
     }
 
-    pub async fn compose(&self, name: &str, fragments: Vec<String>) -> Result<DomainSummary, ClientError> {
+    pub async fn compose(
+        &self,
+        name: &str,
+        fragments: Vec<String>,
+    ) -> Result<DomainSummary, ClientError> {
         let req = self.json_request(
             Method::POST,
             &format!("/domains/{name}:compose"),
@@ -221,7 +239,9 @@ impl Client {
         let req = self.json_request(
             Method::POST,
             &format!("/domains/{domain}/tokens/{token_id}/read"),
-            Some(&ParticipantReq { participant: participant.to_owned() }),
+            Some(&ParticipantReq {
+                participant: participant.to_owned(),
+            }),
         )?;
         decode(self.dispatch(req).await?).await
     }
@@ -235,14 +255,20 @@ impl Client {
         let req = self.json_request(
             Method::POST,
             &format!("/domains/{domain}/tokens/{token_id}/consume"),
-            Some(&ParticipantReq { participant: participant.to_owned() }),
+            Some(&ParticipantReq {
+                participant: participant.to_owned(),
+            }),
         )?;
         decode(self.dispatch(req).await?).await
     }
 
     // —— 查询 ——
 
-    pub async fn counter(&self, domain: &str, ty: Option<&str>) -> Result<CounterView, ClientError> {
+    pub async fn counter(
+        &self,
+        domain: &str,
+        ty: Option<&str>,
+    ) -> Result<CounterView, ClientError> {
         let path = match ty {
             Some(t) => format!("/domains/{domain}/counter?type={t}"),
             None => format!("/domains/{domain}/counter"),
@@ -251,7 +277,11 @@ impl Client {
         decode(self.dispatch(req).await?).await
     }
 
-    pub async fn archive(&self, domain: &str, ty: Option<&str>) -> Result<ArchiveView, ClientError> {
+    pub async fn archive(
+        &self,
+        domain: &str,
+        ty: Option<&str>,
+    ) -> Result<ArchiveView, ClientError> {
         let path = match ty {
             Some(t) => format!("/domains/{domain}/archive?type={t}"),
             None => format!("/domains/{domain}/archive"),
@@ -269,7 +299,11 @@ impl Client {
         decode(self.dispatch(req).await?).await
     }
 
-    pub async fn enabled(&self, domain: &str, participant: &str) -> Result<EnabledResp, ClientError> {
+    pub async fn enabled(
+        &self,
+        domain: &str,
+        participant: &str,
+    ) -> Result<EnabledResp, ClientError> {
         let req = self.json_request::<()>(
             Method::GET,
             &format!("/domains/{domain}/enabled?participant={participant}"),
@@ -279,13 +313,15 @@ impl Client {
     }
 
     pub async fn status(&self, domain: &str) -> Result<StatusView, ClientError> {
-        let req = self.json_request::<()>(Method::GET, &format!("/domains/{domain}/status"), None)?;
+        let req =
+            self.json_request::<()>(Method::GET, &format!("/domains/{domain}/status"), None)?;
         decode(self.dispatch(req).await?).await
     }
 
     /// §6.4 SSE：订阅 Counter 变更通知流。
     pub async fn events(&self, domain: &str) -> Result<EventStream, ClientError> {
-        let req = self.json_request::<()>(Method::GET, &format!("/domains/{domain}/events"), None)?;
+        let req =
+            self.json_request::<()>(Method::GET, &format!("/domains/{domain}/events"), None)?;
         let resp = self.dispatch(req).await?;
         let (parts, body) = resp.into_parts();
         if !parts.status.is_success() {
@@ -316,13 +352,21 @@ impl Client {
             Some(v) => Bytes::from(serde_json::to_vec(v).map_err(ClientError::Parse)?),
             None => Bytes::new(),
         };
-        builder.body(Full::new(bytes)).map_err(|e| ClientError::Http(Box::new(e)))
+        builder
+            .body(Full::new(bytes))
+            .map_err(|e| ClientError::Http(Box::new(e)))
     }
 
     async fn dispatch(&self, req: Request<Full<Bytes>>) -> Result<Response<Incoming>, ClientError> {
         match &self.inner {
-            Inner::Unix(c) => c.request(req).await.map_err(|e| ClientError::Http(Box::new(e))),
-            Inner::Tcp(c) => c.request(req).await.map_err(|e| ClientError::Http(Box::new(e))),
+            Inner::Unix(c) => c
+                .request(req)
+                .await
+                .map_err(|e| ClientError::Http(Box::new(e))),
+            Inner::Tcp(c) => c
+                .request(req)
+                .await
+                .map_err(|e| ClientError::Http(Box::new(e))),
         }
     }
 }
@@ -372,7 +416,11 @@ pub struct EventStream {
 
 impl EventStream {
     fn new(body: Incoming) -> Self {
-        Self { body, buf: Vec::new(), queue: VecDeque::new() }
+        Self {
+            body,
+            buf: Vec::new(),
+            queue: VecDeque::new(),
+        }
     }
 
     /// 下一通知；`None` = 服务端关闭了流。

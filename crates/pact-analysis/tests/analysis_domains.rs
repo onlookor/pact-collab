@@ -121,7 +121,11 @@ fn lifecycle_all_analyses_clean() {
     // A.1：requirement 为种子，全部 5 类型可达
     let r = reachability(&d);
     assert_eq!(r.seed_types, BTreeSet::from([tyn("requirement")]));
-    assert!(r.unreachable.is_empty(), "全部类型应可达：{:?}", r.unreachable);
+    assert!(
+        r.unreachable.is_empty(),
+        "全部类型应可达：{:?}",
+        r.unreachable
+    );
     assert!(is_reachable(&d, &tyn("deployment")));
     assert_eq!(r.reachable.len(), 5);
 
@@ -260,14 +264,19 @@ fn deadlock_detected_and_exemptions() {
     let d = tiny_domain(
         &["a", "b"],
         &[(&["a"], "b"), (&["b"], "a")],
-        &[("p", Action::Produce, "a", None), ("p", Action::Produce, "b", None)],
+        &[
+            ("p", Action::Produce, "a", None),
+            ("p", Action::Produce, "b", None),
+        ],
         &[],
     );
     // 注：此域 ill-formed（produces a 指向源类型——环内互为前驱所以 a 有前置？
     // a 的前置是 b（b→a），非源类型 → 良构）
     assert_eq!(
         structural_deadlock(&d),
-        vec![pact_analysis::DeadlockComponent { types: vec![tyn("a"), tyn("b")] }]
+        vec![pact_analysis::DeadlockComponent {
+            types: vec![tyn("a"), tyn("b")]
+        }]
     );
 
     // 种子入口消解：环 {a,b} + seed a
@@ -297,7 +306,9 @@ fn deadlock_detected_and_exemptions() {
     );
     assert_eq!(
         structural_deadlock(&d),
-        vec![pact_analysis::DeadlockComponent { types: vec![tyn("a"), tyn("b")] }],
+        vec![pact_analysis::DeadlockComponent {
+            types: vec![tyn("a"), tyn("b")]
+        }],
         "前驱自身不可达时不构成有效馈入"
     );
 }
@@ -323,7 +334,10 @@ fn gate_coverage_reports_uncovered_non_source() {
     let d = tiny_domain(
         &["a", "b", "c"],
         &[(&["a"], "b"), (&["b"], "c")],
-        &[("p", Action::Produce, "c", None), ("p", Action::Consume, "b", None)],
+        &[
+            ("p", Action::Produce, "c", None),
+            ("p", Action::Consume, "b", None),
+        ],
         &[("ext", "a")],
     );
     assert_eq!(gate_coverage(&d), vec![tyn("b")]);
@@ -335,12 +349,18 @@ fn source_production_legality_reports_ill_formed() {
     let d = tiny_domain(
         &["a", "b"],
         &[(&["a"], "b")],
-        &[("p", Action::Produce, "a", None), ("p", Action::Produce, "b", None)],
+        &[
+            ("p", Action::Produce, "a", None),
+            ("p", Action::Produce, "b", None),
+        ],
         &[],
     );
     assert_eq!(
         source_production_legality(&d),
-        vec![pact_analysis::SourceTypeProduction { participant: par("p"), ty: tyn("a") }]
+        vec![pact_analysis::SourceTypeProduction {
+            participant: par("p"),
+            ty: tyn("a")
+        }]
     );
     // 同一违例在 core 良构校验下的对应错误
     assert!(matches!(
@@ -381,7 +401,10 @@ fn indirect_ancestor_via_not_reported() {
         ],
         &[("ext", "a")],
     );
-    assert!(stranding_risk(&d).is_empty(), "间接祖先的 via 不构成搁浅风险");
+    assert!(
+        stranding_risk(&d).is_empty(),
+        "间接祖先的 via 不构成搁浅风险"
+    );
 }
 
 #[test]

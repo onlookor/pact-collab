@@ -44,7 +44,12 @@ pub fn build_domain(raw: &RawDeclaration) -> Result<Domain, Vec<DomainError>> {
     let seed_authority: BTreeSet<(ParticipantName, TypeName)> =
         raw.seed_authority.iter().cloned().collect();
 
-    let domain = Domain { types, preconditions, gates, seed_authority };
+    let domain = Domain {
+        types,
+        preconditions,
+        gates,
+        seed_authority,
+    };
     if let Err(mut es) = validate_domain(&domain) {
         errors.append(&mut es);
     }

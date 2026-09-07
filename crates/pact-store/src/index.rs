@@ -16,7 +16,10 @@ use turso::{Builder, Connection, Value};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenStatus {
     Counter,
-    Archived { exhausted_by: ParticipantName, exhausted_at: Timestamp },
+    Archived {
+        exhausted_by: ParticipantName,
+        exhausted_at: Timestamp,
+    },
 }
 
 impl TokenStatus {
@@ -91,7 +94,9 @@ impl IndexStore for TursoIndexStore {
         )
         .await
         .map_err(to_index_err)?;
-        Ok(Self { conn: Arc::new(conn) })
+        Ok(Self {
+            conn: Arc::new(conn),
+        })
     }
 
     async fn upsert_event(&self, domain: &str, ev: &Event) -> Result<(), StoreError> {
@@ -123,9 +128,10 @@ impl IndexStore for TursoIndexStore {
         let thing_ref = t.thing_ref.0.clone();
         let (exhausted_by, exhausted_at) = match status {
             TokenStatus::Counter => (None, None),
-            TokenStatus::Archived { exhausted_by, exhausted_at } => {
-                (Some(exhausted_by.0.clone()), Some(exhausted_at.clone()))
-            }
+            TokenStatus::Archived {
+                exhausted_by,
+                exhausted_at,
+            } => (Some(exhausted_by.0.clone()), Some(exhausted_at.clone())),
         };
         self.conn
             .execute(
@@ -172,8 +178,14 @@ impl IndexStore for TursoIndexStore {
     async fn rebuild(&self, entries: &[(String, Vec<Event>)]) -> Result<(), StoreError> {
         // 清空后重放写入。非事务：索引是纯派生物，中断只会留下部分索引，
         // 下次启动的一致性校验会再次触发重建（自愈）。
-        self.conn.execute("DELETE FROM events", ()).await.map_err(to_index_err)?;
-        self.conn.execute("DELETE FROM tokens", ()).await.map_err(to_index_err)?;
+        self.conn
+            .execute("DELETE FROM events", ())
+            .await
+            .map_err(to_index_err)?;
+        self.conn
+            .execute("DELETE FROM tokens", ())
+            .await
+            .map_err(to_index_err)?;
 
         for (domain, events) in entries {
             // 模拟重放得到 token 终态（counter | archived + 消费者/时间）
@@ -182,9 +194,12 @@ impl IndexStore for TursoIndexStore {
                 apply_event(&mut state, ev)?;
                 match ev {
                     Event::Seeded { token, .. } | Event::Produced { token, .. } => {
-                        self.upsert_token(domain, token, &TokenStatus::Counter).await?;
+                        self.upsert_token(domain, token, &TokenStatus::Counter)
+                            .await?;
                     }
-                    Event::Consumed { token_id, by, ts, .. } => {
+                    Event::Consumed {
+                        token_id, by, ts, ..
+                    } => {
                         // apply_event 已保证目标在 Counter 上并移入 Archive；终态从 Archive 取
                         if let Some(entry) =
                             state.archive.iter().rev().find(|e| e.token.id == *token_id)
@@ -240,7 +255,11 @@ mod tests {
                     name: domain.into(),
                     declaration: "…".into(),
                 },
-                Event::Seeded { seq: 2, ts: "T1".into(), token: token(&format!("{domain}-t1"), "req") },
+                Event::Seeded {
+                    seq: 2,
+                    ts: "T1".into(),
+                    token: token(&format!("{domain}-t1"), "req"),
+                },
                 Event::Produced {
                     seq: 3,
                     ts: "T2".into(),
@@ -259,7 +278,9 @@ mod tests {
     #[tokio::test]
     async fn upsert_and_last_event_seq() {
         let dir = tempfile::tempdir().unwrap();
-        let idx = TursoIndexStore::open(&dir.path().join("index.tursodb")).await.unwrap();
+        let idx = TursoIndexStore::open(&dir.path().join("index.tursodb"))
+            .await
+            .unwrap();
         let (_, events) = sample("dom");
         for ev in &events {
             idx.upsert_event("dom", ev).await.unwrap();
@@ -271,7 +292,9 @@ mod tests {
     #[tokio::test]
     async fn rebuild_projects_token_status() {
         let dir = tempfile::tempdir().unwrap();
-        let idx = TursoIndexStore::open(&dir.path().join("index.tursodb")).await.unwrap();
+        let idx = TursoIndexStore::open(&dir.path().join("index.tursodb"))
+            .await
+            .unwrap();
         let entries = vec![sample("dom"), sample("dom2")];
         idx.rebuild(&entries).await.unwrap();
         assert_eq!(idx.last_event_seq("dom").await.unwrap(), Some(4));

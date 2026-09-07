@@ -6,12 +6,9 @@
 //! - 域替换重置（恢复只重放最后一次 DomainLoaded 之后的事件）。
 
 use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
-use pact_engine::{
-    Clock, Engine, EngineError, IdGen, LogicalClock, NotificationKind, SequentialIdGen,
-};
+use pact_engine::{Engine, EngineError, LogicalClock, NotificationKind, SequentialIdGen};
 use pact_store::Store;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// 三段生命周期域：requirement --architect--> design --developer--> implementation。
 const DECL: &str = r#"
@@ -72,7 +69,12 @@ fn log_lines(dir: &std::path::Path, domain: &str) -> Vec<String> {
 /// 事件序列：DomainLoaded(1) Seeded(2) Produced(3) Consumed(4)。
 async fn run_partial_flow(engine: &Engine, domain: &str) -> TokenId {
     let req = engine
-        .seed(domain, par("external"), tyn("requirement"), ThingRef::some("urn:req:1"))
+        .seed(
+            domain,
+            par("external"),
+            tyn("requirement"),
+            ThingRef::some("urn:req:1"),
+        )
         .await
         .unwrap();
     let design = engine
@@ -85,7 +87,10 @@ async fn run_partial_flow(engine: &Engine, domain: &str) -> TokenId {
         )
         .await
         .unwrap();
-    engine.consume(domain, par("architect"), req.id.clone()).await.unwrap();
+    engine
+        .consume(domain, par("architect"), req.id.clone())
+        .await
+        .unwrap();
     design.id
 }
 
@@ -100,13 +105,22 @@ async fn full_lifecycle_with_notifications() {
     assert_eq!((summary.types, summary.gates, summary.last_seq), (3, 6, 1));
 
     // Rule-W：种子注入前 architect 无可生产选项
-    assert!(engine.enabled("proj", par("architect")).await.unwrap().is_empty());
+    assert!(engine
+        .enabled("proj", par("architect"))
+        .await
+        .unwrap()
+        .is_empty());
 
     // 订阅先于动作（broadcast 只投递给已存在的订阅者）
     let mut rx = engine.subscribe("proj").await.unwrap();
 
     let req = engine
-        .seed("proj", par("external"), tyn("requirement"), ThingRef::some("urn:req:1"))
+        .seed(
+            "proj",
+            par("external"),
+            tyn("requirement"),
+            ThingRef::some("urn:req:1"),
+        )
         .await
         .unwrap();
     assert_eq!(req.produced_by, par("external"));
@@ -125,7 +139,10 @@ async fn full_lifecycle_with_notifications() {
 
     // Rule-R 无副作用（D9）：读前后日志行数不变
     let lines_before = log_lines(dir.path(), "proj").len();
-    let read_back = engine.read("proj", par("architect"), req.id.clone()).await.unwrap();
+    let read_back = engine
+        .read("proj", par("architect"), req.id.clone())
+        .await
+        .unwrap();
     assert_eq!(read_back.id, req.id);
     assert_eq!(log_lines(dir.path(), "proj").len(), lines_before);
 
@@ -139,7 +156,10 @@ async fn full_lifecycle_with_notifications() {
         )
         .await
         .unwrap();
-    engine.consume("proj", par("architect"), req.id.clone()).await.unwrap();
+    engine
+        .consume("proj", par("architect"), req.id.clone())
+        .await
+        .unwrap();
     let impl_t = engine
         .produce(
             "proj",
@@ -150,8 +170,14 @@ async fn full_lifecycle_with_notifications() {
         )
         .await
         .unwrap();
-    engine.consume("proj", par("developer"), design.id.clone()).await.unwrap();
-    engine.consume("proj", par("user"), impl_t.id.clone()).await.unwrap();
+    engine
+        .consume("proj", par("developer"), design.id.clone())
+        .await
+        .unwrap();
+    engine
+        .consume("proj", par("user"), impl_t.id.clone())
+        .await
+        .unwrap();
 
     // 终态：Counter 空、Archive 3 项、Rule-T 成立
     let status = engine.status("proj").await.unwrap();
@@ -160,7 +186,14 @@ async fn full_lifecycle_with_notifications() {
         (0, 3, true)
     );
     assert_eq!(engine.counter("proj", None).await.unwrap().size, 0);
-    assert_eq!(engine.archive("proj", Some(tyn("requirement"))).await.unwrap().size, 1);
+    assert_eq!(
+        engine
+            .archive("proj", Some(tyn("requirement")))
+            .await
+            .unwrap()
+            .size,
+        1
+    );
 
     // 通知时序：种类、seq 单调、变更后 Counter 规模
     let expected = [
@@ -185,7 +218,12 @@ async fn full_lifecycle_with_notifications() {
     let lines = log_lines(dir.path(), "proj");
     assert_eq!(lines.len(), 8);
     for (i, line) in lines.iter().enumerate() {
-        assert!(line.contains(&format!("\"seq\":{}", i + 1)), "第 {} 行 seq 应为 {}", i + 1, i + 1);
+        assert!(
+            line.contains(&format!("\"seq\":{}", i + 1)),
+            "第 {} 行 seq 应为 {}",
+            i + 1,
+            i + 1
+        );
     }
     assert!(lines.last().unwrap().contains("\"kind\":\"Terminated\""));
 
@@ -250,9 +288,14 @@ async fn crash_recovery_truncates_partial_tail() {
             .append(true)
             .open(log_path(dir.path(), "proj"))
             .unwrap();
-        f.write_all(br#"{"kind":"Consumed","seq":5,"ts":"T99""#).unwrap();
+        f.write_all(br#"{"kind":"Consumed","seq":5,"ts":"T99""#)
+            .unwrap();
     }
-    assert_eq!(log_lines(dir.path(), "proj").len(), 5, "半行占一行（无换行符）");
+    assert_eq!(
+        log_lines(dir.path(), "proj").len(),
+        5,
+        "半行占一行（无换行符）"
+    );
 
     // 重启：截断半行，重放到 seq 4；后续命令 seq 续接
     let engine2 = setup(dir.path()).await;
@@ -261,10 +304,20 @@ async fn crash_recovery_truncates_partial_tail() {
     assert_eq!(log_lines(dir.path(), "proj").len(), 4, "半行应被截断");
 
     // 恢复后可继续工作：消费 design token，Rule-T 触发
-    engine2.consume("proj", par("developer"), design_id).await.unwrap();
+    engine2
+        .consume("proj", par("developer"), design_id)
+        .await
+        .unwrap();
     let status = engine2.status("proj").await.unwrap();
-    assert_eq!((status.counter_size, status.archive_size, status.terminated), (0, 2, true));
-    assert_eq!(log_lines(dir.path(), "proj").len(), 6, "Consumed(5) + Terminated(6)");
+    assert_eq!(
+        (status.counter_size, status.archive_size, status.terminated),
+        (0, 2, true)
+    );
+    assert_eq!(
+        log_lines(dir.path(), "proj").len(),
+        6,
+        "Consumed(5) + Terminated(6)"
+    );
 
     engine2.shutdown().await.unwrap();
 }
@@ -290,7 +343,12 @@ async fn index_loss_triggers_rebuild() {
 
     // 重建后引擎继续可用（索引写入路径正常）
     engine2
-        .seed("proj", par("external"), tyn("requirement"), ThingRef::some("urn:req:2"))
+        .seed(
+            "proj",
+            par("external"),
+            tyn("requirement"),
+            ThingRef::some("urn:req:2"),
+        )
         .await
         .unwrap();
     assert_eq!(engine2.counter("proj", None).await.unwrap().size, 2);
@@ -317,7 +375,10 @@ async fn corrupt_middle_line_fails_fast() {
 
     let engine2 = setup(dir.path()).await;
     let err = engine2.status("proj").await.unwrap_err();
-    assert!(matches!(err, EngineError::Recovery(_)), "应 fail-fast：{err:?}");
+    assert!(
+        matches!(err, EngineError::Recovery(_)),
+        "应 fail-fast：{err:?}"
+    );
     // 后续命令同样以恢复失败应答
     let err = engine2.list_domains().await.unwrap_err();
     assert!(matches!(err, EngineError::Recovery(_)));
@@ -338,26 +399,55 @@ async fn multi_domain_sessions_isolated() {
 
     // 仅在 alpha 注入
     let req = engine
-        .seed("alpha", par("external"), tyn("requirement"), ThingRef::some("urn:req:1"))
+        .seed(
+            "alpha",
+            par("external"),
+            tyn("requirement"),
+            ThingRef::some("urn:req:1"),
+        )
         .await
         .unwrap();
 
     // beta 不受影响（状态、通知均隔离）
     assert_eq!(engine.status("beta").await.unwrap().counter_size, 0);
-    assert_eq!(engine.counter("beta", Some(tyn("requirement"))).await.unwrap().size, 0);
+    assert_eq!(
+        engine
+            .counter("beta", Some(tyn("requirement")))
+            .await
+            .unwrap()
+            .size,
+        0
+    );
 
     // beta 上消费 alpha 的 token → 域不存在该 token，拒绝
-    let err = engine.consume("beta", par("architect"), req.id.clone()).await.unwrap_err();
+    let err = engine
+        .consume("beta", par("architect"), req.id.clone())
+        .await
+        .unwrap_err();
     assert!(matches!(err, EngineError::Rule(_)));
 
     // alpha 通知正常，且不含 beta 的任何事件
     let n = rx_alpha.try_recv().unwrap();
-    assert_eq!((n.event, n.domain.as_str(), n.seq), (NotificationKind::Seeded, "alpha", 2));
+    assert_eq!(
+        (n.event, n.domain.as_str(), n.seq),
+        (NotificationKind::Seeded, "alpha", 2)
+    );
     assert!(rx_alpha.try_recv().is_err());
 
     // 同一参与者跨域互不感知：beta 的 architect 无生产选项
-    assert!(engine.enabled("beta", par("architect")).await.unwrap().is_empty());
-    assert_eq!(engine.enabled("alpha", par("architect")).await.unwrap().len(), 1);
+    assert!(engine
+        .enabled("beta", par("architect"))
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        engine
+            .enabled("alpha", par("architect"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 
     // 未加载的域报 DomainNotFound
     let err = engine.status("ghost").await.unwrap_err();
@@ -379,8 +469,13 @@ async fn concurrent_commands_serialize() {
         .map(|i| {
             let e = engine.clone();
             tokio::spawn(async move {
-                e.seed("proj", par("external"), tyn("requirement"), ThingRef::some(format!("urn:req:{i}")))
-                    .await
+                e.seed(
+                    "proj",
+                    par("external"),
+                    tyn("requirement"),
+                    ThingRef::some(format!("urn:req:{i}")),
+                )
+                .await
             })
         })
         .collect();
@@ -389,7 +484,11 @@ async fn concurrent_commands_serialize() {
         ids.push(h.await.unwrap().unwrap().id);
     }
     assert_eq!(ids.len(), 8);
-    assert_eq!(ids.iter().collect::<std::collections::BTreeSet<_>>().len(), 8, "id 唯一");
+    assert_eq!(
+        ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        8,
+        "id 唯一"
+    );
 
     // 日志：DomainLoaded(1) + Seeded(2..=9)，逐行 +1
     let lines = log_lines(dir.path(), "proj");
@@ -426,7 +525,12 @@ async fn domain_replace_resets_state_and_recovery_uses_last_load() {
 
         // 替换后注入新 token（Seeded(6)）
         engine
-            .seed("proj", par("external"), tyn("requirement"), ThingRef::some("urn:req:9"))
+            .seed(
+                "proj",
+                par("external"),
+                tyn("requirement"),
+                ThingRef::some("urn:req:9"),
+            )
             .await
             .unwrap();
     }
@@ -436,7 +540,11 @@ async fn domain_replace_resets_state_and_recovery_uses_last_load() {
     let counter = engine2.counter("proj", None).await.unwrap();
     assert_eq!(counter.size, 1, "只有替换后的 token");
     assert_eq!(counter.tokens[0].thing_ref, ThingRef::some("urn:req:9"));
-    assert_eq!(engine2.status("proj").await.unwrap().archive_size, 0, "替换前的 Archive 不复活");
+    assert_eq!(
+        engine2.status("proj").await.unwrap().archive_size,
+        0,
+        "替换前的 Archive 不复活"
+    );
     engine2.shutdown().await.unwrap();
 }
 
@@ -475,11 +583,22 @@ async fn validate_analyze_compose_commands() {
 
     // 组合域可正常运转
     let req = engine
-        .seed("merged", par("external"), tyn("requirement"), ThingRef::none())
+        .seed(
+            "merged",
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
         .await
         .unwrap();
     engine
-        .produce("merged", par("architect"), tyn("design"), vec![req.id.clone()], ThingRef::none())
+        .produce(
+            "merged",
+            par("architect"),
+            tyn("design"),
+            vec![req.id.clone()],
+            ThingRef::none(),
+        )
         .await
         .unwrap();
     assert_eq!(engine.status("merged").await.unwrap().counter_size, 2);
@@ -495,7 +614,12 @@ async fn logical_clock_and_sequential_ids_are_deterministic() {
     let engine = setup(dir.path()).await;
     engine.load_domain("proj", DECL).await.unwrap();
     let t = engine
-        .seed("proj", par("external"), tyn("requirement"), ThingRef::none())
+        .seed(
+            "proj",
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
         .await
         .unwrap();
     // LogicalClock：T0（DomainLoaded 占用）→ seed 为 T1；SequentialIdGen：seq-0

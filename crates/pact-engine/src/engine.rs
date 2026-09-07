@@ -6,7 +6,9 @@
 use crate::clock::Clock;
 use crate::idgen::IdGen;
 use crate::notify::{Notification, NotificationKind, NotificationSummary};
-use crate::views::{AnalysisReport, ArchiveView, CounterView, DomainSummary, GateClause, StatusView};
+use crate::views::{
+    AnalysisReport, ArchiveView, CounterView, DomainSummary, GateClause, StatusView,
+};
 use pact_analysis as analysis;
 use pact_compose::{compose as compose_fragments, Conflict};
 use pact_core::{
@@ -24,7 +26,9 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 #[derive(Debug)]
 pub enum EngineError {
-    DomainNotFound { name: String },
+    DomainNotFound {
+        name: String,
+    },
     Store(StoreError),
     Parse(Problem),
     Rule(RuleError),
@@ -84,7 +88,11 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
-        Self { snapshot_every: 64, notify_capacity: 256, command_capacity: 256 }
+        Self {
+            snapshot_every: 64,
+            notify_capacity: 256,
+            command_capacity: 256,
+        }
     }
 }
 
@@ -93,8 +101,15 @@ impl Default for EngineConfig {
 type Responder<T> = oneshot::Sender<Result<T, EngineError>>;
 
 pub enum Command {
-    LoadDomain { name: String, declaration: String, resp: Responder<DomainSummary> },
-    Validate { declaration: String, resp: Responder<Domain> },
+    LoadDomain {
+        name: String,
+        declaration: String,
+        resp: Responder<DomainSummary>,
+    },
+    Validate {
+        declaration: String,
+        resp: Responder<Domain>,
+    },
     Seed {
         domain: String,
         participant: ParticipantName,
@@ -110,31 +125,71 @@ pub enum Command {
         thing_ref: ThingRef,
         resp: Responder<Token>,
     },
-    Read { domain: String, participant: ParticipantName, token_id: TokenId, resp: Responder<Token> },
+    Read {
+        domain: String,
+        participant: ParticipantName,
+        token_id: TokenId,
+        resp: Responder<Token>,
+    },
     Consume {
         domain: String,
         participant: ParticipantName,
         token_id: TokenId,
         resp: Responder<ArchiveEntry>,
     },
-    QueryCounter { domain: String, filter: Option<TypeName>, resp: Responder<CounterView> },
-    QueryArchive { domain: String, filter: Option<TypeName>, resp: Responder<ArchiveView> },
-    QueryGates { domain: String, participant: ParticipantName, resp: Responder<Vec<GateClause>> },
+    QueryCounter {
+        domain: String,
+        filter: Option<TypeName>,
+        resp: Responder<CounterView>,
+    },
+    QueryArchive {
+        domain: String,
+        filter: Option<TypeName>,
+        resp: Responder<ArchiveView>,
+    },
+    QueryGates {
+        domain: String,
+        participant: ParticipantName,
+        resp: Responder<Vec<GateClause>>,
+    },
     QueryEnabled {
         domain: String,
         participant: ParticipantName,
         resp: Responder<Vec<ProductionOption>>,
     },
-    QueryStatus { domain: String, resp: Responder<StatusView> },
-    ListDomains { resp: Responder<Vec<String>> },
+    QueryStatus {
+        domain: String,
+        resp: Responder<StatusView>,
+    },
+    ListDomains {
+        resp: Responder<Vec<String>>,
+    },
     /// 卸载域（内存态；日志保留，设计 §9.2 DELETE）。
-    UnloadDomain { domain: String, resp: Responder<()> },
-    Subscribe { domain: String, resp: Responder<broadcast::Receiver<Notification>> },
-    Analyze { text: String, resp: Responder<AnalysisReport> },
+    UnloadDomain {
+        domain: String,
+        resp: Responder<()>,
+    },
+    Subscribe {
+        domain: String,
+        resp: Responder<broadcast::Receiver<Notification>>,
+    },
+    Analyze {
+        text: String,
+        resp: Responder<AnalysisReport>,
+    },
     /// 分析已加载域的声明（`POST /domains/{d}:analyze`）。
-    AnalyzeLoaded { domain: String, resp: Responder<AnalysisReport> },
-    ComposeAndLoad { name: String, fragments: Vec<String>, resp: Responder<DomainSummary> },
-    Shutdown { resp: Responder<()> },
+    AnalyzeLoaded {
+        domain: String,
+        resp: Responder<AnalysisReport>,
+    },
+    ComposeAndLoad {
+        name: String,
+        fragments: Vec<String>,
+        resp: Responder<DomainSummary>,
+    },
+    Shutdown {
+        resp: Responder<()>,
+    },
 }
 
 impl Command {
@@ -142,8 +197,7 @@ impl Command {
     /// 各命令 responder 类型不同，无法合并 or-pattern，逐变体应答。
     fn fail(self, err: EngineError) {
         match self {
-            Command::LoadDomain { resp, .. }
-            | Command::ComposeAndLoad { resp, .. } => {
+            Command::LoadDomain { resp, .. } | Command::ComposeAndLoad { resp, .. } => {
                 let _ = resp.send(Err(err));
             }
             Command::Validate { resp, .. } => {
@@ -241,14 +295,18 @@ impl EngineActor {
     /// 单域恢复：最后一个 DomainLoaded 解析声明 →
     /// 快照快速路径（snapshot.seq ≥ DomainLoaded.seq 才有效）→ 尾部重放。
     fn recover_domain(&mut self, name: String, events: Vec<Event>) -> Result<(), EngineError> {
-        let Some(dl_idx) = events.iter().rposition(|e| matches!(e, Event::DomainLoaded { .. }))
+        let Some(dl_idx) = events
+            .iter()
+            .rposition(|e| matches!(e, Event::DomainLoaded { .. }))
         else {
             return Err(EngineError::Recovery(format!(
                 "域 {name} 的日志缺少 DomainLoaded 事件（日志损坏）"
             )));
         };
         let (declaration, dl_seq) = match &events[dl_idx] {
-            Event::DomainLoaded { declaration, seq, .. } => (declaration.clone(), *seq),
+            Event::DomainLoaded {
+                declaration, seq, ..
+            } => (declaration.clone(), *seq),
             _ => unreachable!(),
         };
         let domain = load_domain(&declaration).map_err(EngineError::Parse)?;
@@ -282,50 +340,78 @@ impl EngineActor {
     /// 处理一条命令。返回 true 表示 Shutdown（退出 actor）。
     async fn handle(&mut self, cmd: Command) -> bool {
         match cmd {
-            Command::LoadDomain { name, declaration, resp } => {
-                respond(resp, self.load_domain(&name, &declaration).await)
-            }
+            Command::LoadDomain {
+                name,
+                declaration,
+                resp,
+            } => respond(resp, self.load_domain(&name, &declaration).await),
             Command::Validate { declaration, resp } => {
                 respond(resp, load_domain(&declaration).map_err(EngineError::Parse))
             }
-            Command::Seed { domain, participant, ty, thing_ref, resp } => {
-                respond(resp, self.seed(&domain, &participant, &ty, thing_ref).await)
-            }
-            Command::Produce { domain, participant, ty, predecessors, thing_ref, resp } => respond(
+            Command::Seed {
+                domain,
+                participant,
+                ty,
+                thing_ref,
                 resp,
-                self.produce(&domain, &participant, &ty, &predecessors, thing_ref).await,
+            } => respond(resp, self.seed(&domain, &participant, &ty, thing_ref).await),
+            Command::Produce {
+                domain,
+                participant,
+                ty,
+                predecessors,
+                thing_ref,
+                resp,
+            } => respond(
+                resp,
+                self.produce(&domain, &participant, &ty, &predecessors, thing_ref)
+                    .await,
             ),
-            Command::Read { domain, participant, token_id, resp } => {
-                respond(resp, self.read(&domain, &participant, &token_id).await)
-            }
-            Command::Consume { domain, participant, token_id, resp } => {
-                respond(resp, self.consume(&domain, &participant, &token_id).await)
-            }
-            Command::QueryCounter { domain, filter, resp } => {
-                respond(resp, self.query_counter(&domain, filter.as_ref()))
-            }
-            Command::QueryArchive { domain, filter, resp } => {
-                respond(resp, self.query_archive(&domain, filter.as_ref()))
-            }
-            Command::QueryGates { domain, participant, resp } => {
-                respond(resp, self.query_gates(&domain, &participant))
-            }
-            Command::QueryEnabled { domain, participant, resp } => {
-                respond(resp, self.query_enabled(&domain, &participant))
-            }
+            Command::Read {
+                domain,
+                participant,
+                token_id,
+                resp,
+            } => respond(resp, self.read(&domain, &participant, &token_id).await),
+            Command::Consume {
+                domain,
+                participant,
+                token_id,
+                resp,
+            } => respond(resp, self.consume(&domain, &participant, &token_id).await),
+            Command::QueryCounter {
+                domain,
+                filter,
+                resp,
+            } => respond(resp, self.query_counter(&domain, filter.as_ref())),
+            Command::QueryArchive {
+                domain,
+                filter,
+                resp,
+            } => respond(resp, self.query_archive(&domain, filter.as_ref())),
+            Command::QueryGates {
+                domain,
+                participant,
+                resp,
+            } => respond(resp, self.query_gates(&domain, &participant)),
+            Command::QueryEnabled {
+                domain,
+                participant,
+                resp,
+            } => respond(resp, self.query_enabled(&domain, &participant)),
             Command::QueryStatus { domain, resp } => respond(resp, self.query_status(&domain)),
-            Command::ListDomains { resp } => respond(resp, Ok(self.domains.keys().cloned().collect())),
+            Command::ListDomains { resp } => {
+                respond(resp, Ok(self.domains.keys().cloned().collect()))
+            }
             Command::UnloadDomain { domain, resp } => respond(resp, self.unload_domain(&domain)),
-            Command::Subscribe { domain, resp } => {
-                respond(resp, self.subscribe(&domain))
-            }
+            Command::Subscribe { domain, resp } => respond(resp, self.subscribe(&domain)),
             Command::Analyze { text, resp } => respond(resp, self.analyze(&text)),
-            Command::AnalyzeLoaded { domain, resp } => {
-                respond(resp, self.analyze_loaded(&domain))
-            }
-            Command::ComposeAndLoad { name, fragments, resp } => {
-                respond(resp, self.compose_and_load(&name, &fragments).await)
-            }
+            Command::AnalyzeLoaded { domain, resp } => respond(resp, self.analyze_loaded(&domain)),
+            Command::ComposeAndLoad {
+                name,
+                fragments,
+                resp,
+            } => respond(resp, self.compose_and_load(&name, &fragments).await),
             Command::Shutdown { resp } => {
                 respond(resp, self.snapshot_all());
                 return true;
@@ -408,7 +494,11 @@ impl EngineActor {
         let session = self.domains.get_mut(name).ok_or_else(|| not_found(name))?;
         let token = rule_s(&session.domain, participant, ty, thing_ref, id, now.clone())?;
         let seq = session.last_seq + 1;
-        let ev = Event::Seeded { seq, ts: now.clone(), token: token.clone() };
+        let ev = Event::Seeded {
+            seq,
+            ts: now.clone(),
+            token: token.clone(),
+        };
         self.store.append(name, &ev).await?;
         session.state.apply(Effect::Seeded(token.clone()));
         session.last_seq = seq;
@@ -420,7 +510,14 @@ impl EngineActor {
             &now,
             Some(token.id.clone()),
         );
-        post_commit(&self.store, self.clock.as_ref(), &self.config, name, session).await?;
+        post_commit(
+            &self.store,
+            self.clock.as_ref(),
+            &self.config,
+            name,
+            session,
+        )
+        .await?;
         Ok(token)
     }
 
@@ -446,7 +543,11 @@ impl EngineActor {
             now.clone(),
         )?;
         let seq = session.last_seq + 1;
-        let ev = Event::Produced { seq, ts: now.clone(), token: token.clone() };
+        let ev = Event::Produced {
+            seq,
+            ts: now.clone(),
+            token: token.clone(),
+        };
         self.store.append(name, &ev).await?;
         session.state.apply(Effect::Produced(token.clone()));
         session.last_seq = seq;
@@ -458,7 +559,14 @@ impl EngineActor {
             &now,
             Some(token.id.clone()),
         );
-        post_commit(&self.store, self.clock.as_ref(), &self.config, name, session).await?;
+        post_commit(
+            &self.store,
+            self.clock.as_ref(),
+            &self.config,
+            name,
+            session,
+        )
+        .await?;
         Ok(token)
     }
 
@@ -481,7 +589,13 @@ impl EngineActor {
     ) -> Result<ArchiveEntry, EngineError> {
         let now = self.clock.now();
         let session = self.domains.get_mut(name).ok_or_else(|| not_found(name))?;
-        let entry = rule_e(&session.domain, &session.state, participant, token_id, now.clone())?;
+        let entry = rule_e(
+            &session.domain,
+            &session.state,
+            participant,
+            token_id,
+            now.clone(),
+        )?;
         let seq = session.last_seq + 1;
         let ev = Event::Consumed {
             seq,
@@ -500,39 +614,58 @@ impl EngineActor {
             &now,
             Some(token_id.clone()),
         );
-        post_commit(&self.store, self.clock.as_ref(), &self.config, name, session).await?;
+        post_commit(
+            &self.store,
+            self.clock.as_ref(),
+            &self.config,
+            name,
+            session,
+        )
+        .await?;
         Ok(entry)
     }
 
     // —— 查询 ——
 
-    fn query_counter(&self, name: &str, filter: Option<&TypeName>) -> Result<CounterView, EngineError> {
+    fn query_counter(
+        &self,
+        name: &str,
+        filter: Option<&TypeName>,
+    ) -> Result<CounterView, EngineError> {
         let s = self.session(name)?;
         let tokens: Vec<Token> = s
             .state
             .counter
             .values()
-            .filter(|t| filter.map_or(true, |f| t.ty == *f))
+            .filter(|t| filter.is_none_or(|f| t.ty == *f))
             .cloned()
             .collect();
         let size = tokens.len();
         Ok(CounterView { tokens, size })
     }
 
-    fn query_archive(&self, name: &str, filter: Option<&TypeName>) -> Result<ArchiveView, EngineError> {
+    fn query_archive(
+        &self,
+        name: &str,
+        filter: Option<&TypeName>,
+    ) -> Result<ArchiveView, EngineError> {
         let s = self.session(name)?;
         let entries: Vec<ArchiveEntry> = s
             .state
             .archive
             .iter()
-            .filter(|e| filter.map_or(true, |f| e.token.ty == *f))
+            .filter(|e| filter.is_none_or(|f| e.token.ty == *f))
             .cloned()
             .collect();
         let size = entries.len();
         Ok(ArchiveView { entries, size })
     }
 
-    fn query_gates(&self, name: &str, participant: &ParticipantName) -> Result<Vec<GateClause>, EngineError> {
+    fn query_gates(
+        &self,
+        name: &str,
+        participant: &ParticipantName,
+    ) -> Result<Vec<GateClause>, EngineError> {
         let s = self.session(name)?;
         Ok(s.domain
             .gates
@@ -596,7 +729,10 @@ impl EngineActor {
     /// 关停前终态快照（全部域）。
     fn snapshot_all(&self) -> Result<(), EngineError> {
         for (name, s) in &self.domains {
-            let snap = Snapshot { seq: s.last_seq, state: s.state.clone() };
+            let snap = Snapshot {
+                seq: s.last_seq,
+                state: s.state.clone(),
+            };
             self.store.write_snapshot(name, &snap)?;
         }
         Ok(())
@@ -618,7 +754,9 @@ fn notify_state_change(
         seq,
         ts: ts.to_owned(),
         token_id,
-        summary: NotificationSummary { counter_size: session.state.counter.len() },
+        summary: NotificationSummary {
+            counter_size: session.state.counter.len(),
+        },
     });
 }
 
@@ -634,7 +772,10 @@ async fn post_commit(
     // 定期快照（失败上报；重放兜底保证正确性不受影响，设计 §7.4）
     session.events_since_snapshot += 1;
     if config.snapshot_every > 0 && session.events_since_snapshot >= config.snapshot_every {
-        let snap = Snapshot { seq: session.last_seq, state: session.state.clone() };
+        let snap = Snapshot {
+            seq: session.last_seq,
+            state: session.state.clone(),
+        };
         store.write_snapshot(name, &snap)?;
         session.events_since_snapshot = 0;
     }
@@ -644,7 +785,15 @@ async fn post_commit(
     if now_terminated && !session.terminated {
         let seq = session.last_seq + 1;
         let ts = clock.now();
-        store.append(name, &Event::Terminated { seq, ts: ts.clone() }).await?;
+        store
+            .append(
+                name,
+                &Event::Terminated {
+                    seq,
+                    ts: ts.clone(),
+                },
+            )
+            .await?;
         session.last_seq = seq;
         let _ = session.notify.send(Notification {
             event: NotificationKind::Terminated,
@@ -652,7 +801,9 @@ async fn post_commit(
             seq,
             ts,
             token_id: None,
-            summary: NotificationSummary { counter_size: session.state.counter.len() },
+            summary: NotificationSummary {
+                counter_size: session.state.counter.len(),
+            },
         });
     }
     session.terminated = now_terminated;
@@ -676,7 +827,9 @@ fn report_of(domain: &Domain) -> AnalysisReport {
 }
 
 fn not_found(name: &str) -> EngineError {
-    EngineError::DomainNotFound { name: name.to_owned() }
+    EngineError::DomainNotFound {
+        name: name.to_owned(),
+    }
 }
 
 // ============ 引擎门面（句柄） ============
@@ -700,15 +853,23 @@ impl Engine {
         config: EngineConfig,
     ) -> Self {
         let (tx, rx) = mpsc::channel(config.command_capacity);
-        let actor =
-            EngineActor { store, clock, idgen, config, domains: BTreeMap::new() };
+        let actor = EngineActor {
+            store,
+            clock,
+            idgen,
+            config,
+            domains: BTreeMap::new(),
+        };
         tokio::spawn(actor.run(rx));
         Self { tx }
     }
 
     /// 发送原始命令（接口层可直接映射）。
     pub async fn execute(&self, cmd: Command) -> Result<(), EngineError> {
-        self.tx.send(cmd).await.map_err(|_| EngineError::EngineStopped)
+        self.tx
+            .send(cmd)
+            .await
+            .map_err(|_| EngineError::EngineStopped)
     }
 
     pub async fn load_domain(
@@ -728,7 +889,11 @@ impl Engine {
 
     pub async fn validate(&self, declaration: &str) -> Result<Domain, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::Validate { declaration: declaration.to_owned(), resp }).await?;
+        self.execute(Command::Validate {
+            declaration: declaration.to_owned(),
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
@@ -812,7 +977,12 @@ impl Engine {
         filter: Option<TypeName>,
     ) -> Result<CounterView, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::QueryCounter { domain: domain.to_owned(), filter, resp }).await?;
+        self.execute(Command::QueryCounter {
+            domain: domain.to_owned(),
+            filter,
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
@@ -822,7 +992,12 @@ impl Engine {
         filter: Option<TypeName>,
     ) -> Result<ArchiveView, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::QueryArchive { domain: domain.to_owned(), filter, resp }).await?;
+        self.execute(Command::QueryArchive {
+            domain: domain.to_owned(),
+            filter,
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
@@ -832,7 +1007,12 @@ impl Engine {
         participant: ParticipantName,
     ) -> Result<Vec<GateClause>, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::QueryGates { domain: domain.to_owned(), participant, resp }).await?;
+        self.execute(Command::QueryGates {
+            domain: domain.to_owned(),
+            participant,
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
@@ -842,13 +1022,22 @@ impl Engine {
         participant: ParticipantName,
     ) -> Result<Vec<ProductionOption>, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::QueryEnabled { domain: domain.to_owned(), participant, resp }).await?;
+        self.execute(Command::QueryEnabled {
+            domain: domain.to_owned(),
+            participant,
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
     pub async fn status(&self, domain: &str) -> Result<StatusView, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::QueryStatus { domain: domain.to_owned(), resp }).await?;
+        self.execute(Command::QueryStatus {
+            domain: domain.to_owned(),
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
@@ -863,27 +1052,43 @@ impl Engine {
         domain: &str,
     ) -> Result<broadcast::Receiver<Notification>, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::Subscribe { domain: domain.to_owned(), resp }).await?;
+        self.execute(Command::Subscribe {
+            domain: domain.to_owned(),
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
     pub async fn analyze(&self, text: &str) -> Result<AnalysisReport, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::Analyze { text: text.to_owned(), resp }).await?;
+        self.execute(Command::Analyze {
+            text: text.to_owned(),
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
     /// 分析已加载域的声明（`POST /domains/{d}:analyze` / `pact_analyze`）。
     pub async fn analyze_loaded(&self, domain: &str) -> Result<AnalysisReport, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::AnalyzeLoaded { domain: domain.to_owned(), resp }).await?;
+        self.execute(Command::AnalyzeLoaded {
+            domain: domain.to_owned(),
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
     /// 卸载域（内存态；日志保留，重启自动恢复）。
     pub async fn unload_domain(&self, domain: &str) -> Result<(), EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::UnloadDomain { domain: domain.to_owned(), resp }).await?;
+        self.execute(Command::UnloadDomain {
+            domain: domain.to_owned(),
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
@@ -893,7 +1098,12 @@ impl Engine {
         fragments: Vec<String>,
     ) -> Result<DomainSummary, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::ComposeAndLoad { name: name.to_owned(), fragments, resp }).await?;
+        self.execute(Command::ComposeAndLoad {
+            name: name.to_owned(),
+            fragments,
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 

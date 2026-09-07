@@ -11,7 +11,11 @@ pub enum GateExpr {
     /// via T_a：溯源敏感见证检查（实例级，非类型级，§1.4.0）。
     Via(TypeName),
     Exists(TypeName),
-    Count { ty: TypeName, op: CountOp, n: u64 },
+    Count {
+        ty: TypeName,
+        op: CountOp,
+        n: u64,
+    },
     And(Box<GateExpr>, Box<GateExpr>),
     Or(Box<GateExpr>, Box<GateExpr>),
     Not(Box<GateExpr>),
@@ -72,8 +76,16 @@ impl std::fmt::Display for GateExpr {
         match self {
             GateExpr::Via(t) => write!(f, "via {t}"),
             GateExpr::Exists(t) => write!(f, "exists {t}"),
-            GateExpr::Count { ty, op: CountOp::Ge, n } => write!(f, "count {ty} >= {n}"),
-            GateExpr::Count { ty, op: CountOp::Eq, n } => write!(f, "count {ty} = {n}"),
+            GateExpr::Count {
+                ty,
+                op: CountOp::Ge,
+                n,
+            } => write!(f, "count {ty} >= {n}"),
+            GateExpr::Count {
+                ty,
+                op: CountOp::Eq,
+                n,
+            } => write!(f, "count {ty} = {n}"),
             GateExpr::And(a, b) => write!(f, "({a} and {b})"),
             GateExpr::Or(a, b) => write!(f, "({a} or {b})"),
             GateExpr::Not(e) => write!(f, "not {e}"),
@@ -94,6 +106,7 @@ pub enum GateFailure {
 /// 1. 静态 gate：(p, action, type(t)) ∈ GateMatrix；AND
 /// 2. 条件子句：若匹配子句携带条件则求值为真；无条件（GateCondOpt = ε）
 ///    或无匹配子句 → 空真成立。
+///
 /// 仅作用于 read/consume（经 GuardedAction 类型强制，§1.4.0 Scope）。
 pub fn gate_holds(
     domain: &Domain,

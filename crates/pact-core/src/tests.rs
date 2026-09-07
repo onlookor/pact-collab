@@ -2,7 +2,7 @@
 //! 共享一个手搭小域（论文 §4.2 区分性场景骨架，S/W/T 类型）。
 
 #[cfg(test)]
-mod tests {
+mod unit {
     use crate::*;
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,10 +19,17 @@ mod tests {
         gates.insert((p("p2"), Action::Read, t("T")), None);
         gates.insert((p("w_eater"), Action::Consume, t("W")), None);
         gates.insert((p("w_eater"), Action::Produce, t("W")), None);
-        gates.insert((p("w_eater"), Action::Read, t("T")), Some(GateExpr::Exists(t("W"))));
+        gates.insert(
+            (p("w_eater"), Action::Read, t("T")),
+            Some(GateExpr::Exists(t("W"))),
+        );
         gates.insert(
             (p("counter"), Action::Read, t("T")),
-            Some(GateExpr::Count { ty: t("W"), op: CountOp::Ge, n: 2 }),
+            Some(GateExpr::Count {
+                ty: t("W"),
+                op: CountOp::Ge,
+                n: 2,
+            }),
         );
         Domain {
             types: BTreeSet::from([t("S"), t("W"), t("T")]),
@@ -62,10 +69,18 @@ mod tests {
         let d = domain();
         // State A：W₁ 与 T₁（T₁.depends_on=[W₁,S₁]）都在 Counter
         let mut state = CounterState::new();
-        state.counter.insert(tid("S1"), token("S1", "S", "external", &[]));
-        state.counter.insert(tid("W1"), token("W1", "W", "producer", &["S1"]));
-        state.counter.insert(tid("S2"), token("S2", "S", "external", &[]));
-        state.counter.insert(tid("W2"), token("W2", "W", "producer", &["S2"]));
+        state
+            .counter
+            .insert(tid("S1"), token("S1", "S", "external", &[]));
+        state
+            .counter
+            .insert(tid("W1"), token("W1", "W", "producer", &["S1"]));
+        state
+            .counter
+            .insert(tid("S2"), token("S2", "S", "external", &[]));
+        state
+            .counter
+            .insert(tid("W2"), token("W2", "W", "producer", &["S2"]));
         let t1 = token("T1", "T", "producer", &["W1", "S1"]);
         state.counter.insert(tid("T1"), t1.clone());
 
@@ -103,13 +118,32 @@ mod tests {
         assert!(GateExpr::Via(tyn("W")).evaluate(&target, &state)); // W1 在且在 depends_on
         assert!(GateExpr::Exists(tyn("W")).evaluate(&target, &state));
         assert!(!GateExpr::Exists(tyn("S")).evaluate(&target, &state));
-        assert!(GateExpr::Count { ty: tyn("W"), op: CountOp::Ge, n: 2 }.evaluate(&target, &state));
-        assert!(GateExpr::Count { ty: tyn("W"), op: CountOp::Eq, n: 2 }.evaluate(&target, &state));
-        assert!(!GateExpr::Count { ty: tyn("W"), op: CountOp::Eq, n: 3 }.evaluate(&target, &state));
+        assert!(GateExpr::Count {
+            ty: tyn("W"),
+            op: CountOp::Ge,
+            n: 2
+        }
+        .evaluate(&target, &state));
+        assert!(GateExpr::Count {
+            ty: tyn("W"),
+            op: CountOp::Eq,
+            n: 2
+        }
+        .evaluate(&target, &state));
+        assert!(!GateExpr::Count {
+            ty: tyn("W"),
+            op: CountOp::Eq,
+            n: 3
+        }
+        .evaluate(&target, &state));
         assert!(GateExpr::Not(Box::new(GateExpr::Exists(tyn("S")))).evaluate(&target, &state));
         let and = GateExpr::And(
             Box::new(GateExpr::Via(tyn("W"))),
-            Box::new(GateExpr::Count { ty: tyn("W"), op: CountOp::Ge, n: 1 }),
+            Box::new(GateExpr::Count {
+                ty: tyn("W"),
+                op: CountOp::Ge,
+                n: 1,
+            }),
         );
         assert!(and.evaluate(&target, &state));
         let or = GateExpr::Or(
@@ -125,11 +159,29 @@ mod tests {
         let d = domain();
         // 权威外参与者被拒
         assert_eq!(
-            rule_s(&d, &par("producer"), &tyn("S"), ThingRef::none(), tid("x"), "now".into()),
-            Err(RuleError::SeedAuthorityDenied { participant: par("producer"), ty: tyn("S") })
+            rule_s(
+                &d,
+                &par("producer"),
+                &tyn("S"),
+                ThingRef::none(),
+                tid("x"),
+                "now".into()
+            ),
+            Err(RuleError::SeedAuthorityDenied {
+                participant: par("producer"),
+                ty: tyn("S")
+            })
         );
         // 权威内通过；豁免前置条件（S 无前置无所谓，W 有前置也被豁免的等价小域在黄金测试覆盖）
-        let tk = rule_s(&d, &par("external"), &tyn("S"), ThingRef::some("need-1"), tid("x"), "now".into()).unwrap();
+        let tk = rule_s(
+            &d,
+            &par("external"),
+            &tyn("S"),
+            ThingRef::some("need-1"),
+            tid("x"),
+            "now".into(),
+        )
+        .unwrap();
         assert_eq!(tk.depends_on, Vec::<TokenId>::new());
         assert_eq!(tk.thing_ref, ThingRef::some("need-1"));
         assert_eq!(tk.produced_by, par("external"));
@@ -140,38 +192,94 @@ mod tests {
     fn rule_p_semantics() {
         let d = domain();
         let mut state = CounterState::new();
-        state.counter.insert(tid("S1"), token("S1", "S", "external", &[]));
-        state.counter.insert(tid("W1"), token("W1", "W", "producer", &["S1"]));
+        state
+            .counter
+            .insert(tid("S1"), token("S1", "S", "external", &[]));
+        state
+            .counter
+            .insert(tid("W1"), token("W1", "W", "producer", &["S1"]));
 
         // 静态 gate 拒绝：p1 无 produce gate
         assert!(matches!(
-            rule_p(&d, &state, &par("p1"), &tyn("W"), &[], ThingRef::none(), tid("n"), "now".into()),
+            rule_p(
+                &d,
+                &state,
+                &par("p1"),
+                &tyn("W"),
+                &[],
+                ThingRef::none(),
+                tid("n"),
+                "now".into()
+            ),
             Err(RuleError::StaticGateDenied { .. })
         ));
         // 前置类型不匹配：W 需要 {S}，给了 {W}
         assert!(matches!(
-            rule_p(&d, &state, &par("producer"), &tyn("W"), &[tid("W1")], ThingRef::none(), tid("n"), "now".into()),
+            rule_p(
+                &d,
+                &state,
+                &par("producer"),
+                &tyn("W"),
+                &[tid("W1")],
+                ThingRef::none(),
+                tid("n"),
+                "now".into()
+            ),
             Err(RuleError::PreconditionMismatch { .. })
         ));
         // 前驱不在 Counter
         assert!(matches!(
-            rule_p(&d, &state, &par("producer"), &tyn("W"), &[tid("S9")], ThingRef::none(), tid("n"), "now".into()),
+            rule_p(
+                &d,
+                &state,
+                &par("producer"),
+                &tyn("W"),
+                &[tid("S9")],
+                ThingRef::none(),
+                tid("n"),
+                "now".into()
+            ),
             Err(RuleError::PredecessorNotOnCounter { .. })
         ));
         // 前驱重复
         assert!(matches!(
-            rule_p(&d, &state, &par("producer"), &tyn("T"), &[tid("W1"), tid("W1")], ThingRef::none(), tid("n"), "now".into()),
+            rule_p(
+                &d,
+                &state,
+                &par("producer"),
+                &tyn("T"),
+                &[tid("W1"), tid("W1")],
+                ThingRef::none(),
+                tid("n"),
+                "now".into()
+            ),
             Err(RuleError::DuplicatePredecessor { .. })
         ));
         // 多前驱精确匹配：T 需要 {W, S}
         let t1 = rule_p(
-            &d, &state, &par("producer"), &tyn("T"),
-            &[tid("W1"), tid("S1")], ThingRef::none(), tid("T1"), "now".into(),
-        ).unwrap();
+            &d,
+            &state,
+            &par("producer"),
+            &tyn("T"),
+            &[tid("W1"), tid("S1")],
+            ThingRef::none(),
+            tid("T1"),
+            "now".into(),
+        )
+        .unwrap();
         assert_eq!(t1.depends_on, vec![tid("W1"), tid("S1")]); // 保留调用方顺序
-        // 前驱数量短缺（T 需要 2 个前驱，只给 1 个）
+                                                               // 前驱数量短缺（T 需要 2 个前驱，只给 1 个）
         assert!(matches!(
-            rule_p(&d, &state, &par("producer"), &tyn("T"), &[tid("W1")], ThingRef::none(), tid("n"), "now".into()),
+            rule_p(
+                &d,
+                &state,
+                &par("producer"),
+                &tyn("T"),
+                &[tid("W1")],
+                ThingRef::none(),
+                tid("n"),
+                "now".into()
+            ),
             Err(RuleError::PreconditionMismatch { .. })
         ));
         // Rule-P 不动前驱：成功后前驱仍在（Effect 应用前检查 state 不变由类型保证；
@@ -187,12 +295,16 @@ mod tests {
     fn rule_r_and_e_semantics() {
         let d = domain();
         let mut state = CounterState::new();
-        state.counter.insert(tid("W1"), token("W1", "W", "producer", &[]));
+        state
+            .counter
+            .insert(tid("W1"), token("W1", "W", "producer", &[]));
 
         // token 不在 Counter
         assert_eq!(
             rule_r(&d, &state, &par("producer"), &tid("W9")),
-            Err(RuleError::TokenNotOnCounter { token_id: tid("W9") })
+            Err(RuleError::TokenNotOnCounter {
+                token_id: tid("W9")
+            })
         );
         // 静态 gate 拒绝：producer 无 Consume W
         assert!(matches!(
@@ -204,7 +316,7 @@ mod tests {
         let got = rule_r(&d, &state, &par("producer"), &tid("W1")).unwrap();
         assert_eq!(got, state.counter[&tid("W1")]);
         assert_eq!(state, before); // 逐字节不变
-        // Rule-E：移除 + 归档，无级联
+                                   // Rule-E：移除 + 归档，无级联
         let entry = rule_e(&d, &state, &par("w_eater"), &tid("W1"), "t2".into()).unwrap();
         state.apply(Effect::Consumed(entry.clone()));
         assert!(!state.counter.contains_key(&tid("W1")));
@@ -214,7 +326,9 @@ mod tests {
         // 已归档 token 不可再读
         assert_eq!(
             rule_r(&d, &state, &par("producer"), &tid("W1")),
-            Err(RuleError::TokenNotOnCounter { token_id: tid("W1") })
+            Err(RuleError::TokenNotOnCounter {
+                token_id: tid("W1")
+            })
         );
     }
 
@@ -235,7 +349,10 @@ mod tests {
         // produces 携带条件
         let d2 = {
             let mut d = domain();
-            d.gates.insert((par("producer"), Action::Produce, tyn("T")), Some(GateExpr::Exists(tyn("W"))));
+            d.gates.insert(
+                (par("producer"), Action::Produce, tyn("T")),
+                Some(GateExpr::Exists(tyn("W"))),
+            );
             d
         };
         assert!(matches!(
@@ -251,7 +368,9 @@ mod tests {
     fn enabled_productions_semantics() {
         let d = domain();
         let mut state = CounterState::new();
-        state.counter.insert(tid("S1"), token("S1", "S", "external", &[]));
+        state
+            .counter
+            .insert(tid("S1"), token("S1", "S", "external", &[]));
 
         let mut opts = enabled_productions(&d, &state, &par("producer"));
         opts.sort_by(|a, b| a.ty.cmp(&b.ty));
@@ -261,7 +380,9 @@ mod tests {
         assert_eq!(opts[0].witness_predecessors, vec![tid("S1")]);
 
         // 补齐 W 后 T 亦可满足（排序后 T 在前）
-        state.counter.insert(tid("W1"), token("W1", "W", "producer", &["S1"]));
+        state
+            .counter
+            .insert(tid("W1"), token("W1", "W", "producer", &["S1"]));
         let mut opts = enabled_productions(&d, &state, &par("producer"));
         opts.sort_by(|a, b| a.ty.cmp(&b.ty));
         assert_eq!(opts.len(), 2);
@@ -276,7 +397,9 @@ mod tests {
         let d = domain();
         let mut state = CounterState::new();
         // Counter 非空 → 未终止
-        state.counter.insert(tid("S1"), token("S1", "S", "external", &[]));
+        state
+            .counter
+            .insert(tid("S1"), token("S1", "S", "external", &[]));
         assert!(!termination_holds(&d, &state));
         // Counter 空 → 终止：本域全部 produce gate 目标类型均有前置规则，
         // Counter = ∅ 时 Rule-P-enabled 条件 (3) 必然失败，无参与者 enabled
@@ -311,8 +434,14 @@ mod tests {
         // 运行时防御：即使绕过声明期校验直接构造 Domain，Rule-P 仍拒绝源类型生产
         assert_eq!(
             rule_p(
-                &src_domain, &CounterState::new(), &par("analyst"), &tyn("requirement"),
-                &[], ThingRef::none(), tid("n"), "now".into(),
+                &src_domain,
+                &CounterState::new(),
+                &par("analyst"),
+                &tyn("requirement"),
+                &[],
+                ThingRef::none(),
+                tid("n"),
+                "now".into(),
             ),
             Err(RuleError::SourceTypeProductionDenied {
                 participant: par("analyst"),
@@ -338,7 +467,11 @@ mod tests {
         state.apply(Effect::Produced(w1.clone()));
         assert_eq!(state.counter.len(), 2);
 
-        let entry = ArchiveEntry { token: w1.clone(), exhausted_by: par("w_eater"), exhausted_at: "t".into() };
+        let entry = ArchiveEntry {
+            token: w1.clone(),
+            exhausted_by: par("w_eater"),
+            exhausted_at: "t".into(),
+        };
         state.apply(Effect::Consumed(entry));
         assert_eq!(state.counter.len(), 1);
         assert_eq!(state.archive.len(), 1);
@@ -350,11 +483,17 @@ mod tests {
     fn token_json_wire_format() {
         let tk = token("01J9ZQ5T", "design", "architect", &["01J9ZQ3M"]);
         let json = serde_json::to_string(&tk).unwrap();
-        assert!(json.contains(r#""id":"01J9ZQ5T""#), "newtype 透明序列化：{json}");
+        assert!(
+            json.contains(r#""id":"01J9ZQ5T""#),
+            "newtype 透明序列化：{json}"
+        );
         assert!(json.contains(r#""type":"design""#), "{json}");
         assert!(json.contains(r#""produced_by":"architect""#), "{json}");
         assert!(json.contains(r#""depends_on":["01J9ZQ3M"]"#), "{json}");
-        assert!(json.contains(r#""thing_ref":null"#), "∅ 表示为 null：{json}");
+        assert!(
+            json.contains(r#""thing_ref":null"#),
+            "∅ 表示为 null：{json}"
+        );
         // 往返一致
         let back: Token = serde_json::from_str(&json).unwrap();
         assert_eq!(back, tk);

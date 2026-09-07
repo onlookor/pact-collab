@@ -27,8 +27,10 @@ impl EventLog {
 
     /// 追加一个事件并 fsync。事件 seq 由调用方保证逐行 +1（Store 层校验）。
     pub fn append(&mut self, ev: &Event) -> Result<(), StoreError> {
-        let mut line = serde_json::to_string(ev)
-            .map_err(|e| StoreError::Json { context: "事件序列化", source: e })?;
+        let mut line = serde_json::to_string(ev).map_err(|e| StoreError::Json {
+            context: "事件序列化",
+            source: e,
+        })?;
         line.push('\n');
         self.file.write_all(line.as_bytes())?;
         self.file.sync_all()?; // 真相源持久化先于 ack（设计 §7.3 写入路径）
@@ -51,7 +53,10 @@ pub fn read_and_sanitize(path: &Path) -> Result<ReadOutcome, StoreError> {
     let mut bytes = Vec::new();
     File::open(path)?.read_to_end(&mut bytes)?;
     if bytes.is_empty() {
-        return Ok(ReadOutcome { events: Vec::new(), truncated: false });
+        return Ok(ReadOutcome {
+            events: Vec::new(),
+            truncated: false,
+        });
     }
 
     // 1. 截断尾部半行
@@ -132,7 +137,11 @@ mod tests {
                 name: "d".into(),
                 declaration: "…".into(),
             },
-            Event::Seeded { seq: 2, ts: "T1".into(), token: token(1, "req") },
+            Event::Seeded {
+                seq: 2,
+                ts: "T1".into(),
+                token: token(1, "req"),
+            },
         ]
     }
 
@@ -159,7 +168,8 @@ mod tests {
         }
         // 模拟崩溃残留：追加半行（无换行）
         let mut f = OpenOptions::new().append(true).open(&path).unwrap();
-        f.write_all(br#"{"kind":"Produced","seq":3,"ts":"T2","token":{"id":"t3"#).unwrap();
+        f.write_all(br#"{"kind":"Produced","seq":3,"ts":"T2","token":{"id":"t3"#)
+            .unwrap();
         drop(f);
 
         let out = read_and_sanitize(&path).unwrap();
@@ -214,7 +224,11 @@ mod tests {
         drop(f);
         assert!(matches!(
             read_and_sanitize(&path),
-            Err(StoreError::SeqNotMonotonic { expected: 2, got: 3, .. })
+            Err(StoreError::SeqNotMonotonic {
+                expected: 2,
+                got: 3,
+                ..
+            })
         ));
     }
 

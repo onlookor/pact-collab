@@ -14,10 +14,10 @@
 //! | A.6 搁浅风险 | via 见证能否先于依赖动作被消费 | O(\|GateConditions\| × \|Types\|) 无环；有环保守 |
 
 use pact_core::{is_source_type, Action, Domain, GateExpr, ParticipantName, TypeName};
-use serde::{Deserialize, Serialize};
 use petgraph::algo::{kosaraju_scc, toposort};
 use petgraph::graphmap::DiGraphMap;
 use petgraph::Direction;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 // ============ A.1 可达性 ============
@@ -59,9 +59,17 @@ pub fn reachability(domain: &Domain) -> ReachabilityReport {
         }
     }
 
-    let unreachable: Vec<TypeName> =
-        domain.types.iter().filter(|t| !reachable.contains(*t)).cloned().collect();
-    ReachabilityReport { seed_types, reachable, unreachable }
+    let unreachable: Vec<TypeName> = domain
+        .types
+        .iter()
+        .filter(|t| !reachable.contains(*t))
+        .cloned()
+        .collect();
+    ReachabilityReport {
+        seed_types,
+        reachable,
+        unreachable,
+    }
 }
 
 /// A.1 单目标查询：类型 T 是否从任一种子权威类型可达。
@@ -99,7 +107,12 @@ pub fn consumption_reachability(domain: &Domain) -> Vec<TypeName> {
         .filter(|(_, a, _)| *a == Action::Consume)
         .map(|(_, _, t)| t)
         .collect();
-    domain.types.iter().filter(|t| !consumed.contains(*t)).cloned().collect()
+    domain
+        .types
+        .iter()
+        .filter(|t| !consumed.contains(*t))
+        .cloned()
+        .collect()
 }
 
 // ============ A.4 结构死锁 ============
@@ -115,6 +128,7 @@ pub struct DeadlockComponent {
 /// 对每个非平凡 SCC 检查：
 /// 1. SCC 内有类型出现在 SeedAuthority → 可种子化，跳过；
 /// 2. 有外部入边（X ∉ C → T ∈ C）且 X 从种子可达 → 可外部馈入，跳过；
+///
 /// 否则报告死锁分量。
 pub fn structural_deadlock(domain: &Domain) -> Vec<DeadlockComponent> {
     let g = precondition_graph(domain);
@@ -143,9 +157,8 @@ pub fn structural_deadlock(domain: &Domain) -> Vec<DeadlockComponent> {
         }
         // 外部馈入：∃ 直接入边 X → T（X ∉ C，T ∈ C，X 种子可达）
         let feedable = members.iter().any(|t| {
-            g.neighbors_directed(*t, Direction::Incoming).any(|x| {
-                !members.contains(&x) && reach.contains(x)
-            })
+            g.neighbors_directed(*t, Direction::Incoming)
+                .any(|x| !members.contains(&x) && reach.contains(x))
         });
         if feedable {
             continue;
@@ -176,7 +189,10 @@ pub fn source_production_legality(domain: &Domain) -> Vec<SourceTypeProduction> 
         .gates
         .iter()
         .filter(|((_, a, t), _)| *a == Action::Produce && is_source_type(domain, t))
-        .map(|((p, _, t), _)| SourceTypeProduction { participant: p.clone(), ty: t.clone() })
+        .map(|((p, _, t), _)| SourceTypeProduction {
+            participant: p.clone(),
+            ty: t.clone(),
+        })
         .collect()
 }
 
@@ -202,6 +218,7 @@ pub struct StrandingRisk {
 /// 对每个 read/consume 子句中的 `via T_a` 条件（含复合表达式内的嵌套 Via 原子）：
 /// 1. T_a 必须是 T_b 的**直接**前驱（间接祖先的 via 永不可满足，无风险）；
 /// 2. T_a 存在消费者（consumes T_a gate）；
+///
 /// 则对每个消费者 q 报告 (T_b, T_a, p, q)。GateExpr 无法表达时间顺序
 /// （§1.7.3 局限），风险结构性存在；无环拓扑精确判定，有环保守判定。
 pub fn stranding_risk(domain: &Domain) -> Vec<StrandingRisk> {
@@ -228,7 +245,7 @@ pub fn stranding_risk(domain: &Domain) -> Vec<StrandingRisk> {
                 continue;
             }
             // T_a 的消费者集合
-            for ((q, a, t), _) in &domain.gates {
+            for (q, a, t) in domain.gates.keys() {
                 if *a == Action::Consume && *t == ty_a {
                     seen.insert((ty_b.clone(), ty_a.clone(), p.clone(), q.clone()));
                 }

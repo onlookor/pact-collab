@@ -7,7 +7,7 @@ use pact_http::dto::ErrorBody;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CustomNotification, ServerNotification};
-use rmcp::{Peer, RoleServer, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
+use rmcp::{tool, tool_handler, tool_router, Peer, RoleServer, ServerHandler, ServiceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -135,23 +135,44 @@ struct PactMcp {
 
 impl PactMcp {
     fn new(client: Arc<Client>) -> Self {
-        Self { client, tool_router: Self::tool_router() }
+        Self {
+            client,
+            tool_router: Self::tool_router(),
+        }
     }
 }
 
 #[tool_router]
 impl PactMcp {
-    #[tool(name = "pact_domain_validate", description = "校验域声明文本良构，返回结构概要（不加载）")]
+    #[tool(
+        name = "pact_domain_validate",
+        description = "校验域声明文本良构，返回结构概要（不加载）"
+    )]
     async fn domain_validate(
         &self,
         Parameters(in_): Parameters<DeclarationIn>,
     ) -> Result<String, String> {
-        to_ok(&self.client.validate(&in_.declaration).await.map_err(to_err)?)
+        to_ok(
+            &self
+                .client
+                .validate(&in_.declaration)
+                .await
+                .map_err(to_err)?,
+        )
     }
 
-    #[tool(name = "pact_domain_load", description = "加载/替换命名域（幂等按 name）")]
+    #[tool(
+        name = "pact_domain_load",
+        description = "加载/替换命名域（幂等按 name）"
+    )]
     async fn domain_load(&self, Parameters(in_): Parameters<LoadIn>) -> Result<String, String> {
-        to_ok(&self.client.load_domain(&in_.name, &in_.declaration).await.map_err(to_err)?)
+        to_ok(
+            &self
+                .client
+                .load_domain(&in_.name, &in_.declaration)
+                .await
+                .map_err(to_err)?,
+        )
     }
 
     #[tool(name = "pact_list_domains", description = "已加载域清单")]
@@ -159,28 +180,54 @@ impl PactMcp {
         to_ok(&self.client.list_domains().await.map_err(to_err)?)
     }
 
-    #[tool(name = "pact_analyze", description = "五项静态分析（结构/可达性/参与者/类型/报告）")]
+    #[tool(
+        name = "pact_analyze",
+        description = "五项静态分析（结构/可达性/参与者/类型/报告）"
+    )]
     async fn analyze(&self, Parameters(in_): Parameters<DomainIn>) -> Result<String, String> {
-        to_ok(&self.client.analyze_domain(&in_.domain).await.map_err(to_err)?)
-    }
-
-    #[tool(name = "pact_compose", description = "组合多片段声明并加载为命名域")]
-    async fn compose(&self, Parameters(in_): Parameters<ComposeIn>) -> Result<String, String> {
-        to_ok(&self.client.compose(&in_.name, in_.fragments).await.map_err(to_err)?)
-    }
-
-    #[tool(name = "pact_seed", description = "Rule-S：种子注入（仅 SeedAuthority 内参与者对源类型）")]
-    async fn seed(&self, Parameters(in_): Parameters<SeedIn>) -> Result<String, String> {
         to_ok(
             &self
                 .client
-                .seed(&in_.domain, &in_.participant, &in_.ty, in_.thing_ref.as_deref())
+                .analyze_domain(&in_.domain)
                 .await
                 .map_err(to_err)?,
         )
     }
 
-    #[tool(name = "pact_produce", description = "Rule-P：显式传前驱 token id 列表产出新 token")]
+    #[tool(name = "pact_compose", description = "组合多片段声明并加载为命名域")]
+    async fn compose(&self, Parameters(in_): Parameters<ComposeIn>) -> Result<String, String> {
+        to_ok(
+            &self
+                .client
+                .compose(&in_.name, in_.fragments)
+                .await
+                .map_err(to_err)?,
+        )
+    }
+
+    #[tool(
+        name = "pact_seed",
+        description = "Rule-S：种子注入（仅 SeedAuthority 内参与者对源类型）"
+    )]
+    async fn seed(&self, Parameters(in_): Parameters<SeedIn>) -> Result<String, String> {
+        to_ok(
+            &self
+                .client
+                .seed(
+                    &in_.domain,
+                    &in_.participant,
+                    &in_.ty,
+                    in_.thing_ref.as_deref(),
+                )
+                .await
+                .map_err(to_err)?,
+        )
+    }
+
+    #[tool(
+        name = "pact_produce",
+        description = "Rule-P：显式传前驱 token id 列表产出新 token"
+    )]
     async fn produce(&self, Parameters(in_): Parameters<ProduceIn>) -> Result<String, String> {
         to_ok(
             &self
@@ -197,7 +244,10 @@ impl PactMcp {
         )
     }
 
-    #[tool(name = "pact_read", description = "Rule-R：读标记（返回 token 全量数据，不改变 Counter）")]
+    #[tool(
+        name = "pact_read",
+        description = "Rule-R：读标记（返回 token 全量数据，不改变 Counter）"
+    )]
     async fn read(&self, Parameters(in_): Parameters<TokenIn>) -> Result<String, String> {
         to_ok(
             &self
@@ -208,7 +258,10 @@ impl PactMcp {
         )
     }
 
-    #[tool(name = "pact_consume", description = "Rule-E：消费 token（移出 Counter，归档）")]
+    #[tool(
+        name = "pact_consume",
+        description = "Rule-E：消费 token（移出 Counter，归档）"
+    )]
     async fn consume(&self, Parameters(in_): Parameters<TokenIn>) -> Result<String, String> {
         to_ok(
             &self
@@ -219,7 +272,10 @@ impl PactMcp {
         )
     }
 
-    #[tool(name = "pact_counter_query", description = "Counter 状态查询（可按类型过滤）")]
+    #[tool(
+        name = "pact_counter_query",
+        description = "Counter 状态查询（可按类型过滤）"
+    )]
     async fn counter_query(
         &self,
         Parameters(in_): Parameters<TypeFilterIn>,
@@ -233,7 +289,10 @@ impl PactMcp {
         )
     }
 
-    #[tool(name = "pact_archive_query", description = "Archive 状态查询（可按类型过滤）")]
+    #[tool(
+        name = "pact_archive_query",
+        description = "Archive 状态查询（可按类型过滤）"
+    )]
     async fn archive_query(
         &self,
         Parameters(in_): Parameters<TypeFilterIn>,
@@ -247,11 +306,11 @@ impl PactMcp {
         )
     }
 
-    #[tool(name = "pact_my_gates", description = "参与者的全部 gate 子句（含条件），agent 自省")]
-    async fn my_gates(
-        &self,
-        Parameters(in_): Parameters<ParticipantIn>,
-    ) -> Result<String, String> {
+    #[tool(
+        name = "pact_my_gates",
+        description = "参与者的全部 gate 子句（含条件），agent 自省"
+    )]
+    async fn my_gates(&self, Parameters(in_): Parameters<ParticipantIn>) -> Result<String, String> {
         to_ok(
             &self
                 .client
@@ -261,7 +320,10 @@ impl PactMcp {
         )
     }
 
-    #[tool(name = "pact_enabled", description = "Rule-W 轮询：当前可满足的 Rule-P 组合")]
+    #[tool(
+        name = "pact_enabled",
+        description = "Rule-W 轮询：当前可满足的 Rule-P 组合"
+    )]
     async fn enabled(&self, Parameters(in_): Parameters<ParticipantIn>) -> Result<String, String> {
         to_ok(
             &self
@@ -277,7 +339,10 @@ impl PactMcp {
         to_ok(&self.client.status(&in_.domain).await.map_err(to_err)?)
     }
 
-    #[tool(name = "pact_subscribe", description = "注册 Counter 变更通知（Rule-W 唤醒）；事件经 notifications/pact/event 推送")]
+    #[tool(
+        name = "pact_subscribe",
+        description = "注册 Counter 变更通知（Rule-W 唤醒）；事件经 notifications/pact/event 推送"
+    )]
     async fn subscribe(
         &self,
         peer: Peer<RoleServer>,

@@ -24,8 +24,12 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "pactd: 监听{}",
         [
-            unix.as_ref().map(|p| format!(" unix:{}", p.display())).unwrap_or_default(),
-            tcp.as_ref().map(|t| format!(" tcp:{t}")).unwrap_or_default(),
+            unix.as_ref()
+                .map(|p| format!(" unix:{}", p.display()))
+                .unwrap_or_default(),
+            tcp.as_ref()
+                .map(|t| format!(" tcp:{t}"))
+                .unwrap_or_default(),
         ]
         .join(",")
     );
@@ -62,7 +66,7 @@ async fn serve_listeners(
             tokio::select! {
                 r = serve_unix(app, u) => r,
                 r = tcp_task => {
-                    r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                    r.map_err(std::io::Error::other)?
                 }
             }
         }

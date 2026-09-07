@@ -17,7 +17,9 @@
 //!
 //! 全部为纯函数；冲突全部收集（非首错即停）。
 
-use pact_core::{validate_domain, Action, Domain, DomainError, GateExpr, ParticipantName, TypeName};
+use pact_core::{
+    validate_domain, Action, Domain, DomainError, GateExpr, ParticipantName, TypeName,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 组合冲突（§1.8 条件 1–4 的结构化报告）。
@@ -68,9 +70,7 @@ pub fn compose_pair(a: &Domain, b: &Domain) -> Result<Domain, Vec<Conflict>> {
     // C1+C2：双方都为共享类型（或同一 rhs）声明前置规则且集合不同 → 冲突；
     // 单侧声明合法（D18：缺席方无约束，合并取并——论文 §1.8 示例语义）
     for ty in a.types.iter().filter(|t| b.types.contains(*t)) {
-        if let (Some(pa), Some(pb)) =
-            (a.preconditions.get(ty), b.preconditions.get(ty))
-        {
+        if let (Some(pa), Some(pb)) = (a.preconditions.get(ty), b.preconditions.get(ty)) {
             if pa != pb {
                 conflicts.push(Conflict::PreconditionMismatch {
                     ty: ty.clone(),
@@ -104,12 +104,17 @@ pub fn compose_pair(a: &Domain, b: &Domain) -> Result<Domain, Vec<Conflict>> {
     let mut merged = a.clone();
     merged.types.extend(b.types.iter().cloned());
     for (k, v) in &b.preconditions {
-        merged.preconditions.entry(k.clone()).or_insert_with(|| v.clone());
+        merged
+            .preconditions
+            .entry(k.clone())
+            .or_insert_with(|| v.clone());
     }
     for (k, v) in &b.gates {
         merged.gates.entry(k.clone()).or_insert_with(|| v.clone());
     }
-    merged.seed_authority.extend(b.seed_authority.iter().cloned());
+    merged
+        .seed_authority
+        .extend(b.seed_authority.iter().cloned());
 
     // C4 + 良构终检（捕获片段自带违例与合并引入的任何 §3.1 破坏）
     match validate_domain(&merged) {

@@ -23,13 +23,16 @@ pub fn enabled_productions(
     participant: &ParticipantName,
 ) -> Vec<ProductionOption> {
     let mut out = Vec::new();
-    for ((p, action, ty), _) in &domain.gates {
+    for (p, action, ty) in domain.gates.keys() {
         if *p != *participant || *action != Action::Produce {
             continue;
         }
         // Rule-P 前提 Precond(T) ≠ ∅：源类型跳过
-        let expected: BTreeSet<&TypeName> =
-            domain.preconditions.get(ty).map(|s| s.iter().collect()).unwrap_or_default();
+        let expected: BTreeSet<&TypeName> = domain
+            .preconditions
+            .get(ty)
+            .map(|s| s.iter().collect())
+            .unwrap_or_default();
         if expected.is_empty() {
             continue;
         }
@@ -46,7 +49,10 @@ pub fn enabled_productions(
             }
         }
         if ok {
-            out.push(ProductionOption { ty: ty.clone(), witness_predecessors: witnesses });
+            out.push(ProductionOption {
+                ty: ty.clone(),
+                witness_predecessors: witnesses,
+            });
         }
     }
     out
@@ -77,7 +83,9 @@ fn rule_p_enabled_for_type(domain: &Domain, state: &CounterState, ty: &TypeName)
         None => false, // (1) 源类型：Precond(T) = ∅，Rule-P 排除
         Some(preds) => {
             // (3) 全部前驱类型在 Counter 上各有一枚实例（Counter = ∅ 时空失败）
-            preds.iter().all(|pt| state.counter.values().any(|w| w.ty == *pt))
+            preds
+                .iter()
+                .all(|pt| state.counter.values().any(|w| w.ty == *pt))
         }
     }
 }

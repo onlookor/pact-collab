@@ -12,6 +12,10 @@
 
 use pact_core::{Action, Domain, GateExpr};
 
+/// 参与者 → 其 gate 子句列表（渲染排序用）。
+type ClausesByParticipant<'a> =
+    std::collections::BTreeMap<&'a str, Vec<(&'a Action, &'a str, &'a Option<GateExpr>)>>;
+
 /// 把良构 Domain 回写为 `.pact` 声明文本。
 pub fn emit_domain(d: &Domain) -> String {
     let mut out = String::new();
@@ -19,7 +23,11 @@ pub fn emit_domain(d: &Domain) -> String {
     // types 段（BTreeSet 序确定）
     out.push_str("types { ");
     out.push_str(
-        &d.types.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join("; "),
+        &d.types
+            .iter()
+            .map(|t| t.0.as_str())
+            .collect::<Vec<_>>()
+            .join("; "),
     );
     out.push_str(" }\n\n");
 
@@ -35,7 +43,11 @@ pub fn emit_domain(d: &Domain) -> String {
                 out.push_str(&format!("    {lhs} → {rhs};\n"));
             }
             _ => {
-                let lhs = preds.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" + ");
+                let lhs = preds
+                    .iter()
+                    .map(|t| t.0.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" + ");
                 out.push_str(&format!("    {{ {lhs} }} → {rhs};\n"));
             }
         }
@@ -44,10 +56,12 @@ pub fn emit_domain(d: &Domain) -> String {
 
     // gates 段：按参与者分组，组内按 (action, 类型名) 排序
     out.push_str("gates {\n");
-    let mut by_participant: std::collections::BTreeMap<&str, Vec<(&Action, &str, &Option<GateExpr>)>> =
-        std::collections::BTreeMap::new();
+    let mut by_participant = ClausesByParticipant::new();
     for ((p, action, ty), cond) in &d.gates {
-        by_participant.entry(p.0.as_str()).or_default().push((action, ty.0.as_str(), cond));
+        by_participant
+            .entry(p.0.as_str())
+            .or_default()
+            .push((action, ty.0.as_str(), cond));
     }
     for (p, clauses) in by_participant {
         let rendered = clauses

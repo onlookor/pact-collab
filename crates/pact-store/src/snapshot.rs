@@ -19,8 +19,10 @@ pub struct Snapshot {
 /// 原子写快照：tmp 文件 → fsync → rename。
 pub fn write_snapshot(path: &Path, snap: &Snapshot) -> Result<(), StoreError> {
     let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_vec(snap)
-        .map_err(|e| StoreError::Json { context: "快照序列化", source: e })?;
+    let json = serde_json::to_vec(snap).map_err(|e| StoreError::Json {
+        context: "快照序列化",
+        source: e,
+    })?;
     {
         let mut f = fs::File::create(&tmp)?;
         f.write_all(&json)?;
@@ -40,7 +42,10 @@ pub fn write_snapshot(path: &Path, snap: &Snapshot) -> Result<(), StoreError> {
 pub fn load_snapshot(path: &Path) -> Result<Option<Snapshot>, StoreError> {
     match fs::read(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(StoreError::Io { context: "读取快照", source: e }),
+        Err(e) => Err(StoreError::Io {
+            context: "读取快照",
+            source: e,
+        }),
         Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
     }
 }
@@ -50,7 +55,10 @@ pub fn remove_snapshot(path: &Path) -> Result<(), StoreError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(StoreError::Io { context: "删除快照", source: e }),
+        Err(e) => Err(StoreError::Io {
+            context: "删除快照",
+            source: e,
+        }),
     }
 }
 

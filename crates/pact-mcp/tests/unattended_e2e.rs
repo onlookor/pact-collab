@@ -112,8 +112,14 @@ impl ClientHandler for Notifier {
 async fn call(peer: &Peer<RoleClient>, name: &str, args: Value) -> Value {
     let params = CallToolRequestParams::new(name.to_owned())
         .with_arguments(serde_json::from_value(args).unwrap());
-    let res = peer.call_tool(params).await.unwrap_or_else(|e| panic!("调用 {name} 失败：{e:?}"));
-    assert!(!res.is_error.unwrap_or(false), "工具 {name} 不应报错：{res:?}");
+    let res = peer
+        .call_tool(params)
+        .await
+        .unwrap_or_else(|e| panic!("调用 {name} 失败：{e:?}"));
+    assert!(
+        !res.is_error.unwrap_or(false),
+        "工具 {name} 不应报错：{res:?}"
+    );
     let ContentBlock::Text(t) = &res.content[0] else {
         panic!("工具 {name} 返回非文本内容")
     };
@@ -246,7 +252,11 @@ async fn run_agent(cfg: AgentCfg) -> AgentReport {
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            assert!(found, "agent {} 未能自驱发现域 {}", cfg.participant, cfg.domain);
+            assert!(
+                found,
+                "agent {} 未能自驱发现域 {}",
+                cfg.participant, cfg.domain
+            );
         }
     }
     // Rule-W 推送通道（订阅失败即场景失败：轮询兜底不能替代推送验证）
@@ -287,7 +297,10 @@ async fn run_agent(cfg: AgentCfg) -> AgentReport {
     }
 
     // —— 自驱循环 ——
-    let mut rep = AgentReport { participant: cfg.participant.clone(), ..Default::default() };
+    let mut rep = AgentReport {
+        participant: cfg.participant.clone(),
+        ..Default::default()
+    };
     let mut ticker = tokio::time::interval(cfg.poll);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let start = Instant::now();
@@ -308,7 +321,9 @@ async fn run_agent(cfg: AgentCfg) -> AgentReport {
 
         // 观察：Counter 概要 + 终止判定（Rule-T）
         let st = call(peer, "pact_status", json!({ "domain": cfg.domain })).await;
-        rep.max_counter = rep.max_counter.max(st["counter_size"].as_u64().unwrap_or(0) as usize);
+        rep.max_counter = rep
+            .max_counter
+            .max(st["counter_size"].as_u64().unwrap_or(0) as usize);
         // 过早终止防护：域加载与种子注入之间存在窗口，此时 Counter=∅ 且无 token，
         // `termination_holds` 平凡为真。仅当 archive_size>0（确有真实工作发生）时才承认
         // 终止，避免 worker 在播种前误判 terminated 而空手退出（导致后续 token 无人接力）。
@@ -444,7 +459,10 @@ async fn run_agents(cfgs: Vec<AgentCfg>) -> Vec<AgentReport> {
         }
     }
     if !errs.is_empty() {
-        panic!("agent 任务崩溃：\n  已完成报告：{out:#?}\n  崩溃：{}", errs.join("\n  "));
+        panic!(
+            "agent 任务崩溃：\n  已完成报告：{out:#?}\n  崩溃：{}",
+            errs.join("\n  ")
+        );
     }
     out
 }
@@ -496,7 +514,10 @@ async fn scenario_react_loop() {
             Some("q:capital-of-france"),
         ),
         // 两轮 × 4 次生产 − 1（末轮不再续接新观察，转入停止分支）
-        AgentCfg { produce_budget: Some(7), ..AgentCfg::worker(sock.clone(), "react", "agent") },
+        AgentCfg {
+            produce_budget: Some(7),
+            ..AgentCfg::worker(sock.clone(), "react", "agent")
+        },
     ])
     .await;
 
@@ -511,8 +532,16 @@ async fn scenario_react_loop() {
         "无 agent 收到 Terminated 推送：{reports:?}"
     );
     // 状态演化全部由 agent 经 MCP 完成：user 只注入种子，agent 7 产 8 消 7 读
-    assert_eq!((user.productions, user.consumptions, user.reads), (0, 0, 0), "{user:?}");
-    assert_eq!((agent.productions, agent.consumptions, agent.reads), (7, 8, 7), "{agent:?}");
+    assert_eq!(
+        (user.productions, user.consumptions, user.reads),
+        (0, 0, 0),
+        "{user:?}"
+    );
+    assert_eq!(
+        (agent.productions, agent.consumptions, agent.reads),
+        (7, 8, 7),
+        "{agent:?}"
+    );
     // Counter O(1) 卫生（论文 §1.3）：任意时刻 ≤ 2
     assert!(
         reports.iter().all(|r| r.max_counter <= 2),
@@ -522,7 +551,14 @@ async fn scenario_react_loop() {
     // —— 只读核验（测试进程不做任何状态变更）——
     let c = Client::unix(&sock);
     let st = c.status("react").await.unwrap();
-    assert_eq!(st, StatusView { counter_size: 0, archive_size: 8, terminated: true });
+    assert_eq!(
+        st,
+        StatusView {
+            counter_size: 0,
+            archive_size: 8,
+            terminated: true
+        }
+    );
 
     let ar = c.archive("react", None).await.unwrap();
     let types: Vec<&str> = ar.entries.iter().map(|e| e.token.ty.0.as_str()).collect();
@@ -530,8 +566,14 @@ async fn scenario_react_loop() {
     assert_eq!(
         types,
         [
-            "observation", "thought", "action", "tool_result",
-            "observation", "thought", "action", "tool_result",
+            "observation",
+            "thought",
+            "action",
+            "tool_result",
+            "observation",
+            "thought",
+            "action",
+            "tool_result",
         ]
     );
     // 种子无前驱；其余每步恰一个前驱（循环前置）
@@ -540,10 +582,15 @@ async fn scenario_react_loop() {
         assert_eq!(e.token.depends_on.len(), 1, "ReAct 每步应恰一个前驱：{e:?}");
     }
     // 溯源闭环：第二轮 observation 的前驱是第一轮 tool_result
-    assert_eq!(ar.entries[4].token.depends_on, vec![ar.entries[3].token.id.clone()]);
+    assert_eq!(
+        ar.entries[4].token.depends_on,
+        vec![ar.entries[3].token.id.clone()]
+    );
     // 全部 token 由 agent 产出（种子由 user 注入），由 agent 消费
     assert_eq!(ar.entries[0].token.produced_by.0, "user");
-    assert!(ar.entries[1..].iter().all(|e| e.token.produced_by.0 == "agent"));
+    assert!(ar.entries[1..]
+        .iter()
+        .all(|e| e.token.produced_by.0 == "agent"));
     assert!(ar.entries.iter().all(|e| e.exhausted_by.0 == "agent"));
 }
 
@@ -565,7 +612,13 @@ async fn scenario_software_lifecycle() {
         "requirement",
         Some("stakeholder-need-001"),
     )];
-    for p in ["architect", "developer", "tester", "operator", "stakeholder"] {
+    for p in [
+        "architect",
+        "developer",
+        "tester",
+        "operator",
+        "stakeholder",
+    ] {
         cfgs.push(AgentCfg::worker(sock.clone(), "swe", p));
     }
     let reports = run_agents(cfgs).await;
@@ -586,11 +639,29 @@ async fn scenario_software_lifecycle() {
     assert_eq!(total(|r| r.reads), 4, "{reports:?}");
     // 种子权威只注入不推进；纯消费者只消费不生产
     let seeder = &reports[0];
-    assert_eq!((seeder.productions, seeder.consumptions), (0, 0), "{seeder:?}");
-    let by_name: BTreeMap<&str, &AgentReport> =
-        reports.iter().map(|r| (r.participant.as_str(), r)).collect();
-    assert_eq!((by_name["stakeholder"].productions, by_name["stakeholder"].consumptions), (0, 1));
-    assert_eq!((by_name["architect"].productions, by_name["architect"].consumptions), (1, 1));
+    assert_eq!(
+        (seeder.productions, seeder.consumptions),
+        (0, 0),
+        "{seeder:?}"
+    );
+    let by_name: BTreeMap<&str, &AgentReport> = reports
+        .iter()
+        .map(|r| (r.participant.as_str(), r))
+        .collect();
+    assert_eq!(
+        (
+            by_name["stakeholder"].productions,
+            by_name["stakeholder"].consumptions
+        ),
+        (0, 1)
+    );
+    assert_eq!(
+        (
+            by_name["architect"].productions,
+            by_name["architect"].consumptions
+        ),
+        (1, 1)
+    );
     // 线性流水线的工作集同样 O(1)：任意时刻 ≤ 2
     assert!(
         reports.iter().all(|r| r.max_counter <= 2),
@@ -600,20 +671,38 @@ async fn scenario_software_lifecycle() {
     // —— 只读核验 ——
     let c = Client::unix(&sock);
     let st = c.status("swe").await.unwrap();
-    assert_eq!(st, StatusView { counter_size: 0, archive_size: 5, terminated: true });
+    assert_eq!(
+        st,
+        StatusView {
+            counter_size: 0,
+            archive_size: 5,
+            terminated: true
+        }
+    );
 
     let ar = c.archive("swe", None).await.unwrap();
     let mut types: Vec<String> = ar.entries.iter().map(|e| e.token.ty.0.clone()).collect();
     types.sort();
     assert_eq!(
         types,
-        ["deployment", "design", "implementation", "requirement", "test_report"]
+        [
+            "deployment",
+            "design",
+            "implementation",
+            "requirement",
+            "test_report"
+        ]
     );
     // 每个 token 的生产者/消费者与 gate 授权一一对应（t₀–t₁₀ 角色分工）
     let role: BTreeMap<&str, (&str, &str)> = ar
         .entries
         .iter()
-        .map(|e| (e.token.ty.0.as_str(), (e.token.produced_by.0.as_str(), e.exhausted_by.0.as_str())))
+        .map(|e| {
+            (
+                e.token.ty.0.as_str(),
+                (e.token.produced_by.0.as_str(), e.exhausted_by.0.as_str()),
+            )
+        })
         .collect();
     assert_eq!(role["requirement"], ("external_stakeholder", "architect"));
     assert_eq!(role["design"], ("architect", "developer"));
@@ -621,14 +710,32 @@ async fn scenario_software_lifecycle() {
     assert_eq!(role["test_report"], ("tester", "operator"));
     assert_eq!(role["deployment"], ("operator", "stakeholder"));
     // 溯源链：requirement → design → implementation → test_report → deployment
-    let id_of: BTreeMap<&str, _> =
-        ar.entries.iter().map(|e| (e.token.ty.0.as_str(), &e.token.id)).collect();
-    assert_eq!(ar.entries.iter().find(|e| e.token.ty.0 == "requirement").unwrap().token.depends_on, vec![]);
-    for (ty, pred) in
-        [("design", "requirement"), ("implementation", "design"), ("test_report", "implementation"), ("deployment", "test_report")]
-    {
+    let id_of: BTreeMap<&str, _> = ar
+        .entries
+        .iter()
+        .map(|e| (e.token.ty.0.as_str(), &e.token.id))
+        .collect();
+    assert_eq!(
+        ar.entries
+            .iter()
+            .find(|e| e.token.ty.0 == "requirement")
+            .unwrap()
+            .token
+            .depends_on,
+        vec![]
+    );
+    for (ty, pred) in [
+        ("design", "requirement"),
+        ("implementation", "design"),
+        ("test_report", "implementation"),
+        ("deployment", "test_report"),
+    ] {
         let e = ar.entries.iter().find(|e| e.token.ty.0 == ty).unwrap();
-        assert_eq!(&e.token.depends_on, std::slice::from_ref(id_of[pred]), "{ty} 的前驱应为 {pred}");
+        assert_eq!(
+            &e.token.depends_on,
+            std::slice::from_ref(id_of[pred]),
+            "{ty} 的前驱应为 {pred}"
+        );
     }
 }
 

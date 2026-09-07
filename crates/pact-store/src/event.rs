@@ -9,11 +9,29 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", rename_all = "PascalCase")]
 pub enum Event {
     /// 域加载/替换：重置会话状态（声明解析由引擎完成，store 不依赖 parser）。
-    DomainLoaded { seq: u64, ts: Timestamp, name: String, declaration: String },
-    Seeded { seq: u64, ts: Timestamp, token: Token },
-    Produced { seq: u64, ts: Timestamp, token: Token },
+    DomainLoaded {
+        seq: u64,
+        ts: Timestamp,
+        name: String,
+        declaration: String,
+    },
+    Seeded {
+        seq: u64,
+        ts: Timestamp,
+        token: Token,
+    },
+    Produced {
+        seq: u64,
+        ts: Timestamp,
+        token: Token,
+    },
     /// 消费：token 移出 Counter 入 Archive（重放时从 Counter 取 token 全量）。
-    Consumed { seq: u64, ts: Timestamp, token_id: TokenId, by: ParticipantName },
+    Consumed {
+        seq: u64,
+        ts: Timestamp,
+        token_id: TokenId,
+        by: ParticipantName,
+    },
     /// Rule-T 检测结果（信息性，无状态效果，可从状态重导出）。
     Terminated { seq: u64, ts: Timestamp },
 }
@@ -92,7 +110,9 @@ pub enum ApplyOutcome {
 /// （该 token 必然在 Counter 上——日志由串行引擎产生，消费先于事件落盘）。
 pub fn apply_event(state: &mut CounterState, ev: &Event) -> Result<ApplyOutcome, StoreError> {
     match ev {
-        Event::DomainLoaded { name, declaration, .. } => Ok(ApplyOutcome::DomainReset {
+        Event::DomainLoaded {
+            name, declaration, ..
+        } => Ok(ApplyOutcome::DomainReset {
             name: name.clone(),
             declaration: declaration.clone(),
         }),
@@ -104,12 +124,14 @@ pub fn apply_event(state: &mut CounterState, ev: &Event) -> Result<ApplyOutcome,
             state.apply(Effect::Produced(token.clone()));
             Ok(ApplyOutcome::Applied)
         }
-        Event::Consumed { token_id, by, ts, .. } => {
-            let token = state
-                .counter
-                .get(token_id)
-                .cloned()
-                .ok_or_else(|| StoreError::ConsumeTargetMissing { token_id: token_id.clone() })?;
+        Event::Consumed {
+            token_id, by, ts, ..
+        } => {
+            let token = state.counter.get(token_id).cloned().ok_or_else(|| {
+                StoreError::ConsumeTargetMissing {
+                    token_id: token_id.clone(),
+                }
+            })?;
             state.apply(Effect::Consumed(pact_core::ArchiveEntry {
                 token,
                 exhausted_by: by.clone(),
@@ -139,7 +161,11 @@ mod tests {
 
     #[test]
     fn event_json_roundtrip() {
-        let ev = Event::Produced { seq: 3, ts: "T3".into(), token: token("t1", "design") };
+        let ev = Event::Produced {
+            seq: 3,
+            ts: "T3".into(),
+            token: token("t1", "design"),
+        };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains(r#""kind":"Produced""#));
         let back: Event = serde_json::from_str(&json).unwrap();

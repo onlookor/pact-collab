@@ -98,8 +98,12 @@ impl Driver {
 
     /// Counter 中类型多重集（排序后），用于逐事件比对。
     fn counter_types(&self) -> Vec<String> {
-        let mut v: Vec<String> =
-            self.state.counter.values().map(|t| t.ty.0.clone()).collect();
+        let mut v: Vec<String> = self
+            .state
+            .counter
+            .values()
+            .map(|t| t.ty.0.clone())
+            .collect();
         v.sort();
         v
     }
@@ -109,7 +113,11 @@ impl Driver {
     }
 
     fn archive_types(&self) -> Vec<String> {
-        self.state.archive.iter().map(|e| e.token.ty.0.clone()).collect()
+        self.state
+            .archive
+            .iter()
+            .map(|e| e.token.ty.0.clone())
+            .collect()
     }
 }
 
@@ -143,30 +151,60 @@ fn golden_software_lifecycle() {
     let mut d = Driver::new(LIFECYCLE);
 
     // t₀：Rule-S —— external_stakeholder 注入 requirement（豁免前置条件）
-    let req = d.seed("external_stakeholder", "requirement", Some("stakeholder-need-001"));
+    let req = d.seed(
+        "external_stakeholder",
+        "requirement",
+        Some("stakeholder-need-001"),
+    );
     assert_eq!(d.counter_types(), vec!["requirement"]);
-    assert_eq!(d.state.counter[&req].produced_by, par("external_stakeholder"));
+    assert_eq!(
+        d.state.counter[&req].produced_by,
+        par("external_stakeholder")
+    );
     assert_eq!(d.state.counter[&req].depends_on, Vec::<TokenId>::new()); // 种子无前驱
-    assert_eq!(d.state.counter[&req].thing_ref, ThingRef::some("stakeholder-need-001"));
+    assert_eq!(
+        d.state.counter[&req].thing_ref,
+        ThingRef::some("stakeholder-need-001")
+    );
 
     // t₁：architect 读 requirement（非破坏性）→ 生产 design（前驱 requirement 不动）
     d.read_ok("architect", &req);
-    let design = d.produce("architect", "design", &[req.clone()], Some("docs/design-001.md"));
+    let design = d.produce(
+        "architect",
+        "design",
+        std::slice::from_ref(&req),
+        Some("docs/design-001.md"),
+    );
     assert_eq!(d.counter_types(), vec!["design", "requirement"]);
     assert_eq!(d.state.counter[&design].depends_on, vec![req.clone()]);
 
     // t₂：developer 读 design → 生产 implementation
     d.read_ok("developer", &design);
-    let impl_t = d.produce("developer", "implementation", &[design.clone()], Some("src/impl-001"));
+    let impl_t = d.produce(
+        "developer",
+        "implementation",
+        std::slice::from_ref(&design),
+        Some("src/impl-001"),
+    );
     assert_eq!(d.counter_len(), 3);
 
     // t₃：tester 读 implementation → 生产 test_report
     d.read_ok("tester", &impl_t);
-    let report = d.produce("tester", "test_report", &[impl_t.clone()], Some("qa/report-001"));
+    let report = d.produce(
+        "tester",
+        "test_report",
+        std::slice::from_ref(&impl_t),
+        Some("qa/report-001"),
+    );
 
     // t₄：operator 读 test_report（via implementation：见证在 Counter ∧ 在 depends_on）→ 生产 deployment
     d.read_ok("operator", &report);
-    let deploy = d.produce("operator", "deployment", &[report.clone()], Some("ops/deploy-001"));
+    let deploy = d.produce(
+        "operator",
+        "deployment",
+        std::slice::from_ref(&report),
+        Some("ops/deploy-001"),
+    );
     assert_eq!(d.counter_len(), 5);
 
     // t₅–t₉：逆序消费（deployment → requirement），无级联
@@ -176,7 +214,16 @@ fn golden_software_lifecycle() {
     d.consume("developer", &design); // t₈
     d.consume("architect", &req); // t₉
     assert_eq!(d.counter_len(), 0);
-    assert_eq!(d.archive_types(), vec!["deployment", "test_report", "implementation", "design", "requirement"]);
+    assert_eq!(
+        d.archive_types(),
+        vec![
+            "deployment",
+            "test_report",
+            "implementation",
+            "design",
+            "requirement"
+        ]
+    );
 
     // t₁₀：Rule-T —— 终止
     assert!(termination_holds(&d.domain, &d.state));
@@ -235,29 +282,64 @@ fn golden_healthcare_path() {
 
     // t₂：nurse 读 admission → 生产 triage
     d.read_ok("nurse", &adm);
-    let triage = d.produce("nurse", "triage", &[adm.clone()], Some("ehr:triage-42"));
+    let triage = d.produce(
+        "nurse",
+        "triage",
+        std::slice::from_ref(&adm),
+        Some("ehr:triage-42"),
+    );
     assert_eq!(d.counter_len(), 2);
 
     // t₃：physician 读 triage → 生产 diagnosis
     d.read_ok("physician", &triage);
-    let diag = d.produce("physician", "diagnosis", &[triage.clone()], Some("ehr:dx-42"));
+    let diag = d.produce(
+        "physician",
+        "diagnosis",
+        std::slice::from_ref(&triage),
+        Some("ehr:dx-42"),
+    );
     assert_eq!(d.counter_len(), 3);
 
     // t₄：lab_tech 经 via triage 读 diagnosis → 生产 lab_result；
     //      radiologist 同样 via triage 读 → 生产 imaging_result
     d.read_ok("lab_tech", &diag);
-    let lab = d.produce("lab_tech", "lab_result", &[diag.clone()], Some("lab:panel-42"));
+    let lab = d.produce(
+        "lab_tech",
+        "lab_result",
+        std::slice::from_ref(&diag),
+        Some("lab:panel-42"),
+    );
     d.read_ok("radiologist", &diag);
-    let img = d.produce("radiologist", "imaging_result", &[diag.clone()], Some("rad:ct-42"));
+    let img = d.produce(
+        "radiologist",
+        "imaging_result",
+        std::slice::from_ref(&diag),
+        Some("rad:ct-42"),
+    );
     assert_eq!(d.counter_len(), 5);
 
     // t₅：care_team 生产 treatment_plan（前置 {lab_result + imaging_result}，AND 语义）
-    let plan = d.produce("care_team", "treatment_plan", &[lab.clone(), img.clone()], Some("plan:42"));
+    let plan = d.produce(
+        "care_team",
+        "treatment_plan",
+        &[lab.clone(), img.clone()],
+        Some("plan:42"),
+    );
     assert_eq!(d.counter_len(), 6);
 
     // t₆：physician 生产 treatment、再生产 discharge_summary
-    let tr = d.produce("physician", "treatment", &[plan.clone()], Some("rx:42"));
-    let ds = d.produce("physician", "discharge_summary", &[tr.clone()], Some("doc:dc-42"));
+    let tr = d.produce(
+        "physician",
+        "treatment",
+        std::slice::from_ref(&plan),
+        Some("rx:42"),
+    );
+    let ds = d.produce(
+        "physician",
+        "discharge_summary",
+        std::slice::from_ref(&tr),
+        Some("doc:dc-42"),
+    );
     assert_eq!(d.counter_len(), 8);
 
     // t₇–t₁₃：逆拓扑序消费
@@ -280,8 +362,14 @@ fn golden_healthcare_path() {
     assert_eq!(
         d.archive_types(),
         vec![
-            "discharge_summary", "treatment", "treatment_plan",
-            "lab_result", "imaging_result", "diagnosis", "triage", "admission",
+            "discharge_summary",
+            "treatment",
+            "treatment_plan",
+            "lab_result",
+            "imaging_result",
+            "diagnosis",
+            "triage",
+            "admission",
         ]
     );
     // audit 链：discharge_summary 的完整溯源链
@@ -324,24 +412,44 @@ fn golden_react_loop() {
     // 两轮 ReAct 循环；每一步后 Counter ≤ 2（O(1) 卫生不变量，论文 §1.6）
     for k in 0..2 {
         d.read_ok("agent", &obs);
-        let thought = d.produce("agent", "thought", &[obs.clone()], Some(&format!("thought-{k}")));
+        let thought = d.produce(
+            "agent",
+            "thought",
+            &[obs.clone()],
+            Some(&format!("thought-{k}")),
+        );
         d.consume("agent", &obs);
         assert!(d.counter_len() <= 2);
 
         d.read_ok("agent", &thought);
-        let action = d.produce("agent", "action", &[thought.clone()], Some(&format!("action-{k}")));
+        let action = d.produce(
+            "agent",
+            "action",
+            std::slice::from_ref(&thought),
+            Some(&format!("action-{k}")),
+        );
         d.consume("agent", &thought);
         assert!(d.counter_len() <= 2);
 
         d.read_ok("agent", &action);
-        let tool = d.produce("agent", "tool_result", &[action.clone()], Some(&format!("tool-{k}")));
+        let tool = d.produce(
+            "agent",
+            "tool_result",
+            std::slice::from_ref(&action),
+            Some(&format!("tool-{k}")),
+        );
         d.consume("agent", &action);
         assert!(d.counter_len() <= 2);
 
         if k == 0 {
             // 继续循环：tool_result → 新 observation
             d.read_ok("agent", &tool);
-            let next = d.produce("agent", "observation", &[tool.clone()], Some("obs-1"));
+            let next = d.produce(
+                "agent",
+                "observation",
+                std::slice::from_ref(&tool),
+                Some("obs-1"),
+            );
             d.consume("agent", &tool);
             obs = next;
             // 溯源链：新观察源于上一轮工具结果
@@ -386,10 +494,10 @@ fn golden_discriminating_state_a_b() {
 
     // 步骤 1–5（论文 §4.2 State A 构造）
     let s1 = d.seed("external", "S", None);
-    let w1 = d.produce("producer", "W", &[s1.clone()], None);
+    let w1 = d.produce("producer", "W", std::slice::from_ref(&s1), None);
     let t1 = d.produce("producer", "T", &[w1.clone(), s1.clone()], None);
     let s2 = d.seed("external", "S", None);
-    d.produce("producer", "W", &[s2.clone()], None);
+    d.produce("producer", "W", std::slice::from_ref(&s2), None);
     assert_eq!(d.counter_types(), vec!["S", "S", "T", "W", "W"]);
 
     // State A：p1 读 T₁ —— W₁ 在 Counter 上 ∧ W₁ ∈ T₁.depends_on → 通过
@@ -453,7 +561,9 @@ seed_authority {
         Err(RuleError::GateConditionFailed { expr, .. }) => {
             assert_eq!(
                 expr,
-                pact_core::GateExpr::Not(Box::new(pact_core::GateExpr::Exists(tyn("imaging_result"))))
+                pact_core::GateExpr::Not(Box::new(pact_core::GateExpr::Exists(tyn(
+                    "imaging_result"
+                ))))
             );
         }
         other => panic!("imaging_result 在场时 physician 消费应被拒，实际 {other:?}"),

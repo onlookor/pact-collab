@@ -42,10 +42,17 @@ fn permissive_domain() -> Domain {
         }
     }
     // 个别条件 gate：不影响不变量，但让求值路径被覆盖
-    gates.insert((par("p1"), Action::Read, tyn("T3")), Some(GateExpr::Via(tyn("T2"))));
+    gates.insert(
+        (par("p1"), Action::Read, tyn("T3")),
+        Some(GateExpr::Via(tyn("T2"))),
+    );
     gates.insert(
         (par("p1"), Action::Consume, tyn("T2")),
-        Some(GateExpr::Count { ty: tyn("T0"), op: CountOp::Ge, n: 1 }),
+        Some(GateExpr::Count {
+            ty: tyn("T0"),
+            op: CountOp::Ge,
+            n: 1,
+        }),
     );
     Domain {
         types,

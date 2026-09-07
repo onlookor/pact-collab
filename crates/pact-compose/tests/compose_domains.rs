@@ -58,7 +58,7 @@ fn paper_example_parallel_composition() {
     assert_eq!(compose(&[d1.clone(), d2.clone()]).unwrap(), expected);
     // 空组合 = 单位元；单片段 = 自身
     assert_eq!(compose(&[]).unwrap(), empty_domain());
-    assert_eq!(compose(&[d1.clone()]).unwrap(), d1);
+    assert_eq!(compose(std::slice::from_ref(&d1)).unwrap(), d1);
 }
 
 fn empty_domain() -> Domain {
@@ -131,7 +131,11 @@ fn precondition_mismatch_conflict() {
         Some(&BTreeSet::from([tyn("z")])),
         "单侧声明时合并取声明侧规则（论文 §1.8 示例语义）"
     );
-    assert_eq!(merged.preconditions.len(), 3, "双方规则按并合并（z→x、x→y、x→w）");
+    assert_eq!(
+        merged.preconditions.len(),
+        3,
+        "双方规则按并合并（z→x、x→y、x→w）"
+    );
 }
 
 #[test]
@@ -188,7 +192,10 @@ fn gate_condition_mismatch_conflict_and_idempotent_merge() {
     let db = raw_domain(
         &["w", "t"],
         &[(&["w"], "t")],
-        &[("p", Action::Read, "t", None), ("p", Action::Produce, "t", None)],
+        &[
+            ("p", Action::Read, "t", None),
+            ("p", Action::Produce, "t", None),
+        ],
         &[("ext", "w")],
     );
     match compose_pair(&da, &db) {
@@ -229,7 +236,10 @@ fn ill_formed_fragment_caught_by_final_validation() {
     let bad = raw_domain(
         &["a", "b"],
         &[(&["a"], "b")],
-        &[("p", Action::Produce, "a", None), ("p", Action::Produce, "b", None)],
+        &[
+            ("p", Action::Produce, "a", None),
+            ("p", Action::Produce, "b", None),
+        ],
         &[],
     );
     match compose_pair(&empty_domain(), &bad) {
@@ -262,7 +272,11 @@ fn seeds_union_and_shared_gate_types() {
     let merged = compose_pair(&da, &db).unwrap();
     assert_eq!(merged.types.len(), 3);
     assert_eq!(merged.preconditions.len(), 2);
-    assert_eq!(merged.seed_authority.len(), 2, "Seeds 按并合并，重叠条目无冲突");
+    assert_eq!(
+        merged.seed_authority.len(),
+        2,
+        "Seeds 按并合并，重叠条目无冲突"
+    );
     // 共享类型 s 前置一致（双方都无 s 的规则——源类型）→ 通过
 }
 

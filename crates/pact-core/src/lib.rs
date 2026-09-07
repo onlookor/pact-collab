@@ -24,7 +24,7 @@ pub use effect::Effect;
 pub use gate::{gate_holds, CountOp, GateExpr, GateFailure};
 pub use rules::{precond_of, rule_e, rule_p, rule_r, rule_s, RuleError};
 pub use types::{
-    Action, ArchiveEntry, CounterState, GuardedAction, ParticipantName, ThingRef, Timestamp,
-    Token, TokenId, TypeName,
+    Action, ArchiveEntry, CounterState, GuardedAction, ParticipantName, ThingRef, Timestamp, Token,
+    TokenId, TypeName,
 };
 pub use wait::{enabled_productions, termination_holds, ProductionOption};

@@ -12,7 +12,7 @@ use pact_http::config::Config;
 use pact_http::daemon::run_daemon;
 use pact_http::dto::{conflicts_detail, problem_detail, ErrorBody, ErrorDetail};
 use pact_store::{apply_event, ApplyOutcome, Event};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -216,31 +216,49 @@ fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> ExitCode {
-    let Cli { unix, tcp, bearer, json, command } = cli;
+    let Cli {
+        unix,
+        tcp,
+        bearer,
+        json,
+        command,
+    } = cli;
     let conn = ConnArgs { unix, tcp, bearer };
     match command {
         // —— daemon 控制 ——
-        Command::Daemon { cmd: DaemonCmd::Start { config } } => {
+        Command::Daemon {
+            cmd: DaemonCmd::Start { config },
+        } => {
             let cfg = match Config::load(&config) {
                 Ok(c) => c,
-                Err(e) => return fail(json, ErrorDetail {
-                    code: "Config".into(),
-                    detail: serde_json::Value::Null,
-                    message: e.to_string(),
-                }),
+                Err(e) => {
+                    return fail(
+                        json,
+                        ErrorDetail {
+                            code: "Config".into(),
+                            detail: serde_json::Value::Null,
+                            message: e.to_string(),
+                        },
+                    )
+                }
             };
             match run_daemon(cfg).await {
                 Ok(()) => ExitCode::SUCCESS,
-                Err(e) => fail(json, ErrorDetail {
-                    code: "Daemon".into(),
-                    detail: serde_json::Value::Null,
-                    message: e.to_string(),
-                }),
+                Err(e) => fail(
+                    json,
+                    ErrorDetail {
+                        code: "Daemon".into(),
+                        detail: serde_json::Value::Null,
+                        message: e.to_string(),
+                    },
+                ),
             }
         }
 
         // —— 域生命周期 ——
-        Command::Domain { cmd: DomainCmd::Validate { file } } => {
+        Command::Domain {
+            cmd: DomainCmd::Validate { file },
+        } => {
             let text = match read_file(&file, json) {
                 Ok(t) => t,
                 Err(c) => return c,
@@ -258,7 +276,9 @@ async fn run(cli: Cli) -> ExitCode {
                 println!("participants: {}", r.participants.join(", "));
             })
         }
-        Command::Domain { cmd: DomainCmd::Load { file, name } } => {
+        Command::Domain {
+            cmd: DomainCmd::Load { file, name },
+        } => {
             let text = match read_file(&file, json) {
                 Ok(t) => t,
                 Err(c) => return c,
@@ -272,7 +292,9 @@ async fn run(cli: Cli) -> ExitCode {
                 );
             })
         }
-        Command::Domain { cmd: DomainCmd::List } => {
+        Command::Domain {
+            cmd: DomainCmd::List,
+        } => {
             let c = conn.client();
             done(json, c.list_domains().await, |r| {
                 if r.domains.is_empty() {
@@ -284,7 +306,9 @@ async fn run(cli: Cli) -> ExitCode {
                 }
             })
         }
-        Command::Domain { cmd: DomainCmd::Info { domain } } => {
+        Command::Domain {
+            cmd: DomainCmd::Info { domain },
+        } => {
             let c = conn.client();
             done(json, c.domain_info(&domain).await, |r| {
                 println!(
@@ -293,7 +317,9 @@ async fn run(cli: Cli) -> ExitCode {
                 );
             })
         }
-        Command::Domain { cmd: DomainCmd::Unload { domain } } => {
+        Command::Domain {
+            cmd: DomainCmd::Unload { domain },
+        } => {
             let c = conn.client();
             done(json, c.unload_domain(&domain).await, |()| {
                 println!("unloaded {domain}");
@@ -301,28 +327,58 @@ async fn run(cli: Cli) -> ExitCode {
         }
 
         // —— 四类动作 ——
-        Command::Seed { domain, participant, ty, thing_ref } => {
+        Command::Seed {
+            domain,
+            participant,
+            ty,
+            thing_ref,
+        } => {
             let c = conn.client();
             done(
                 json,
-                c.seed(&domain, &participant, &ty, thing_ref.as_deref()).await,
-                print_token,
-            )
-        }
-        Command::Produce { domain, participant, ty, predecessors, thing_ref } => {
-            let c = conn.client();
-            done(
-                json,
-                c.produce(&domain, &participant, &ty, predecessors, thing_ref.as_deref())
+                c.seed(&domain, &participant, &ty, thing_ref.as_deref())
                     .await,
                 print_token,
             )
         }
-        Command::Read { domain, participant, token } => {
+        Command::Produce {
+            domain,
+            participant,
+            ty,
+            predecessors,
+            thing_ref,
+        } => {
             let c = conn.client();
-            done(json, c.read_token(&domain, &participant, &token).await, print_token)
+            done(
+                json,
+                c.produce(
+                    &domain,
+                    &participant,
+                    &ty,
+                    predecessors,
+                    thing_ref.as_deref(),
+                )
+                .await,
+                print_token,
+            )
         }
-        Command::Consume { domain, participant, token } => {
+        Command::Read {
+            domain,
+            participant,
+            token,
+        } => {
+            let c = conn.client();
+            done(
+                json,
+                c.read_token(&domain, &participant, &token).await,
+                print_token,
+            )
+        }
+        Command::Consume {
+            domain,
+            participant,
+            token,
+        } => {
             let c = conn.client();
             done(json, c.consume(&domain, &participant, &token).await, |r| {
                 println!(
@@ -333,7 +389,9 @@ async fn run(cli: Cli) -> ExitCode {
         }
 
         // —— 查询 ——
-        Command::Counter { cmd: CounterCmd::Ls { domain, ty } } => {
+        Command::Counter {
+            cmd: CounterCmd::Ls { domain, ty },
+        } => {
             let c = conn.client();
             done(json, c.counter(&domain, ty.as_deref()).await, |r| {
                 println!("counter: {} tokens", r.size);
@@ -351,7 +409,9 @@ async fn run(cli: Cli) -> ExitCode {
                 }
             })
         }
-        Command::Archive { cmd: ArchiveCmd::Ls { domain, ty } } => {
+        Command::Archive {
+            cmd: ArchiveCmd::Ls { domain, ty },
+        } => {
             let c = conn.client();
             done(json, c.archive(&domain, ty.as_deref()).await, |r| {
                 println!("archive: {} entries", r.size);
@@ -363,7 +423,12 @@ async fn run(cli: Cli) -> ExitCode {
                 }
             })
         }
-        Command::Gates { cmd: GatesCmd::Show { domain, participant } } => {
+        Command::Gates {
+            cmd: GatesCmd::Show {
+                domain,
+                participant,
+            },
+        } => {
             let c = conn.client();
             done(json, c.gates(&domain, &participant).await, |r| {
                 println!("gates of {participant} in {domain}: {}", r.gates.len());
@@ -380,7 +445,10 @@ async fn run(cli: Cli) -> ExitCode {
                 }
             })
         }
-        Command::Enabled { domain, participant } => {
+        Command::Enabled {
+            domain,
+            participant,
+        } => {
             let c = conn.client();
             done(json, c.enabled(&domain, &participant).await, |r| {
                 println!("enabled productions for {participant}: {}", r.options.len());
@@ -427,7 +495,11 @@ impl ConnArgs {
     fn client(&self) -> Client {
         let c = match &self.tcp {
             Some(addr) => Client::tcp(addr.clone()),
-            None => Client::unix(self.unix.clone().unwrap_or_else(|| PathBuf::from("./pact.sock"))),
+            None => Client::unix(
+                self.unix
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("./pact.sock")),
+            ),
         };
         match &self.bearer {
             Some(t) => c.with_bearer(t.clone()),
@@ -503,19 +575,34 @@ fn offline_analyze(json: bool, file: &PathBuf) -> ExitCode {
     if json {
         println!("{}", serde_json::to_string_pretty(&report).unwrap());
     } else {
-        println!("reachability: {} 源类型，{} 可达，{} 不可达",
+        println!(
+            "reachability: {} 源类型，{} 可达，{} 不可达",
             report.reachability.seed_types.len(),
             report.reachability.reachable.len(),
-            report.reachability.unreachable.len());
+            report.reachability.unreachable.len()
+        );
         if !report.reachability.unreachable.is_empty() {
-            println!("  unreachable: {}", join_types(&report.reachability.unreachable));
+            println!(
+                "  unreachable: {}",
+                join_types(&report.reachability.unreachable)
+            );
         }
-        println!("gate_coverage: {} 个无 producer 的非源类型", report.gate_coverage.len());
-        println!("consumption_reachability: {} 个无 consumer 的类型",
-            report.consumption_reachability.len());
-        println!("structural_deadlock: {} 个强连通分量", report.structural_deadlock.len());
-        println!("source_production_legality: {} 处源类型生产违例",
-            report.source_production_legality.len());
+        println!(
+            "gate_coverage: {} 个无 producer 的非源类型",
+            report.gate_coverage.len()
+        );
+        println!(
+            "consumption_reachability: {} 个无 consumer 的类型",
+            report.consumption_reachability.len()
+        );
+        println!(
+            "structural_deadlock: {} 个强连通分量",
+            report.structural_deadlock.len()
+        );
+        println!(
+            "source_production_legality: {} 处源类型生产违例",
+            report.source_production_legality.len()
+        );
         println!("stranding_risk: {} 处滞留风险", report.stranding_risk.len());
     }
     ExitCode::SUCCESS
@@ -523,11 +610,14 @@ fn offline_analyze(json: bool, file: &PathBuf) -> ExitCode {
 
 fn offline_compose(json: bool, files: &[PathBuf]) -> ExitCode {
     if files.len() < 2 {
-        return fail(json, ErrorDetail {
-            code: "Usage".into(),
-            detail: serde_json::Value::Null,
-            message: "compose 至少需要两个片段文件".into(),
-        });
+        return fail(
+            json,
+            ErrorDetail {
+                code: "Usage".into(),
+                detail: serde_json::Value::Null,
+                message: "compose 至少需要两个片段文件".into(),
+            },
+        );
     }
     let mut fragments = Vec::with_capacity(files.len());
     for f in files {
@@ -545,12 +635,16 @@ fn offline_compose(json: bool, files: &[PathBuf]) -> ExitCode {
             if json {
                 let participants: std::collections::BTreeSet<_> =
                     merged.gates.keys().map(|(p, _, _)| p.clone()).collect();
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "types": merged.types.len(),
-                    "participants": participants.len(),
-                    "gates": merged.gates.len(),
-                    "seed_authority": merged.seed_authority.len(),
-                })).unwrap());
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "types": merged.types.len(),
+                        "participants": participants.len(),
+                        "gates": merged.gates.len(),
+                        "seed_authority": merged.seed_authority.len(),
+                    }))
+                    .unwrap()
+                );
             } else {
                 println!("{}", pact_parser::emit_domain(&merged));
             }
@@ -576,11 +670,14 @@ fn offline_replay(json: bool, file: &PathBuf) -> ExitCode {
         let ev: Event = match serde_json::from_str(line) {
             Ok(e) => e,
             Err(e) => {
-                return fail(json, ErrorDetail {
-                    code: "Parse".into(),
-                    detail: serde_json::json!({ "line": idx + 1 }),
-                    message: format!("第 {} 行不是合法事件：{e}", idx + 1),
-                })
+                return fail(
+                    json,
+                    ErrorDetail {
+                        code: "Parse".into(),
+                        detail: serde_json::json!({ "line": idx + 1 }),
+                        message: format!("第 {} 行不是合法事件：{e}", idx + 1),
+                    },
+                )
             }
         };
         match apply_event(&mut state, &ev) {
@@ -591,11 +688,14 @@ fn offline_replay(json: bool, file: &PathBuf) -> ExitCode {
             }
             Ok(ApplyOutcome::Informational) => {}
             Err(e) => {
-                return fail(json, ErrorDetail {
-                    code: "Replay".into(),
-                    detail: serde_json::json!({ "line": idx + 1 }),
-                    message: format!("第 {} 行应用失败：{e}", idx + 1),
-                })
+                return fail(
+                    json,
+                    ErrorDetail {
+                        code: "Replay".into(),
+                        detail: serde_json::json!({ "line": idx + 1 }),
+                        message: format!("第 {} 行应用失败：{e}", idx + 1),
+                    },
+                )
             }
         }
     }
@@ -617,16 +717,19 @@ fn offline_replay(json: bool, file: &PathBuf) -> ExitCode {
 
 fn read_file(path: &PathBuf, json: bool) -> Result<String, ExitCode> {
     std::fs::read_to_string(path).map_err(|e| {
-        fail(json, ErrorDetail {
-            code: "Io".into(),
-            detail: serde_json::json!({ "path": path.display().to_string() }),
-            message: format!("读取 {} 失败：{e}", path.display()),
-        })
+        fail(
+            json,
+            ErrorDetail {
+                code: "Io".into(),
+                detail: serde_json::json!({ "path": path.display().to_string() }),
+                message: format!("读取 {} 失败：{e}", path.display()),
+            },
+        )
     })
 }
 
 /// 域名缺省取文件 stem（如 `dev.pact` → `dev`）。
-fn default_name(file: &PathBuf) -> String {
+fn default_name(file: &Path) -> String {
     file.file_stem()
         .and_then(|s| s.to_str())
         .map(str::to_owned)
@@ -634,7 +737,10 @@ fn default_name(file: &PathBuf) -> String {
 }
 
 fn join_types(ts: &[pact_core::TypeName]) -> String {
-    ts.iter().map(|t| t.0.clone()).collect::<Vec<_>>().join(", ")
+    ts.iter()
+        .map(|t| t.0.clone())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn print_token(r: &pact_http::dto::TokenResp) {
@@ -655,7 +761,13 @@ fn print_token(r: &pact_http::dto::TokenResp) {
 /// 错误统一出口：`--json` → §6.3 错误体到 stdout；人类模式 → 简明信息到 stderr。
 fn fail(json: bool, detail: ErrorDetail) -> ExitCode {
     if json {
-        println!("{}", serde_json::to_string(&ErrorBody { error: detail.clone() }).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string(&ErrorBody {
+                error: detail.clone()
+            })
+            .unwrap()
+        );
     } else {
         eprintln!("error [{}]: {}", detail.code, detail.message);
     }

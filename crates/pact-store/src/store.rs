@@ -37,7 +37,11 @@ impl Store {
         let data_dir = data_dir.as_ref().to_owned();
         std::fs::create_dir_all(&data_dir)?;
         let index = TursoIndexStore::open(&data_dir.join("index.tursodb")).await?;
-        Ok(Self { data_dir, index: Arc::new(index), logs: Mutex::new(BTreeMap::new()) })
+        Ok(Self {
+            data_dir,
+            index: Arc::new(index),
+            logs: Mutex::new(BTreeMap::new()),
+        })
     }
 
     /// 启动恢复：清洗日志、读取事件、校验/重建索引。
@@ -63,8 +67,15 @@ impl Store {
             let path = log::events_path(&self.data_dir, name);
             let ReadOutcome { events, truncated } = log::read_and_sanitize(&path)?;
             let last_seq = events.last().map(|e| e.seq()).unwrap_or(0);
-            self.logs.lock().unwrap().insert(name.clone(), (EventLog::open(&path)?, last_seq));
-            recovered.push(RecoveredDomain { name: name.clone(), events, truncated });
+            self.logs
+                .lock()
+                .unwrap()
+                .insert(name.clone(), (EventLog::open(&path)?, last_seq));
+            recovered.push(RecoveredDomain {
+                name: name.clone(),
+                events,
+                truncated,
+            });
         }
 
         // 3. 索引一致性：任一域末尾 seq 与索引不符 → 全量重建（设计 §7.3）
@@ -96,7 +107,9 @@ impl Store {
         self.index.upsert_event(domain, ev).await?;
         match ev {
             Event::Seeded { token, .. } | Event::Produced { token, .. } => {
-                self.index.upsert_token(domain, token, &TokenStatus::Counter).await?;
+                self.index
+                    .upsert_token(domain, token, &TokenStatus::Counter)
+                    .await?;
             }
             _ => {}
         }
@@ -113,13 +126,24 @@ impl Store {
     ) -> Result<(), StoreError> {
         let (by, ts) = match ev {
             Event::Consumed { by, ts, .. } => (by.clone(), ts.clone()),
-            _ => return Err(StoreError::Index("append_consumed 只接受 Consumed 事件".into())),
+            _ => {
+                return Err(StoreError::Index(
+                    "append_consumed 只接受 Consumed 事件".into(),
+                ))
+            }
         };
         validate_domain_name(domain)?;
         self.log_append(domain, ev).await?;
         self.index.upsert_event(domain, ev).await?;
         self.index
-            .upsert_token(domain, token, &TokenStatus::Archived { exhausted_by: by, exhausted_at: ts })
+            .upsert_token(
+                domain,
+                token,
+                &TokenStatus::Archived {
+                    exhausted_by: by,
+                    exhausted_at: ts,
+                },
+            )
             .await
     }
 
@@ -201,7 +225,12 @@ mod tests {
     }
 
     fn domain_loaded(seq: u64) -> Event {
-        Event::DomainLoaded { seq, ts: "T0".into(), name: "d".into(), declaration: "…".into() }
+        Event::DomainLoaded {
+            seq,
+            ts: "T0".into(),
+            name: "d".into(),
+            declaration: "…".into(),
+        }
     }
 
     #[tokio::test]
@@ -210,7 +239,14 @@ mod tests {
         let store = Store::open(dir.path()).await.unwrap();
         store.append("d", &domain_loaded(1)).await.unwrap();
         store
-            .append("d", &Event::Seeded { seq: 2, ts: "T1".into(), token: token(1, "req") })
+            .append(
+                "d",
+                &Event::Seeded {
+                    seq: 2,
+                    ts: "T1".into(),
+                    token: token(1, "req"),
+                },
+            )
             .await
             .unwrap();
         store
@@ -244,10 +280,24 @@ mod tests {
         store.append("d", &domain_loaded(1)).await.unwrap();
         // 跳号：seq=3
         let err = store
-            .append("d", &Event::Seeded { seq: 3, ts: "T1".into(), token: token(1, "req") })
+            .append(
+                "d",
+                &Event::Seeded {
+                    seq: 3,
+                    ts: "T1".into(),
+                    token: token(1, "req"),
+                },
+            )
             .await
             .unwrap_err();
-        assert!(matches!(err, StoreError::SeqNotMonotonic { expected: 2, got: 3, .. }));
+        assert!(matches!(
+            err,
+            StoreError::SeqNotMonotonic {
+                expected: 2,
+                got: 3,
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -266,7 +316,14 @@ mod tests {
             let store = Store::open(dir.path()).await.unwrap();
             store.append("d", &domain_loaded(1)).await.unwrap();
             store
-                .append("d", &Event::Seeded { seq: 2, ts: "T1".into(), token: token(1, "req") })
+                .append(
+                    "d",
+                    &Event::Seeded {
+                        seq: 2,
+                        ts: "T1".into(),
+                        token: token(1, "req"),
+                    },
+                )
                 .await
                 .unwrap();
         }
@@ -278,7 +335,9 @@ mod tests {
         let recovered = store.recover().await.unwrap();
         assert_eq!(recovered.len(), 1);
         // 重建后索引末尾 seq 与日志一致（经 last_event_seq 查询验证）
-        let idx = TursoIndexStore::open(&dir.path().join("index.tursodb")).await.unwrap();
+        let idx = TursoIndexStore::open(&dir.path().join("index.tursodb"))
+            .await
+            .unwrap();
         assert_eq!(idx.last_event_seq("d").await.unwrap(), Some(2));
     }
 
@@ -289,7 +348,9 @@ mod tests {
         store.append("d", &domain_loaded(1)).await.unwrap();
         let mut state = pact_core::CounterState::new();
         state.apply(pact_core::Effect::Seeded(token(9, "req")));
-        store.write_snapshot("d", &Snapshot { seq: 1, state }).unwrap();
+        store
+            .write_snapshot("d", &Snapshot { seq: 1, state })
+            .unwrap();
         assert!(store.load_snapshot("d").unwrap().is_some());
 
         let store2 = Store::open(dir.path()).await.unwrap();

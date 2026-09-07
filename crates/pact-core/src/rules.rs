@@ -5,8 +5,8 @@
 use crate::domain::Domain;
 use crate::gate::{gate_holds, GateExpr};
 use crate::types::{
-    Action, ArchiveEntry, CounterState, GuardedAction, ParticipantName, ThingRef, Timestamp,
-    Token, TokenId, TypeName,
+    Action, ArchiveEntry, CounterState, GuardedAction, ParticipantName, ThingRef, Timestamp, Token,
+    TokenId, TypeName,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -15,7 +15,11 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuleError {
     /// 静态 gate 未授权（Rule-P/R/E 的第一条前提）。
-    StaticGateDenied { participant: ParticipantName, action: Action, ty: TypeName },
+    StaticGateDenied {
+        participant: ParticipantName,
+        action: Action,
+        ty: TypeName,
+    },
     /// GateHolds 条件子句求值为假（仅 read/consume）。
     GateConditionFailed {
         participant: ParticipantName,
@@ -24,10 +28,17 @@ pub enum RuleError {
         expr: GateExpr,
     },
     /// 提供的前驱类型集合与 Precond(T) 不匹配（数量或类型，§1.4.4 AND 语义）。
-    PreconditionMismatch { ty: TypeName, expected: BTreeSet<TypeName>, provided: BTreeSet<TypeName> },
+    PreconditionMismatch {
+        ty: TypeName,
+        expected: BTreeSet<TypeName>,
+        provided: BTreeSet<TypeName>,
+    },
     /// Rule-P 前提 Precond(T) ≠ ∅ 违反：T 是源类型，只能经 Rule-S 注入
     /// （论文 rev1 §1.4；良构域已在声明期拒绝，此处为运行时防御）。
-    SourceTypeProductionDenied { participant: ParticipantName, ty: TypeName },
+    SourceTypeProductionDenied {
+        participant: ParticipantName,
+        ty: TypeName,
+    },
     /// 前驱 token 不在 Counter 上。
     PredecessorNotOnCounter { token_id: TokenId },
     /// 前驱实例重复（论文 Rule-P：tᵢ ≠ tⱼ）。
@@ -35,7 +46,10 @@ pub enum RuleError {
     /// 目标 token 不在 Counter 上。
     TokenNotOnCounter { token_id: TokenId },
     /// (p, T) ∉ SeedAuthority（Rule-S 唯一前提违反）。
-    SeedAuthorityDenied { participant: ParticipantName, ty: TypeName },
+    SeedAuthorityDenied {
+        participant: ParticipantName,
+        ty: TypeName,
+    },
 }
 
 /// Rule-S（种子注入，§1.4.3）：
@@ -49,7 +63,10 @@ pub fn rule_s(
     id: TokenId,
     now: Timestamp,
 ) -> Result<Token, RuleError> {
-    if !domain.seed_authority.contains(&(participant.clone(), ty.clone())) {
+    if !domain
+        .seed_authority
+        .contains(&(participant.clone(), ty.clone()))
+    {
         return Err(RuleError::SeedAuthorityDenied {
             participant: participant.clone(),
             ty: ty.clone(),
@@ -85,7 +102,10 @@ pub fn rule_p(
     id: TokenId,
     now: Timestamp,
 ) -> Result<Token, RuleError> {
-    if !domain.gates.contains_key(&(participant.clone(), Action::Produce, ty.clone())) {
+    if !domain
+        .gates
+        .contains_key(&(participant.clone(), Action::Produce, ty.clone()))
+    {
         return Err(RuleError::StaticGateDenied {
             participant: participant.clone(),
             action: Action::Produce,
@@ -101,16 +121,19 @@ pub fn rule_p(
     let mut seen: BTreeSet<&TokenId> = BTreeSet::new();
     for tid in predecessors {
         if !seen.insert(tid) {
-            return Err(RuleError::DuplicatePredecessor { token_id: tid.clone() });
+            return Err(RuleError::DuplicatePredecessor {
+                token_id: tid.clone(),
+            });
         }
     }
     for tid in predecessors {
         if !state.counter.contains_key(tid) {
-            return Err(RuleError::PredecessorNotOnCounter { token_id: tid.clone() });
+            return Err(RuleError::PredecessorNotOnCounter {
+                token_id: tid.clone(),
+            });
         }
     }
-    let expected: BTreeSet<TypeName> =
-        domain.preconditions.get(ty).cloned().unwrap_or_default();
+    let expected: BTreeSet<TypeName> = domain.preconditions.get(ty).cloned().unwrap_or_default();
     let provided: BTreeSet<TypeName> = predecessors
         .iter()
         .map(|tid| state.counter[tid].ty.clone())
@@ -118,7 +141,11 @@ pub fn rule_p(
     // provided.len() == predecessors.len() 排除"同类型多实例"；
     // 与 expected 的集合相等保证每个前置类型恰有一枚实例。
     if provided.len() != predecessors.len() || provided != expected {
-        return Err(RuleError::PreconditionMismatch { ty: ty.clone(), expected, provided });
+        return Err(RuleError::PreconditionMismatch {
+            ty: ty.clone(),
+            expected,
+            provided,
+        });
     }
     Ok(Token {
         id,
@@ -141,7 +168,9 @@ pub fn rule_r(
     let token = state
         .counter
         .get(token_id)
-        .ok_or_else(|| RuleError::TokenNotOnCounter { token_id: token_id.clone() })?;
+        .ok_or_else(|| RuleError::TokenNotOnCounter {
+            token_id: token_id.clone(),
+        })?;
     check_admission(domain, state, participant, GuardedAction::Read, token)?;
     Ok(token.clone())
 }
@@ -159,7 +188,9 @@ pub fn rule_e(
     let token = state
         .counter
         .get(token_id)
-        .ok_or_else(|| RuleError::TokenNotOnCounter { token_id: token_id.clone() })?;
+        .ok_or_else(|| RuleError::TokenNotOnCounter {
+            token_id: token_id.clone(),
+        })?;
     check_admission(domain, state, participant, GuardedAction::Consume, token)?;
     Ok(ArchiveEntry {
         token: token.clone(),

@@ -1,0 +1,39 @@
+# PACT CI：每次 push/PR 自动验证 build + 全量测试 + rustfmt + clippy。
+# 工具链与本地开发保持一致（stable，1.97+，edition 2021）。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: build / test / fmt / clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链（stable + rustfmt + clippy）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: 依赖缓存
+        uses: Swatinem/rust-cache@v2
+
+      - name: 格式检查（rustfmt）
+        run: cargo fmt --all -- --check
+
+      - name: Lint（clippy，警告即失败）
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: 全量测试
+        run: cargo test --workspace --locked

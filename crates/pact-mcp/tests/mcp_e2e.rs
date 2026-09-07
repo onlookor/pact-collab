@@ -59,7 +59,10 @@ async fn tool_ok(client: &rmcp::Peer<rmcp::RoleClient>, name: &str, args: Value)
     let params = CallToolRequestParams::new(name.to_owned())
         .with_arguments(serde_json::from_value(args).unwrap());
     let res = client.call_tool(params).await.unwrap();
-    assert!(res.is_error.unwrap_or(false) == false, "工具 {name} 不应报错: {res:?}");
+    assert!(
+        !res.is_error.unwrap_or(false),
+        "工具 {name} 不应报错: {res:?}"
+    );
     let ContentBlock::Text(t) = &res.content[0] else {
         panic!("工具 {name} 返回非文本内容")
     };
@@ -190,12 +193,7 @@ async fn mcp_full_lifecycle_over_stdio() {
     assert_eq!(entry["entry"]["exhausted_by"], "developer");
 
     // —— 查询与分析 ——
-    let counter = tool_ok(
-        &client,
-        "pact_counter_query",
-        json!({ "domain": "proj" }),
-    )
-    .await;
+    let counter = tool_ok(&client, "pact_counter_query", json!({ "domain": "proj" })).await;
     assert_eq!(counter["size"], 1);
     let archive = tool_ok(
         &client,
@@ -212,7 +210,10 @@ async fn mcp_full_lifecycle_over_stdio() {
     .await;
     assert_eq!(gates["gates"].as_array().unwrap().len(), 2);
     let report = tool_ok(&client, "pact_analyze", json!({ "domain": "proj" })).await;
-    assert!(report["reachability"]["unreachable"].as_array().unwrap().is_empty());
+    assert!(report["reachability"]["unreachable"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let status = tool_ok(&client, "pact_status", json!({ "domain": "proj" })).await;
     assert_eq!(status["counter_size"], 1);
     assert_eq!(status["archive_size"], 1);

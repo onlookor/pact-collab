@@ -83,11 +83,17 @@ impl<'a> Parser<'a> {
     }
 
     fn err_here(&self, message: impl Into<String>) -> SyntaxError {
-        SyntaxError { span: self.span_here(), message: message.into() }
+        SyntaxError {
+            span: self.span_here(),
+            message: message.into(),
+        }
     }
 
     fn err_eof(&self, message: impl Into<String>) -> SyntaxError {
-        SyntaxError { span: line_col(self.src, self.src.len()), message: message.into() }
+        SyntaxError {
+            span: line_col(self.src, self.src.len()),
+            message: message.into(),
+        }
     }
 
     /// 消耗一个标识符并返回其字符串（类型名/参与者名通用）。
@@ -102,7 +108,10 @@ impl<'a> Parser<'a> {
     fn err_prev(&self, message: impl Into<String>) -> SyntaxError {
         let idx = self.pos.saturating_sub(1);
         let off = self.toks.get(idx).map(|(_, s, _)| *s).unwrap_or(0);
-        SyntaxError { span: line_col(self.src, off), message: message.into() }
+        SyntaxError {
+            span: line_col(self.src, off),
+            message: message.into(),
+        }
     }
 
     fn expect(&mut self, tok: &Tok) -> PResult<()> {
@@ -141,7 +150,12 @@ impl<'a> Parser<'a> {
                 return Err(self.err_here(format!("重复类型声明：{ty}")));
             }
         }
-        Ok(RawDeclaration { types, precond_rules, gate_defs, seed_authority })
+        Ok(RawDeclaration {
+            types,
+            precond_rules,
+            gate_defs,
+            seed_authority,
+        })
     }
 
     // —— TypeSchema ::= "types" "{" TypeName { ";" TypeName } "}"（至少一个类型名）——
@@ -234,9 +248,7 @@ impl<'a> Parser<'a> {
             Tok::Reads => Action::Read,
             Tok::Consumes => Action::Consume,
             Tok::Produces => Action::Produce,
-            t => {
-                return Err(self.err_prev(format!("期望 reads/consumes/produces，遇到 {t:?}")))
-            }
+            t => return Err(self.err_prev(format!("期望 reads/consumes/produces，遇到 {t:?}"))),
         };
         let ty = TypeName(self.ident("类型名")?);
         let cond = self.gate_cond_opt()?;

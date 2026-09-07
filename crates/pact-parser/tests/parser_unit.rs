@@ -40,11 +40,13 @@ fn parse_full_lifecycle_domain() {
     // 论文 rev1：operator 的 reads test_report 无条件（via 子句已移除，
     // requirement 源类型由 seed_authority 独占注入）
     assert_eq!(
-        d.gates.get(&(par("operator"), Action::Read, tyn("test_report"))),
+        d.gates
+            .get(&(par("operator"), Action::Read, tyn("test_report"))),
         Some(&None)
     );
     assert_eq!(
-        d.gates.get(&(par("stakeholder"), Action::Consume, tyn("deployment"))),
+        d.gates
+            .get(&(par("stakeholder"), Action::Consume, tyn("deployment"))),
         Some(&None)
     );
     assert!(d
@@ -103,7 +105,11 @@ fn gate_expr_precedence_and_forms() {
     // 优先级 not > and > or：（count a >= 1 and exists b) or (not count b = 0)
     let expected = GateExpr::Or(
         Box::new(GateExpr::And(
-            Box::new(GateExpr::Count { ty: tyn("a"), op: CountOp::Ge, n: 1 }),
+            Box::new(GateExpr::Count {
+                ty: tyn("a"),
+                op: CountOp::Ge,
+                n: 1,
+            }),
             Box::new(GateExpr::Exists(tyn("b"))),
         )),
         Box::new(GateExpr::Not(Box::new(GateExpr::Count {
@@ -149,7 +155,8 @@ fn parenthesized_gate_expr_accepted() {
 #[test]
 fn emit_roundtrip_identity() {
     // 回写-再解析恒等：load(emit(load(src))) == load(src)
-    let cases: Vec<&str> = vec![LIFECYCLE,
+    let cases: Vec<&str> = vec![
+        LIFECYCLE,
         "types { s; w; t }
         preconditions { s → w; { w + s } → t }
         gates { p: reads w, produces t }
@@ -167,9 +174,8 @@ fn emit_roundtrip_identity() {
     for src in cases {
         let d = load_domain(src).unwrap();
         let text = pact_parser::emit_domain(&d);
-        let re = load_domain(&text).unwrap_or_else(|e| {
-            panic!("回写文本应可解析：{e:?}\n----\n{text}")
-        });
+        let re =
+            load_domain(&text).unwrap_or_else(|e| panic!("回写文本应可解析：{e:?}\n----\n{text}"));
         assert_eq!(d, re, "回写-再解析应恒等：\n----\n{text}");
     }
 }
@@ -218,7 +224,8 @@ fn errors_are_well_classified() {
         Err(Problem::WellFormedness(es)) if matches!(es.as_slice(), [DomainError::DuplicateGateClause { .. }])
     ));
     // 良构错误全部收集：未声明类型 ×2
-    let multi = "types { a } preconditions { a → b } gates { p: reads c } seed_authority { q: seeds d }";
+    let multi =
+        "types { a } preconditions { a → b } gates { p: reads c } seed_authority { q: seeds d }";
     match load_domain(multi) {
         Err(Problem::WellFormedness(es)) => assert_eq!(es.len(), 3, "应收集全部错误：{es:?}"),
         other => panic!("应报良构错误，实际 {other:?}"),
@@ -231,7 +238,11 @@ fn syntax_errors_with_location() {
     let missing = "types { a } preconditions { } gates { }";
     match parse_raw(missing) {
         Err(es) => {
-            assert!(es[0].message.contains("seed_authority"), "{}", es[0].message);
+            assert!(
+                es[0].message.contains("seed_authority"),
+                "{}",
+                es[0].message
+            );
         }
         Ok(_) => panic!("缺 seed_authority 段应报语法错误"),
     }
@@ -245,7 +256,8 @@ fn syntax_errors_with_location() {
         Ok(_) => panic!("坏箭头应报错"),
     }
     // 无法识别的符号（收集全部词法错误）
-    let bad_lex = "types { a; c } preconditions { a → c } gates { p: reads a @ } seed_authority { }";
+    let bad_lex =
+        "types { a; c } preconditions { a → c } gates { p: reads a @ } seed_authority { }";
     match parse_raw(bad_lex) {
         Err(es) => assert_eq!(es.len(), 1, "@ 应被报为词法错误"),
         Ok(_) => panic!("@ 应被拒绝"),

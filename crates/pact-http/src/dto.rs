@@ -112,7 +112,10 @@ pub struct EnabledOption {
 
 impl From<ProductionOption> for EnabledOption {
     fn from(o: ProductionOption) -> Self {
-        Self { ty: o.ty, witness_predecessors: o.witness_predecessors }
+        Self {
+            ty: o.ty,
+            witness_predecessors: o.witness_predecessors,
+        }
     }
 }
 
@@ -151,7 +154,11 @@ pub fn rule_error_detail(e: &RuleError) -> ErrorDetail {
             _ => None,
         })
         .unwrap_or(serde_json::Value::Null);
-    ErrorDetail { code, detail, message: rule_error_message(e) }
+    ErrorDetail {
+        code,
+        detail,
+        message: rule_error_message(e),
+    }
 }
 
 fn rule_error_code(e: &RuleError) -> String {
@@ -172,17 +179,39 @@ fn rule_error_code(e: &RuleError) -> String {
 fn rule_error_message(e: &RuleError) -> String {
     use RuleError::*;
     match e {
-        StaticGateDenied { participant, action, ty } => {
-            format!("参与者 {participant} 无 {} {ty} 的 gate 授权", action.as_str())
+        StaticGateDenied {
+            participant,
+            action,
+            ty,
+        } => {
+            format!(
+                "参与者 {participant} 无 {} {ty} 的 gate 授权",
+                action.as_str()
+            )
         }
-        GateConditionFailed { participant, action, ty, expr } => {
-            format!("参与者 {participant} 的 {} {ty} gate 条件不满足：{expr:?}", action.as_str())
+        GateConditionFailed {
+            participant,
+            action,
+            ty,
+            expr,
+        } => {
+            format!(
+                "参与者 {participant} 的 {} {ty} gate 条件不满足：{expr:?}",
+                action.as_str()
+            )
         }
-        PreconditionMismatch { ty, expected, provided } => {
+        PreconditionMismatch {
+            ty,
+            expected,
+            provided,
+        } => {
             let exp: Vec<String> = expected.iter().map(|t| t.0.clone()).collect();
             let prov: Vec<String> = provided.iter().map(|t| t.0.clone()).collect();
-            format!("前驱类型集合不匹配：Precond({ty}) = {{{}}}，实际提供 {{{}}}",
-                exp.join(", "), prov.join(", "))
+            format!(
+                "前驱类型集合不匹配：Precond({ty}) = {{{}}}，实际提供 {{{}}}",
+                exp.join(", "),
+                prov.join(", ")
+            )
         }
         SourceTypeProductionDenied { participant, ty } => {
             format!("{ty} 为源类型，{participant} 只能经 Rule-S（seed）注入")
@@ -190,7 +219,9 @@ fn rule_error_message(e: &RuleError) -> String {
         PredecessorNotOnCounter { token_id } => {
             format!("前驱 token {token_id} 不在 Counter 上（可能已被消费）")
         }
-        DuplicatePredecessor { token_id } => format!("前驱 token {token_id} 重复（Rule-P 要求互异）"),
+        DuplicatePredecessor { token_id } => {
+            format!("前驱 token {token_id} 重复（Rule-P 要求互异）")
+        }
         TokenNotOnCounter { token_id } => format!("目标 token {token_id} 不在 Counter 上"),
         SeedAuthorityDenied { participant, ty } => {
             format!("({participant}, {ty}) ∉ SeedAuthority：无种子注入权")
@@ -238,11 +269,16 @@ mod tests {
             participant: ParticipantName("dev".into()),
             ty: TypeName("requirement".into()),
         };
-        let body = ErrorBody { error: rule_error_detail(&e) };
+        let body = ErrorBody {
+            error: rule_error_detail(&e),
+        };
         let v = serde_json::to_value(&body).unwrap();
         assert_eq!(v["error"]["code"], "SeedAuthorityDenied");
         assert_eq!(v["error"]["detail"]["participant"], "dev");
-        assert!(v["error"]["message"].as_str().unwrap().contains("SeedAuthority"));
+        assert!(v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("SeedAuthority"));
     }
 
     #[test]

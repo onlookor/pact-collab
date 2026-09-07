@@ -62,7 +62,15 @@ async fn full_lifecycle_over_unix_socket() {
     // —— 域生命周期 ——
     let v = c.validate(DECL).await.unwrap();
     assert!(v.ok);
-    assert_eq!((v.types.len(), v.participants.len(), v.gates, v.seed_authority), (3, 4, 6, 1));
+    assert_eq!(
+        (
+            v.types.len(),
+            v.participants.len(),
+            v.gates,
+            v.seed_authority
+        ),
+        (3, 4, 6, 1)
+    );
     // 非法声明 → §6.3 结构化错误（不加载）
     match c.validate("types { a }").await {
         Err(ClientError::Api(d)) => assert!(matches!(d.code.as_str(), "WellFormedness" | "Syntax")),
@@ -71,7 +79,10 @@ async fn full_lifecycle_over_unix_socket() {
 
     let summary = c.load_domain("proj", DECL).await.unwrap();
     assert_eq!(summary.name, "proj");
-    assert_eq!((summary.types, summary.gates, summary.seed_authority), (3, 6, 1));
+    assert_eq!(
+        (summary.types, summary.gates, summary.seed_authority),
+        (3, 6, 1)
+    );
 
     let list = c.list_domains().await.unwrap();
     assert_eq!(list.domains, vec!["proj".to_owned()]);
@@ -82,7 +93,10 @@ async fn full_lifecycle_over_unix_socket() {
     assert!(info.terminated);
 
     // —— Rule-S ——
-    let seed = c.seed("proj", "external", "requirement", Some("REQ-1")).await.unwrap();
+    let seed = c
+        .seed("proj", "external", "requirement", Some("REQ-1"))
+        .await
+        .unwrap();
     assert_eq!(seed.token.ty.0, "requirement");
     let req_id = seed.token.id.0.clone();
 
@@ -147,21 +161,30 @@ async fn rule_rejections_map_to_structured_errors() {
     c.load_domain("proj", DECL).await.unwrap();
 
     // SeedAuthorityDenied（409）
-    let err = c.seed("proj", "developer", "requirement", None).await.unwrap_err();
+    let err = c
+        .seed("proj", "developer", "requirement", None)
+        .await
+        .unwrap_err();
     match err {
         ClientError::Api(d) => assert_eq!(d.code, "SeedAuthorityDenied"),
         other => panic!("期望 Api 错误：{other:?}"),
     }
 
     // PreconditionMismatch（409）：produce design 但无前驱
-    let err = c.produce("proj", "architect", "design", vec![], None).await.unwrap_err();
+    let err = c
+        .produce("proj", "architect", "design", vec![], None)
+        .await
+        .unwrap_err();
     match err {
         ClientError::Api(d) => assert_eq!(d.code, "PreconditionMismatch"),
         other => panic!("期望 Api 错误：{other:?}"),
     }
 
     // DomainNotFound（404）
-    let err = c.seed("ghost", "external", "requirement", None).await.unwrap_err();
+    let err = c
+        .seed("ghost", "external", "requirement", None)
+        .await
+        .unwrap_err();
     match err {
         ClientError::Api(d) => assert_eq!(d.code, "DomainNotFound"),
         other => panic!("期望 Api 错误：{other:?}"),
@@ -183,7 +206,10 @@ async fn sse_events_stream_notifications() {
     c.load_domain("proj", DECL).await.unwrap();
 
     let mut events = c.events("proj").await.unwrap();
-    let seed = c.seed("proj", "external", "requirement", None).await.unwrap();
+    let seed = c
+        .seed("proj", "external", "requirement", None)
+        .await
+        .unwrap();
 
     let n = tokio::time::timeout(Duration::from_secs(5), events.next_event())
         .await
@@ -206,18 +232,27 @@ async fn auth_tokens_gate_participant_endpoints() {
     // 无令牌 → 401
     let anon = Client::unix(sock.clone());
     anon.load_domain("proj", DECL).await.unwrap(); // 管理端点不受令牌约束
-    let err = anon.seed("proj", "external", "requirement", None).await.unwrap_err();
+    let err = anon
+        .seed("proj", "external", "requirement", None)
+        .await
+        .unwrap_err();
     match err {
         ClientError::Api(d) => assert_eq!(d.code, "Unauthorized"),
         other => panic!("期望 Api 错误：{other:?}"),
     }
     // 错令牌 → 401
     let wrong = Client::unix(sock.clone()).with_bearer("wrong");
-    let err = wrong.seed("proj", "external", "requirement", None).await.unwrap_err();
+    let err = wrong
+        .seed("proj", "external", "requirement", None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ClientError::Api(d) if d.code == "Unauthorized"));
     // 正确令牌 → 放行
     let ok = Client::unix(sock).with_bearer("sekret");
-    let resp = ok.seed("proj", "external", "requirement", None).await.unwrap();
+    let resp = ok
+        .seed("proj", "external", "requirement", None)
+        .await
+        .unwrap();
     assert_eq!(resp.token.ty.0, "requirement");
 }
 
