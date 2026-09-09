@@ -288,6 +288,26 @@ mod unit {
         assert!(state.counter.contains_key(&tid("W1")));
         assert!(state.counter.contains_key(&tid("S1")));
         assert_eq!(state.counter.len(), 3);
+        // 同类型两枚不同实例冒充一个前驱：W 需要 {S}，给了两枚不同的 S。
+        // BTreeSet 按类型去重后 provided == expected == {S}，
+        // 唯 provided.len() != predecessors.len() 能拦下（rev2 §1.4 严格语义：一类型恰一实例）。
+        // 若删掉该条件此用例会误放行——锁定其非冗余性。
+        state
+            .counter
+            .insert(tid("S2"), token("S2", "S", "external", &[]));
+        assert!(matches!(
+            rule_p(
+                &d,
+                &state,
+                &par("producer"),
+                &tyn("W"),
+                &[tid("S1"), tid("S2")],
+                ThingRef::none(),
+                tid("n"),
+                "now".into()
+            ),
+            Err(RuleError::PreconditionMismatch { .. })
+        ));
     }
 
     // —— Rule-R / Rule-E ——

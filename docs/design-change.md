@@ -1,5 +1,13 @@
 # 设计变更记录
 
+## 2026-09-09（第 11 轮，CI 偶发失败修正：场景 B Counter 卫生断言）
+
+- **现象**：GitHub Actions 上 `unattended_e2e::unattended_scenarios_to_terminated` 偶发失败——`max_counter = 3` 违反"应恒 ≤ 2"断言；同轮本地（20+ 连跑）与全量回归均未复现。
+- **根因（非引擎缺陷，为测试断言过强）**：场景 B 的 P1 纪律中，`pact_produce` 与 consume-after-produce 的 `pact_consume` 是同一 agent 内的两次串行调用，窗口内 Counter = 2；若下一阶段 agent（被 produces 推送或轮询唤醒）在该窗口内完成自己的 Rule-P，Counter 合法地达到 3（理论链式重叠上界为类型数 5）。Rule-P 只要求前驱在 Counter 上（不被消费），且 §3.1 规定 `produces` 门不接受条件子句——该窗口**语义上不可消除**，窗口重叠是 PACT 自治语义下的合法执行。本地 20 连跑通过纯属调度时序有利。
+- **修正**：场景 B 卫生断言由 `≤ 2` 放宽为结构上界 `≤ 类型数 5`（每类型至多一实例：每类型仅一个 produce 门持有者 + P1 同迭代串行 produce→consume），注释记录竞态分析与 CI 实测证据。场景 A（单 agent 串行，无并发生产者）的 `≤ 2` 为真不变量，保留不动。
+- **验证**：unattended_e2e 本地 10 连跑稳定；workspace 全量（104 项）+ fmt/clippy 清零。
+- **顺带**：design.md §11 阶段 5 验收表述同步修正（场景 B 卫生上界）。
+
 ## 2026-09-09（第 10 轮，论文 rev2 对齐重构）
 
 - **论文切换**：范式规范源由 `pactv1_rev1.md` 切换为 `pactv1_rev2.md`（design.md 头部引用更新）。rev2 实质差异六项：§1.4.4 良构约束扩展（新增 LHS Uniqueness、Non-Empty LHS；自环合法）、Rule-P Note（前驱互异只按 TokenId）、§1.4.3 Advisory（Seed/Produce 重叠为警告非违规）、§1.7.3 PosNat（count 字面量 `[1-9][0-9]*`）、§3.1 六项良构约束重述、Appendix A.5 重写（三元输出 + 附录 D 前提顺序）。
