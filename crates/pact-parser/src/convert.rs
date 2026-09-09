@@ -4,20 +4,31 @@ use crate::parser::{parse_raw, Problem, RawDeclaration};
 use pact_core::{validate_domain, Action, Domain, DomainError, ParticipantName, TypeName};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// 规范化 + 良构校验。收集全部错误（§1.4.4 前置唯一性、子句唯一性、
-/// produces 无条件、引用封闭性）。
+/// 规范化 + 良构校验。收集全部错误（§1.4.4 RHS/LHS Uniqueness、
+/// 子句唯一性、produces 无条件；其余 §3.1 约束由 validate_domain 报出）。
 pub fn build_domain(raw: &RawDeclaration) -> Result<Domain, Vec<DomainError>> {
     let mut errors = Vec::new();
 
     let types: BTreeSet<TypeName> = raw.types.iter().cloned().collect();
 
-    // 前置规则：按 rhs 分组；同一 rhs 多条规则 → §1.4.4 违例
+    // 前置规则：按 rhs 分组；同一 rhs 多条规则 → §1.4.4 RHS Uniqueness 违例
     let mut preconditions: BTreeMap<TypeName, BTreeSet<TypeName>> = BTreeMap::new();
     let mut seen_rhs: BTreeSet<TypeName> = BTreeSet::new();
     for (lhs, rhs) in &raw.precond_rules {
         if !seen_rhs.insert(rhs.clone()) {
             errors.push(DomainError::DuplicatePrecondRule { ty: rhs.clone() });
             continue;
+        }
+        // §1.4.4 LHS Uniqueness：单一规则内前驱类型名须互异（`{A + A} → B` 非法）。
+        // 必须在原始序列上检测——BTreeSet 收集会静默去重，丢失违例信息。
+        let mut seen_lhs: BTreeSet<TypeName> = BTreeSet::new();
+        for x in lhs {
+            if !seen_lhs.insert(x.clone()) {
+                errors.push(DomainError::DuplicatePrecondLhs {
+                    ty: rhs.clone(),
+                    lhs_ty: x.clone(),
+                });
+            }
         }
         preconditions.insert(rhs.clone(), lhs.iter().cloned().collect());
     }

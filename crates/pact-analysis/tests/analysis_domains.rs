@@ -2,10 +2,10 @@
 //! + 构造域的正/负用例（论文 Appendix A 各算法的触发条件）。
 
 use pact_analysis::{
-    consumption_reachability, gate_coverage, is_reachable, reachability,
-    source_production_legality, stranding_risk, structural_deadlock, StrandingRisk,
+    consumption_reachability, gate_coverage, is_reachable, precondition_wf, reachability,
+    stranding_risk, structural_deadlock, StrandingRisk, WfWarning,
 };
-use pact_core::{Action, Domain, DomainError, GateExpr, ParticipantName, TypeName};
+use pact_core::{Action, CountOp, Domain, DomainError, GateExpr, ParticipantName, TypeName};
 use pact_parser::load_domain;
 use std::collections::BTreeSet;
 
@@ -135,8 +135,10 @@ fn lifecycle_all_analyses_clean() {
     assert!(consumption_reachability(&d).is_empty(), "消费可达完整");
     // A.4：链式无环，无死锁分量
     assert!(structural_deadlock(&d).is_empty(), "无结构死锁");
-    // A.5：良构域无源类型生产
-    assert!(source_production_legality(&d).is_empty());
+    // A.5：良构且无 Seed/Produce 重叠警告
+    let wf = precondition_wf(&d);
+    assert!(wf.well_formed);
+    assert!(wf.warnings.is_empty(), "无警告：{:?}", wf.warnings);
     // A.6：论文 rev1 版无 via 条件，无搁浅风险
     assert!(stranding_risk(&d).is_empty(), "无搁浅风险");
 }
@@ -156,7 +158,9 @@ fn healthcare_stranding_risk_reported() {
     assert!(gate_coverage(&d).is_empty());
     assert!(consumption_reachability(&d).is_empty());
     assert!(structural_deadlock(&d).is_empty());
-    assert!(source_production_legality(&d).is_empty());
+    let wf = precondition_wf(&d);
+    assert!(wf.well_formed);
+    assert!(wf.warnings.is_empty(), "无警告：{:?}", wf.warnings);
 
     // A.6：lab_tech / radiologist 读 diagnosis via triage；
     // triage 是 diagnosis 的直接前驱，physician 持有 consumes triage
@@ -231,7 +235,9 @@ fn discriminating_unconsumable_and_stranding() {
     assert!(reachability(&d).unreachable.is_empty());
     assert!(gate_coverage(&d).is_empty());
     assert!(structural_deadlock(&d).is_empty());
-    assert!(source_production_legality(&d).is_empty());
+    let wf = precondition_wf(&d);
+    assert!(wf.well_formed);
+    assert!(wf.warnings.is_empty(), "无警告：{:?}", wf.warnings);
 }
 
 // ============================================================
@@ -344,8 +350,9 @@ fn gate_coverage_reports_uncovered_non_source() {
 }
 
 #[test]
-fn source_production_legality_reports_ill_formed() {
-    // 非良构域（未经 validate_domain 拒绝，A.5 独立复核）
+fn precondition_wf_reports_ill_formed() {
+    // 非良构域（未经 validate_domain 拒绝，A.5 独立复核）：
+    // p 对源类型 a 持有 produces gate（§3.1 约束 6）
     let d = tiny_domain(
         &["a", "b"],
         &[(&["a"], "b")],
@@ -355,18 +362,108 @@ fn source_production_legality_reports_ill_formed() {
         ],
         &[],
     );
-    assert_eq!(
-        source_production_legality(&d),
-        vec![pact_analysis::SourceTypeProduction {
-            participant: par("p"),
-            ty: tyn("a")
-        }]
-    );
-    // 同一违例在 core 良构校验下的对应错误
+    let wf = precondition_wf(&d);
+    assert!(!wf.well_formed);
+    assert!(matches!(
+        wf.violations.as_slice(),
+        [DomainError::SourceTypeProduceGate { .. }]
+    ));
+    assert!(wf.warnings.is_empty());
+    // 同一违例在 core 良构校验下的对应错误（A.5 委托 validate_domain）
     assert!(matches!(
         pact_core::validate_domain(&d),
         Err(es) if matches!(es.as_slice(), [DomainError::SourceTypeProduceGate { .. }])
     ));
+}
+
+#[test]
+fn precondition_wf_reports_empty_lhs_and_zero_count() {
+    // 空 LHS（§3.1 约束 3 Non-Empty LHS）：程序化构造的 Domain 绕过解析期检查，
+    // 由 validate_domain 声明期防御捕获（b 上不放 produce，避免叠加源生产违例）
+    let d = tiny_domain(
+        &["a", "b"],
+        &[(&[], "b")],
+        &[("p", Action::Read, "b", None)],
+        &[],
+    );
+    let wf = precondition_wf(&d);
+    assert!(!wf.well_formed);
+    assert!(matches!(
+        wf.violations.as_slice(),
+        [DomainError::EmptyPrecondLhs { .. }]
+    ));
+
+    // 零计数字面量（§3.1 约束 5 Positive-Nat Literal）：count a >= 0 非法
+    // （嵌套在 Not 内也应被递归捕获）
+    let d = tiny_domain(
+        &["a", "b"],
+        &[(&["a"], "b")],
+        &[
+            ("p", Action::Produce, "b", None),
+            (
+                "q",
+                Action::Read,
+                "b",
+                Some(GateExpr::Not(Box::new(GateExpr::Count {
+                    ty: tyn("a"),
+                    op: CountOp::Ge,
+                    n: 0,
+                }))),
+            ),
+        ],
+        &[("ext", "a")],
+    );
+    let wf = precondition_wf(&d);
+    assert!(!wf.well_formed);
+    assert!(matches!(
+        wf.violations.as_slice(),
+        [DomainError::ZeroCountLiteral { .. }]
+    ));
+}
+
+#[test]
+fn precondition_wf_warns_seed_produce_overlap() {
+    // §1.4.3 Advisory：p 对非源类型 b 既持 seed 权威又持 produces gate → 警告非违规
+    let d = tiny_domain(
+        &["a", "b"],
+        &[(&["a"], "b")],
+        &[("p", Action::Produce, "b", None)],
+        &[("p", "b")],
+    );
+    let wf = precondition_wf(&d);
+    assert!(wf.well_formed, "重叠只是警告：{:?}", wf.violations);
+    assert_eq!(
+        wf.warnings,
+        vec![WfWarning::SeedProduceOverlap {
+            participant: par("p"),
+            ty: tyn("b")
+        }]
+    );
+
+    // 源类型上的 seed 权威不触发警告（seed 本就是源类型的合法入口）
+    let d = tiny_domain(
+        &["a", "b"],
+        &[(&["a"], "b")],
+        &[("p", Action::Produce, "b", None)],
+        &[("ext", "a")],
+    );
+    let wf = precondition_wf(&d);
+    assert!(wf.well_formed);
+    assert!(wf.warnings.is_empty());
+}
+
+#[test]
+fn self_loop_precondition_is_well_formed() {
+    // §1.4.4：自环 A → A 合法（rhs 出现在自己的 lhs 中）
+    let d = tiny_domain(
+        &["a", "b"],
+        &[(&["a"], "b"), (&["a", "b"], "a")],
+        &[("p", Action::Produce, "b", None)],
+        &[("ext", "a")],
+    );
+    let wf = precondition_wf(&d);
+    assert!(wf.well_formed, "自环合法：{:?}", wf.violations);
+    assert!(wf.warnings.is_empty());
 }
 
 #[test]

@@ -344,7 +344,7 @@ mod unit {
         let errs = validate_domain(&d).unwrap_err();
         assert!(matches!(
             errs.as_slice(),
-            [DomainError::UndeclaredType { referenced_by: "gate_condition", ty }] if *ty == tyn("X")
+            [DomainError::UndeclaredType { referenced_by, ty }] if referenced_by == "gate_condition" && *ty == tyn("X")
         ));
         // produces 携带条件
         let d2 = {

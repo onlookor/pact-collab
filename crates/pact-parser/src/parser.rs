@@ -5,7 +5,11 @@
 //! （types 段至少一个类型名，与文法一致）。段序与段落完整性严格要求。
 //!
 //! GateExpr 优先级约定（论文文法未规定结合性）：not > and > or，
-//! 同级左结合；无括号形式（忠于文法 §1.7.3）。
+//! 同级左结合。分组括号为可用性扩展（D16，emit 回写需要）。
+//!
+//! 解析期直接拒绝的良构违例（论文 §3.1）：空 lhs（约束 3 Non-Empty LHS）、
+//! count 字面量非 PosNat（约束 5）。其余约束（RHS/LHS Uniqueness、Type Closure、
+//! Source-Production）在 pact-core 判定（D14、D17 三层强制）。
 
 use crate::lexer::{lex, line_col, Span, SyntaxError, Tok};
 use pact_core::{Action, CountOp, GateExpr, ParticipantName, TypeName};
@@ -126,10 +130,38 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn nat(&mut self) -> PResult<u64> {
-        match self.next_tok()? {
-            Tok::Nat(n) => Ok(n),
-            t => Err(self.err_prev(format!("期望自然数，遇到 {t:?}"))),
+    /// PosNat 字面量（论文 §1.7.3、§3.1 约束 5）：`[1-9][0-9]*`。
+    /// 拒绝 0（Normalization rule：`count T = 0` ≡ `not exists T`，
+    /// `count T >= 0` ≡ true，均须语法拒绝）与前导零（非规范写法）。
+    fn pos_nat(&mut self) -> PResult<u64> {
+        let (tok, start, end) = match self.toks.get(self.pos) {
+            Some(t) => t.clone(),
+            None => return Err(self.err_eof("期望正整数（PosNat），但到达文件末尾")),
+        };
+        self.pos += 1;
+        match tok {
+            Tok::Nat(n) => {
+                let lit = &self.src[start..end];
+                let span = line_col(self.src, start);
+                if n == 0 {
+                    return Err(SyntaxError {
+                        span,
+                        message: "count 字面量必须为正整数（PosNat，§1.7.3）：0 非法；\
+                                  缺席语义请用 not exists T（Normalization rule）"
+                            .to_owned(),
+                    });
+                }
+                if lit.starts_with('0') {
+                    return Err(SyntaxError {
+                        span,
+                        message: format!(
+                            "count 字面量必须匹配 PosNat `[1-9][0-9]*`（§3.1）：{lit} 含前导零"
+                        ),
+                    });
+                }
+                Ok(n)
+            }
+            t => Err(self.err_prev(format!("期望正整数（PosNat），遇到 {t:?}"))),
         }
     }
 
@@ -212,6 +244,14 @@ impl<'a> Parser<'a> {
     fn precondition_graph(&mut self) -> PResult<Vec<(Vec<TypeName>, TypeName)>> {
         self.section(&Tok::Preconditions, "preconditions", |p| {
             let lhs = if p.eat(&Tok::LBrace) {
+                // §1.4.4 Non-Empty LHS：空花括号 lhs 语法层拒绝
+                //（源类型仅由规则缺席定义，不由空规则定义）
+                if p.check(&Tok::RBrace) {
+                    return Err(p.err_here(
+                        "前置规则的 lhs 不得为空（§1.4.4 Non-Empty LHS）；\
+                         源类型请直接省略其前置规则",
+                    ));
+                }
                 let mut names = vec![TypeName(p.ident("类型名")?)];
                 while p.eat(&Tok::Plus) {
                     names.push(TypeName(p.ident("类型名")?));
@@ -316,7 +356,7 @@ impl<'a> Parser<'a> {
                 self.expect(&Tok::Eq)?;
                 CountOp::Eq
             };
-            let n = self.nat()?;
+            let n = self.pos_nat()?;
             return Ok(GateExpr::Count { ty, op, n });
         }
         Err(self.err_here("期望 via / exists / count / not 构成条件表达式"))

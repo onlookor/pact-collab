@@ -11,6 +11,8 @@ pub enum GateExpr {
     /// via T_a：溯源敏感见证检查（实例级，非类型级，§1.4.0）。
     Via(TypeName),
     Exists(TypeName),
+    /// count T {>=,=} n。n 受 §1.7.3 PosNat 约束（n ≥ 1）：0 字面量在解析期拒绝，
+    /// validate_domain 以 DomainError::ZeroCountLiteral 二次防御（程序化构造路径）。
     Count {
         ty: TypeName,
         op: CountOp,
@@ -66,6 +68,21 @@ impl GateExpr {
                 v
             }
             GateExpr::Not(e) => e.type_refs(),
+        }
+    }
+
+    /// count 字面量为 0 的原子所引用的类型名（§3.1 约束 5 Positive-Nat
+    /// Literal 校验用）。递归覆盖 And/Or/Not 内嵌套的 Count 原子。
+    pub fn zero_count_refs(&self) -> Vec<&TypeName> {
+        match self {
+            GateExpr::Count { ty, n: 0, .. } => vec![ty],
+            GateExpr::Via(_) | GateExpr::Exists(_) | GateExpr::Count { .. } => vec![],
+            GateExpr::And(a, b) | GateExpr::Or(a, b) => {
+                let mut v = a.zero_count_refs();
+                v.extend(b.zero_count_refs());
+                v
+            }
+            GateExpr::Not(e) => e.zero_count_refs(),
         }
     }
 }

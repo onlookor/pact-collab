@@ -214,6 +214,16 @@ async fn mcp_full_lifecycle_over_stdio() {
         .as_array()
         .unwrap()
         .is_empty());
+    // A.5 报告（rev2：三元结构 Violations / Warnings / WF(D)）
+    assert_eq!(report["precondition_wf"]["well_formed"], true);
+    assert!(report["precondition_wf"]["violations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(report["precondition_wf"]["warnings"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     let status = tool_ok(&client, "pact_status", json!({ "domain": "proj" })).await;
     assert_eq!(status["counter_size"], 1);
     assert_eq!(status["archive_size"], 1);

@@ -565,16 +565,30 @@ fn offline_analyze(json: bool, file: &PathBuf) -> ExitCode {
         Err(p) => return fail(json, problem_detail(&p)),
     };
     let report = AnalysisReport {
+        precondition_wf: pact_analysis::precondition_wf(&domain),
         reachability: pact_analysis::reachability(&domain),
         gate_coverage: pact_analysis::gate_coverage(&domain),
         consumption_reachability: pact_analysis::consumption_reachability(&domain),
         structural_deadlock: pact_analysis::structural_deadlock(&domain),
-        source_production_legality: pact_analysis::source_production_legality(&domain),
         stranding_risk: pact_analysis::stranding_risk(&domain),
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&report).unwrap());
     } else {
+        // A.5 先输出（Appendix D：良构性是其余分析的前提）
+        println!(
+            "precondition_wf: {}（{} 项违规，{} 项警告）",
+            if report.precondition_wf.well_formed {
+                "良构"
+            } else {
+                "非良构"
+            },
+            report.precondition_wf.violations.len(),
+            report.precondition_wf.warnings.len()
+        );
+        for w in &report.precondition_wf.warnings {
+            println!("  warning: {w}");
+        }
         println!(
             "reachability: {} 源类型，{} 可达，{} 不可达",
             report.reachability.seed_types.len(),
@@ -598,10 +612,6 @@ fn offline_analyze(json: bool, file: &PathBuf) -> ExitCode {
         println!(
             "structural_deadlock: {} 个强连通分量",
             report.structural_deadlock.len()
-        );
-        println!(
-            "source_production_legality: {} 处源类型生产违例",
-            report.source_production_legality.len()
         );
         println!("stranding_risk: {} 处滞留风险", report.stranding_risk.len());
     }

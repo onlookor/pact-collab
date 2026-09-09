@@ -1,6 +1,6 @@
 //! 引擎查询视图（线上格式设计 §6.5 / §9；三接口共享）。
 
-use pact_analysis::{DeadlockComponent, ReachabilityReport, SourceTypeProduction, StrandingRisk};
+use pact_analysis::{DeadlockComponent, PreconditionWfReport, ReachabilityReport, StrandingRisk};
 use pact_core::{Action, ArchiveEntry, GateExpr, Token, TypeName};
 use serde::{Deserialize, Serialize};
 
@@ -47,14 +47,16 @@ pub struct DomainSummary {
 }
 
 /// 六项静态分析聚合报告（论文 Appendix A.1–A.6）。
+/// A.5 置于首位：它是其余分析的前提（Appendix D），须先修正违规再解读其余结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisReport {
+    /// A.5：§3.1 良构约束违规 + Seed/Produce 重叠警告。
+    pub precondition_wf: PreconditionWfReport,
     pub reachability: ReachabilityReport,
     /// A.2：无任何 producer 的非源类型。
     pub gate_coverage: Vec<TypeName>,
     /// A.3：无任何 consumer 的类型。
     pub consumption_reachability: Vec<TypeName>,
     pub structural_deadlock: Vec<DeadlockComponent>,
-    pub source_production_legality: Vec<SourceTypeProduction>,
     pub stranding_risk: Vec<StrandingRisk>,
 }

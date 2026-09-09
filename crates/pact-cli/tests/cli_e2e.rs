@@ -273,7 +273,17 @@ fn offline_commands_without_daemon() {
         .as_array()
         .unwrap()
         .is_empty());
-    assert!(report["source_production_legality"]
+    // A.5 报告为三元结构（well_formed / violations / warnings；
+    // 结构体字段序上置于首位，JSON 键序由 serde_json 决定，不在此断言）
+    assert_eq!(
+        report["precondition_wf"]["well_formed"], true,
+        "A.5 报告应良构"
+    );
+    assert!(report["precondition_wf"]["violations"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(report["precondition_wf"]["warnings"]
         .as_array()
         .unwrap()
         .is_empty());
@@ -283,7 +293,9 @@ fn offline_commands_without_daemon() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("reachability"));
+    let human = String::from_utf8_lossy(&out.stdout);
+    assert!(human.contains("precondition_wf: 良构"), "人类输出: {human}");
+    assert!(human.contains("reachability"));
 
     // —— compose（离线，≥2 片段；片段为完整四段声明） ——
     let frag1 = dir.path().join("frag1.pact");

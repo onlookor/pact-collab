@@ -10,10 +10,16 @@
 //! | A.2 生产覆盖 | 每个非源类型是否至少有一个 producer | O(\|Types\| + \|Pre\| + \|GateEntries\|) |
 //! | A.3 消费可达性 | 每个类型（含源类型）是否至少有一个 consumer | O(\|GateEntries\|) |
 //! | A.4 结构死锁 | 前置图是否含无种子入口的强连通分量 | O(\|Types\| + \|Pre\|) |
-//! | A.5 源生产合法性 | 是否存在指向源类型的 produces 子句 | O(\|Types\| + \|Pre\| + \|GateEntries\|) |
+//! | A.5 良构性 | §3.1 六项约束是否满足；Seed/Produce 重叠警告 | O(\|Types\| + \|Pre\| + \|GateEntries\|) |
 //! | A.6 搁浅风险 | via 见证能否先于依赖动作被消费 | O(\|GateConditions\| × \|Types\|) 无环；有环保守 |
+//!
+//! A.5 是其余分析的前提（论文 Appendix D）：违规会破坏 A.1–A.4、A.6 的假设，
+//! 故聚合报告把它放在首位，须先修正违规再解读其余结果。
 
-use pact_core::{is_source_type, Action, Domain, GateExpr, ParticipantName, TypeName};
+use pact_core::{
+    is_source_type, validate_domain, Action, Domain, DomainError, GateExpr, ParticipantName,
+    TypeName,
+};
 use petgraph::algo::{kosaraju_scc, toposort};
 use petgraph::graphmap::DiGraphMap;
 use petgraph::Direction;
@@ -171,29 +177,71 @@ pub fn structural_deadlock(domain: &Domain) -> Vec<DeadlockComponent> {
     out
 }
 
-// ============ A.5 源生产合法性 ============
+// ============ A.5 前置图与源生产良构性 ============
 
-/// A.5 报告：一条指向源类型的 produces 子句。
+/// A.5 咨询性警告（论文 §1.4.3 Advisory）：非违规，不阻止加载。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceTypeProduction {
-    pub participant: ParticipantName,
-    pub ty: TypeName,
+pub enum WfWarning {
+    /// SEED_PRODUCE_OVERLAP：同一参与者对同一**非源**类型既持 SeedAuthority
+    /// 又持 produces gate。规范上安全（seed 实例可作前驱被消费，produce 路径
+    /// 产出新实例），但通常是建模混淆的信号，应复核意图。
+    SeedProduceOverlap {
+        participant: ParticipantName,
+        ty: TypeName,
+    },
 }
 
-/// A.5 Source-Production Legality（论文 Appendix A.5）：
-/// 报告全部 `produces T`（T 为源类型）的子句。这是 Rule-P 前提
-/// `Precond(T) ≠ ∅` 的静态对应面；良构域（经 core::validate_domain，
-/// §3.1 WF-3）恒为空，本分析用于独立复核（如组合后终检、工具链报告）。
-pub fn source_production_legality(domain: &Domain) -> Vec<SourceTypeProduction> {
-    domain
+impl std::fmt::Display for WfWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WfWarning::SeedProduceOverlap { participant, ty } => {
+                write!(f, "SEED_PRODUCE_OVERLAP: {participant} 对非源类型 {ty} 同时持有 seed 权威与 produces gate")
+            }
+        }
+    }
+}
+
+/// A.5 报告（论文 Appendix A.5 的三元输出 Violations / Warnings / WF(D)）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreconditionWfReport {
+    /// WF(D)：无违规即良构。
+    pub well_formed: bool,
+    /// 良构违规。复用 core::DomainError 单一分类（与 `:load` 的错误同源）。
+    /// 其中 DuplicatePrecondRule / DuplicatePrecondLhs 在 `&Domain` 输入下由
+    /// BTreeMap 键唯一与 BTreeSet 去重结构性排除，其强制点在 build_domain。
+    pub violations: Vec<DomainError>,
+    pub warnings: Vec<WfWarning>,
+}
+
+/// A.5 Precondition & Source-Production Well-Formedness（论文 Appendix A.5）：
+/// 校验 §3.1 六项良构约束，并给出 Seed/Produce 重叠警告。
+/// 约束检查委托 core::validate_domain（单一判定源，避免逻辑重复）；
+/// 本分析是其余分析的前提（Appendix D：A.5 应先于 A.1–A.4、A.6 运行，
+/// 违规会破坏它们的假设）。
+pub fn precondition_wf(domain: &Domain) -> PreconditionWfReport {
+    let violations = validate_domain(domain).err().unwrap_or_default();
+
+    let produced: BTreeSet<&TypeName> = domain
         .gates
+        .keys()
+        .filter(|(_, a, _)| *a == Action::Produce)
+        .map(|(_, _, t)| t)
+        .collect();
+    let warnings = domain
+        .seed_authority
         .iter()
-        .filter(|((_, a, t), _)| *a == Action::Produce && is_source_type(domain, t))
-        .map(|((p, _, t), _)| SourceTypeProduction {
+        .filter(|(_, t)| !is_source_type(domain, t) && produced.contains(&t))
+        .map(|(p, t)| WfWarning::SeedProduceOverlap {
             participant: p.clone(),
             ty: t.clone(),
         })
-        .collect()
+        .collect();
+
+    PreconditionWfReport {
+        well_formed: violations.is_empty(),
+        violations,
+        warnings,
+    }
 }
 
 // ============ A.6 搁浅风险 ============

@@ -1,6 +1,6 @@
 # PACT 实现需求
 
-来源：`docs/pactv1_rev1.md`（范式论文最新版）+ 用户指示。本文件只保留当前有效需求，变更历史记入 `docs/requirements-change.md`。
+来源：`docs/pactv1_rev2.md`（范式论文最新版）+ 用户指示。本文件只保留当前有效需求，变更历史记入 `docs/requirements-change.md`。
 
 ## 1. 项目目标
 
@@ -32,25 +32,26 @@
 
 ### FR4 范式核心语义（pact-core）
 - 六原语：Token、Participant、Precondition、Gate、Counter、Exhaustion。
-- SOS 规则：Rule-P（生产，前驱不被消费；前提含 `Precond(T) ≠ ∅`——源类型不可生产，rev1 §1.4）、Rule-R（读取，非破坏性）、Rule-E（消费，显式、无级联、入 Archive）、Rule-S（种子注入，豁免前置条件，受 SeedAuthority 约束）、Rule-W（等待）、Rule-T（终止，rev1 Rule-P-enabled 三条件定义）。
+- SOS 规则：Rule-P（生产，前驱不被消费；前提含 `Precond(T) ≠ ∅`——源类型不可生产，rev2 §1.4；前驱实例互异只按 TokenId 判定——Rule-P Note）、Rule-R（读取，非破坏性）、Rule-E（消费，显式、无级联、入 Archive）、Rule-S（种子注入，豁免前置条件，受 SeedAuthority 约束）、Rule-W（等待）、Rule-T（终止，rev2 Rule-P-enabled 三条件定义）。
 - GateHolds 统一准入谓词（§1.4.0）：静态 gate + 条件子句合取；仅作用于 read/consume。
 - `via` 条件的溯源敏感见证检查：见证必须同时在 Counter 上且 id 出现在目标 token 的 `depends_on` 中（实例级，非类型级）。
 - 零隐式动作原则：Counter 变更当且仅当显式的 Rule-P/E/S。
 
 ### FR5 GateExpr 条件语言（§1.7.3）
 - 原子：`via T`、`exists T`、`count T >= n`、`count T = n`；组合：`and` / `or` / `not`。
+- count 字面量受 PosNat 约束（§1.7.3/§3.1）：n 必须匹配 `[1-9][0-9]*`——0 与前导零均为文法违例（`count T = 0` ≡ `not exists T`、`count T >= 0` ≡ true，按 Normalization rule 须拒绝；缺席语义用 `not exists T` 表达）。
 - 条件为纯函数，搜索空间限于当前 Counter（+ 目标 token 的 depends_on），禁止引用 Archive 与外部状态。
 
 ### FR6 域声明文法（§3.1）
 - 解析 `types` / `preconditions` / `gates` / `seed_authority` 四段式声明。
-- 良构校验：前置条件唯一性（§1.4.4）、类型引用封闭性（Pre/Gates 引用的类型必须声明）、`produces` 不接受条件子句、源类型（无前置规则）不得声明 produce gate（rev1 §3.1 WF-3——源类型唯一入口为 SeedAuthority）。
+- 良构校验为 §3.1 六项约束（rev2）：(1) RHS Uniqueness——同一 rhs 至多一条前置规则；(2) LHS Uniqueness——单一规则内前驱类型名互异（`{A + A} → B` 非法，自环 `A → A` 合法）；(3) Non-Empty LHS——`{ } → T` 非法，源类型仅由规则缺席定义；(4) Type Closure——引用类型必须声明；(5) Positive-Nat Literal——count 字面量非 0；(6) Source-Production Constraint——源类型不得声明 produce gate（源类型唯一入口为 SeedAuthority）。解析期语法拒绝（约束 2/3/5 的违例形式）+ 声明期 `validate_domain` 防御（覆盖程序化构造/组合出的域）。
 - `via` 糖形式与 `when` 形式等价（§1.7.4）。
 
 ### FR7 静态分析（附录 A，全部六项）
-- 可达性（O(|V|+|E|)）、Gate 覆盖、消费可达性、结构死锁（Tarjan SCC + 种子入口检查）、源生产合法性（rev1 A.5，独立复核源类型无 produce gate）、搁浅风险（无环精确 / 有环保守过近似）。
+- 可达性（O(|V|+|E|)）、Gate 覆盖、消费可达性、结构死锁（Tarjan SCC + 种子入口检查）、前置与源生产良构性（rev2 A.5——§3.1 六项约束的违规清单 + Seed/Produce 重叠咨询性警告，三元输出 Violations/Warnings/WF(D)，且为其余分析的前提，附录 D 顺序置于报告首位）、搁浅风险（无环精确 / 有环保守过近似）。
 
 ### FR8 片段组合（§1.8）
-- 并行组合 = 四元组按集合并；四条件一致性检查（C1 前置唯一性保持、C2 共享类型前置一致、C3 gate 条件语法同一性、C4 源生产封闭——rev1）。
+- 并行组合 = 四元组按集合并；四条件一致性检查（C1 前置唯一性保持、C2 共享类型前置一致、C3 gate 条件语法同一性、C4 源生产封闭——rev2）。
 
 ### FR9 持久化与审计
 - 事件溯源：Rule-S/P/E 均为不可变事件；append-only JSONL 事件日志为唯一真相源。

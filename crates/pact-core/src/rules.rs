@@ -82,12 +82,13 @@ pub fn rule_s(
     })
 }
 
-/// Rule-P（生产，论文 rev1 §1.4）。前提逐项：
+/// Rule-P（生产，论文 §1.4）。前提逐项：
 /// 1. 静态 produce gate：Gate(p) ⊇ {produce: T}；
 /// 2. Precond(T) ≠ ∅（源类型排除——源类型只能经 Rule-S 注入，§1.4.3）；
-/// 3. 前驱实例互异（tᵢ ≠ tⱼ）；
+/// 3. 前驱实例互异（tᵢ ≠ tⱼ）——只按 TokenId 判定（§1.4 Rule-P Note）；
+///    §1.4.4 LHS Uniqueness 保证 Precond(T) 内类型互异，无需类型级去重；
 /// 4. 前驱均在 Counter 上（多重集包含）；
-/// 5. 前驱类型集合与 Precond(T) 精确匹配（AND 语义）。
+/// 5. 前驱类型集合与 Precond(T) 精确匹配（AND 语义），一类型一实例。
 ///
 /// 前驱**不被消费**：本函数只读 state，Effect::Produced 只添加新 token。
 /// `depends_on` 保留调用方给出的前驱顺序（审计溯源记录，§1.4 Note）。
@@ -133,13 +134,15 @@ pub fn rule_p(
             });
         }
     }
-    let expected: BTreeSet<TypeName> = domain.preconditions.get(ty).cloned().unwrap_or_default();
+    // 前驱类型集合 == Precond(T)，且每个前置类型恰由一枚 token 供给。
+    // provided.len() != predecessors.len() 排除"同类型多实例冒充一个前驱"
+    // （expected={A} 而 predecessors=[t1:A, t2:A]）；LHS Uniqueness 保证 expected
+    // 无重复，故两条件合起来即"一类型一实例"。
+    let expected: BTreeSet<TypeName> = precond_of(domain, ty);
     let provided: BTreeSet<TypeName> = predecessors
         .iter()
         .map(|tid| state.counter[tid].ty.clone())
         .collect();
-    // provided.len() == predecessors.len() 排除"同类型多实例"；
-    // 与 expected 的集合相等保证每个前置类型恰有一枚实例。
     if provided.len() != predecessors.len() || provided != expected {
         return Err(RuleError::PreconditionMismatch {
             ty: ty.clone(),

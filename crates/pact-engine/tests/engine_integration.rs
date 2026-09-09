@@ -559,11 +559,13 @@ async fn validate_analyze_compose_commands() {
     let err = engine.validate("types { a }").await.unwrap_err();
     assert!(matches!(err, EngineError::Parse(_)));
 
-    // 分析：完整生命周期域无死锁、全覆盖
+    // 分析：完整生命周期域无死锁、全覆盖、良构且无警告
     let report = engine.analyze(DECL).await.unwrap();
     assert!(report.gate_coverage.is_empty(), "非源类型全部有 producer");
     assert!(report.structural_deadlock.is_empty());
-    assert!(report.source_production_legality.is_empty());
+    assert!(report.precondition_wf.well_formed);
+    assert!(report.precondition_wf.violations.is_empty());
+    assert!(report.precondition_wf.warnings.is_empty());
 
     // 组合并加载：两个片段（requirement→design 与 design→implementation）
     let frag1 = "types { requirement; design }

@@ -97,12 +97,12 @@ fn gate_expr_precedence_and_forms() {
     let src = "types { a; b; c }
         preconditions { a → c }
         gates {
-            p: reads c when count a >= 1 and exists b or not count b = 0;
+            p: reads c when count a >= 1 and exists b or not count b = 2;
             q: reads c when not exists b
         }
         seed_authority { }";
     let d = load_domain(src).unwrap();
-    // 优先级 not > and > or：（count a >= 1 and exists b) or (not count b = 0)
+    // 优先级 not > and > or：（count a >= 1 and exists b) or (not count b = 2)
     let expected = GateExpr::Or(
         Box::new(GateExpr::And(
             Box::new(GateExpr::Count {
@@ -115,7 +115,7 @@ fn gate_expr_precedence_and_forms() {
         Box::new(GateExpr::Not(Box::new(GateExpr::Count {
             ty: tyn("b"),
             op: CountOp::Eq,
-            n: 0,
+            n: 2,
         }))),
     );
     assert_eq!(
@@ -164,7 +164,7 @@ fn emit_roundtrip_identity() {
         "types { a; b; c }
         preconditions { a → c }
         gates {
-            p: reads c when count a >= 1 and exists b or not count b = 0;
+            p: reads c when count a >= 1 and exists b or not count b = 2;
             q: reads c when (exists a or exists b) and not via c;
             r: reads c via b;
             s: consumes c when not not exists b
@@ -194,7 +194,10 @@ fn errors_are_well_classified() {
     let undeclared = "types { a } preconditions { a → b } gates { p: reads a } seed_authority { }";
     assert!(matches!(
         load_domain(undeclared),
-        Err(Problem::WellFormedness(es)) if matches!(es.as_slice(), [DomainError::UndeclaredType { referenced_by: "preconditions", .. }])
+        Err(Problem::WellFormedness(es)) if matches!(
+            es.as_slice(),
+            [DomainError::UndeclaredType { referenced_by, .. }] if referenced_by == "preconditions"
+        )
     ));
     // produces 携带条件（§3.1 Note）
     let produce_cond = "types { a; b }
@@ -230,6 +233,85 @@ fn errors_are_well_classified() {
         Err(Problem::WellFormedness(es)) => assert_eq!(es.len(), 3, "应收集全部错误：{es:?}"),
         other => panic!("应报良构错误，实际 {other:?}"),
     }
+}
+
+#[test]
+fn rev2_wellformedness_rejections() {
+    // §1.4.4 LHS Uniqueness：单一规则内前驱类型重复（{ a + a } → c）
+    let dup_lhs = "types { a; c }
+        preconditions { { a + a } → c }
+        gates { p: reads a } seed_authority { }";
+    assert!(matches!(
+        load_domain(dup_lhs),
+        Err(Problem::WellFormedness(es)) if matches!(
+            es.as_slice(),
+            [DomainError::DuplicatePrecondLhs { ty, lhs_ty }] if *ty == tyn("c") && *lhs_ty == tyn("a")
+        )
+    ));
+    // §1.4.4 Non-Empty LHS：空花括号 lhs 语法层拒绝（源类型由规则缺席定义）
+    let empty_lhs = "types { a; b }
+        preconditions { { } → b }
+        gates { p: reads a } seed_authority { }";
+    match load_domain(empty_lhs) {
+        Err(Problem::Syntax(es)) => {
+            assert!(es[0].message.contains("Non-Empty LHS"), "{}", es[0].message)
+        }
+        other => panic!("空 LHS 应报语法错误，实际 {other:?}"),
+    }
+}
+
+#[test]
+fn rev2_pos_nat_literal_enforced() {
+    // §1.7.3 PosNat：count 字面量必须匹配 [1-9][0-9]*——0 非法
+    let zero = "types { a; b }
+        preconditions { a → b }
+        gates { p: reads b when count a >= 0 }
+        seed_authority { }";
+    match load_domain(zero) {
+        Err(Problem::Syntax(es)) => {
+            assert!(es[0].message.contains("PosNat"), "{}", es[0].message)
+        }
+        other => panic!("count 0 应报语法错误，实际 {other:?}"),
+    }
+    // 前导零同样非法（01 不是规范 PosNat）
+    let leading_zero = "types { a; b }
+        preconditions { a → b }
+        gates { p: reads b when count a = 01 }
+        seed_authority { }";
+    match load_domain(leading_zero) {
+        Err(Problem::Syntax(es)) => {
+            assert!(es[0].message.contains("前导零"), "{}", es[0].message)
+        }
+        other => panic!("前导零应报语法错误，实际 {other:?}"),
+    }
+    // 正整数（含多位）接受
+    let ok = "types { a; b }
+        preconditions { a → b }
+        gates { p: reads b when count a >= 12 }
+        seed_authority { }";
+    let d = load_domain(ok).unwrap();
+    assert_eq!(
+        d.gates.get(&(par("p"), Action::Read, tyn("b"))),
+        Some(&Some(GateExpr::Count {
+            ty: tyn("a"),
+            op: CountOp::Ge,
+            n: 12,
+        }))
+    );
+}
+
+#[test]
+fn rev2_self_loop_precondition_accepted() {
+    // §1.4.4：自环 a → a 合法（Precond(a) = {a} 非空，a 非源类型）
+    let src = "types { a }
+        preconditions { a → a }
+        gates { p: reads a, consumes a }
+        seed_authority { ext: seeds a }";
+    let d = load_domain(src).unwrap();
+    assert_eq!(
+        d.preconditions.get(&tyn("a")),
+        Some(&BTreeSet::from([tyn("a")]))
+    );
 }
 
 #[test]

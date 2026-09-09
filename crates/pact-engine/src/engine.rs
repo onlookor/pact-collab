@@ -817,11 +817,12 @@ fn respond<T>(resp: oneshot::Sender<Result<T, EngineError>>, result: Result<T, E
 /// 六项静态分析聚合（论文 Appendix A.1–A.6）。
 fn report_of(domain: &Domain) -> AnalysisReport {
     AnalysisReport {
+        // A.5 先算（Appendix D：它是其余分析的前提）
+        precondition_wf: analysis::precondition_wf(domain),
         reachability: analysis::reachability(domain),
         gate_coverage: analysis::gate_coverage(domain),
         consumption_reachability: analysis::consumption_reachability(domain),
         structural_deadlock: analysis::structural_deadlock(domain),
-        source_production_legality: analysis::source_production_legality(domain),
         stranding_risk: analysis::stranding_risk(domain),
     }
 }
