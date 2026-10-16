@@ -1,7 +1,8 @@
 - 需求文档为 `docs/requirements.md`，只保留当前有效需求，需求变更追加记入 `docs/requirements-change.md`。
 - 设计文档为 `docs/design.md`，只保留当前设计，设计变更追加记入 `docs/design-change.md`。
 - 架构文档为 `docs/architecture.md`，只保留当前架构，架构变更追加记入 `docs/architecture-change.md`。使用 `documenting-software-architectures` 技能。
-- 用户手册为 `docs/mannual.md`，只保留当前有效内容。
+- 用户手册为 `docs/manual.md`，只保留当前有效内容。
+- 技能适配文档为 `docs/skill-adaptation.md`，记录 `~/projects/skills` 下 RE / SE 两技能的 PACT 形式层适配（产物清单、验收清单、三档粒度差异矩阵、表达边界），只保留当前有效内容，变更追加记入 `docs/skill-adaptation-change.md`。
 
 - 每一轮工作前，读取 `docs/` 目录下的文档。
 
