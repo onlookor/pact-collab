@@ -440,6 +440,27 @@ fn precondition_wf_warns_seed_produce_overlap() {
         }]
     );
 
+    // 类型级判定：seed 持有者与 produce 方不是同一参与者也告警（participant 字段 = seed 持有者）
+    let d = tiny_domain(
+        &["a", "b"],
+        &[(&["a"], "b")],
+        &[("p", Action::Produce, "b", None)],
+        &[("q", "b")],
+    );
+    let wf = precondition_wf(&d);
+    assert!(
+        wf.well_formed,
+        "跨参与者重叠仍只是警告：{:?}",
+        wf.violations
+    );
+    assert_eq!(
+        wf.warnings,
+        vec![WfWarning::SeedProduceOverlap {
+            participant: par("q"),
+            ty: tyn("b")
+        }]
+    );
+
     // 源类型上的 seed 权威不触发警告（seed 本就是源类型的合法入口）
     let d = tiny_domain(
         &["a", "b"],

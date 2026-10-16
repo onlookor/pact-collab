@@ -182,9 +182,13 @@ pub fn structural_deadlock(domain: &Domain) -> Vec<DeadlockComponent> {
 /// A.5 咨询性警告（论文 §1.4.3 Advisory）：非违规，不阻止加载。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WfWarning {
-    /// SEED_PRODUCE_OVERLAP：同一参与者对同一**非源**类型既持 SeedAuthority
-    /// 又持 produces gate。规范上安全（seed 实例可作前驱被消费，produce 路径
-    /// 产出新实例），但通常是建模混淆的信号，应复核意图。
+    /// SEED_PRODUCE_OVERLAP：某参与者对非源类型 T 持 SeedAuthority，且 T 存在
+    /// produces gate（**类型级判定**：produces gate 取全体参与者的并集，不要求
+    /// 与 seed 持有者为同一参与者，`participant` 字段是 seed 持有者）。比论文
+    /// §1.4.3 的“同一参与者”表述更宽——跨参与者重叠也告警（假阳性方向，不漏
+    /// 报）：即便录入者不同，类型的双入口歧义与部署裁决需求依然存在。规范上
+    /// 安全（seed 实例可作前驱被消费，produce 路径产出新实例），通常是建模混淆
+    /// 或需显式部署裁决的信号，应复核意图。
     SeedProduceOverlap {
         participant: ParticipantName,
         ty: TypeName,
@@ -195,7 +199,7 @@ impl std::fmt::Display for WfWarning {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WfWarning::SeedProduceOverlap { participant, ty } => {
-                write!(f, "SEED_PRODUCE_OVERLAP: {participant} 对非源类型 {ty} 同时持有 seed 权威与 produces gate")
+                write!(f, "SEED_PRODUCE_OVERLAP: {participant} 对非源类型 {ty} 持有 seed 权威，且该类型存在 produces gate")
             }
         }
     }
