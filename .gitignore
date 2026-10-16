@@ -2,5 +2,9 @@
 /data
 pact.sock
 
+# examples 运行产物：脚本每次运行重建，不入库
+/examples/online/run-data
+/examples/offline/out
+
 # 论文手稿族：不入公开仓库（仅本地保留）
 /docs/pact*

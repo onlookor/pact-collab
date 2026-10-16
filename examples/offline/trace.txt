@@ -1,0 +1,187 @@
+# ===== PACT 离线三件套演示：analyze / compose / replay =====
+# 轨迹中 `+ pact ...` 是实际执行的命令，`#` 开头是讲解，其余是命令输出。
+# 绝对路径每次运行都不同；分析数字、违例名与退出码应当完全一致。
+
+===== 1. 四个通用域：pact analyze =====
+# analyze 是纯函数（pact-analysis），不起进程、不碰存储，退出码 0 = 良构。
+
+===== 1.1 domains/se_lifecycle.pact —— 软件工程通用域（中等粒度） =====
++ pact analyze <REPO>/examples/domains/se_lifecycle.pact
+precondition_wf: 良构（0 项违规，0 项警告）
+reachability: 1 源类型，5 可达，0 不可达
+gate_coverage: 0 个无 producer 的非源类型
+consumption_reachability: 0 个无 consumer 的类型
+structural_deadlock: 0 个强连通分量
+stranding_risk: 1 处滞留风险
+  -> exit=0
+# 唯一非零项 stranding_risk：deployer 用 via implementation 守护 test_report，
+# 而 tester 有权消费 implementation。这不是错误，是一条真实的顺序约束
+# （examples/online/run.sh 第 12 步会把它跑成一次真实的 GateConditionFailed）。
+
+===== 1.2 domains/re_pipeline.pact —— 需求工程通用域 =====
++ pact analyze <REPO>/examples/domains/re_pipeline.pact
+precondition_wf: 良构（0 项违规，0 项警告）
+reachability: 2 源类型，7 可达，0 不可达
+gate_coverage: 0 个无 producer 的非源类型
+consumption_reachability: 2 个无 consumer 的类型
+structural_deadlock: 0 个强连通分量
+stranding_risk: 0 处滞留风险
+  -> exit=0
+# consumption_reachability 列出 baseline / revised_baseline：这两个类型没人消费。
+# 这是刻意设计——基线是常驻配置资产，被反复读取而不被耗尽；
+# 分析器如实报告「无 consumer」，是否接受由建模者裁决，引擎不替你决定。
+# 两个源类型 stakeholder_need / change_request 只能由 seed_authority 注入。
+
+===== 1.3 domains/react_loop.pact —— 前置图带环仍自然终止 =====
++ pact analyze <REPO>/examples/domains/react_loop.pact
+precondition_wf: 良构（0 项违规，1 项警告）
+  warning: SEED_PRODUCE_OVERLAP: user 对非源类型 observation 持有 seed 权威，且该类型存在 produces gate
+reachability: 1 源类型，4 可达，0 不可达
+gate_coverage: 0 个无 producer 的非源类型
+consumption_reachability: 0 个无 consumer 的类型
+structural_deadlock: 0 个强连通分量
+stranding_risk: 0 处滞留风险
+  -> exit=0
+# structural_deadlock 报 0：前置图有环（observation→thought→action→tool_result→
+# observation）不构成死锁，因为每一步都显式消费前驱，Counter 稳态 ≤ 2 个 token，
+# user 停止注入 observation 后循环自然排空 ⇒ Rule-T 可达。
+# 唯一的 SEED_PRODUCE_OVERLAP 警告：user 可 seed observation，agent 又能 produce
+# observation。跨参与者重叠也告警（实现比论文 §1.4.3 的参与者级定义更宽，
+# 取假阳性方向不漏报；见 docs/design.md D21）。
+
+===== 1.4 domains/cross_harness.pact —— 多智能体协作，无编排器 =====
++ pact analyze <REPO>/examples/domains/cross_harness.pact
+precondition_wf: 良构（0 项违规，0 项警告）
+reachability: 1 源类型，5 可达，0 不可达
+gate_coverage: 0 个无 producer 的非源类型
+consumption_reachability: 0 个无 consumer 的类型
+structural_deadlock: 0 个强连通分量
+stranding_risk: 0 处滞留风险
+  -> exit=0
+# 六项分析全 0。三个 harness 互不通信，全靠 Counter 上的 token 状态自驱：
+# harness_a 放下 plan 就撒手，harness_b 看到 plan 才动，谁先谁后由引擎的
+# Rule-P 可用性决定，不需要中心调度。
+
+===== 2. 三项非零咨询输出的 JSON 详情 =====
+# 非 JSON 输出给人看，--json 输出给机器看（同一份数据，键序固定为附录 A 顺序）。
++ pact --json analyze domains/se_lifecycle.pact | grep -A8 '"stranding_risk"'
+  "stranding_risk": [
+    {
+      "ty_b": "test_report",
+      "ty_a": "implementation",
+      "via_holder": "deployer",
+      "consumer": "tester",
+      "potential": false
+    }
+  ]
++ pact --json analyze domains/re_pipeline.pact | grep -A3 '"consumption_reachability"'
+  "consumption_reachability": [
+    "baseline",
+    "revised_baseline"
+  ],
++ pact --json analyze domains/react_loop.pact | grep -A7 '"warnings"'
+    "warnings": [
+      {
+        "SeedProduceOverlap": {
+          "participant": "user",
+          "ty": "observation"
+        }
+      }
+    ]
+
+===== 3. 良构违例长什么样（临时生成，不入库） =====
+# analyze 退出码非 0 即表示域声明不可用；--json 逐条给出违例类别。
+# 以下三例都用 --json，为的是看清违例名而不只是计数。
+
+===== 3.1 源类型被 produce（违反 §3.1 约束 6 Source-Production Constraint） =====
++ pact --json analyze bad_source_production.pact
+{"error":{"code":"WellFormedness","detail":[{"SourceTypeProduceGate":{"participant":"p","ty":"a"}}],"message":"域声明良构违例（1 处）"}}
+  -> exit=1
+
+===== 3.2 同一类型有两条前置规则（违反 RHS Uniqueness） =====
++ pact --json analyze bad_rhs_uniqueness.pact
+{"error":{"code":"WellFormedness","detail":[{"DuplicatePrecondRule":{"ty":"c"}}],"message":"域声明良构违例（1 处）"}}
+  -> exit=1
+
+===== 3.3 引用未声明的类型（违反 Type Closure） =====
++ pact --json analyze bad_type_closure.pact
+{"error":{"code":"WellFormedness","detail":[{"UndeclaredType":{"referenced_by":"preconditions","ty":"b"}},{"UndeclaredType":{"referenced_by":"gates","ty":"b"}},{"UndeclaredType":{"referenced_by":"gates","ty":"b"}}],"message":"域声明良构违例（3 处）"}}
+  -> exit=1
+# 同一个未声明类型 b 被引用了 3 次（preconditions 1 处 + gates 2 处），逐处报告。
+
+===== 4. compose：片段组合（§1.8 C1–C4） =====
+# compose 先对每个片段单独做良构校验（含 Type Closure），所以片段必须自足声明
+# 它引用到的全部类型；再做 C1–C4 合并检查，最后对合并结果跑 validate_domain 终检。
+
+===== 4.1 干净组合：se_lifecycle + security_review =====
++ pact compose domains/se_lifecycle.pact fragments/security_review.pact > out/se_with_security.pact
+  -> exit=0
+types { deployment; design; implementation; requirement; security_report; test_report }
+
+preconditions {
+    test_report → deployment;
+    requirement → design;
+    design → implementation;
+    implementation → security_report;
+    implementation → test_report;
+}
+
+gates {
+    architect: reads requirement, consumes requirement, produces design;
+    deployer: reads security_report, reads test_report when via implementation, consumes security_report, consumes test_report when via implementation, produces deployment;
+    developer: reads design, consumes design, produces implementation;
+    qa_lead: reads implementation, reads test_report;
+    reviewer: reads design, reads requirement;
+    security_scanner: reads implementation, produces security_report;
+    stakeholder: consumes deployment;
+    tester: reads implementation, consumes implementation, produces test_report;
+}
+
+seed_authority {
+    external_stakeholder: seeds requirement;
+}
+
+# 四元组按集合并：types/preconditions/gates/seed_authority 各自取并，
+# deployer 的宿主条款与片段条款合成同一个参与者的完整 gate 集。
+# 注意序列化把源文件里的 via implementation 规范地打印成 when via implementation。
+
+===== 4.1b 合并结果本身仍是良构域 =====
++ pact analyze <REPO>/examples/offline/out/se_with_security.pact
+precondition_wf: 良构（0 项违规，0 项警告）
+reachability: 1 源类型，6 可达，0 不可达
+gate_coverage: 0 个无 producer 的非源类型
+consumption_reachability: 0 个无 consumer 的类型
+structural_deadlock: 0 个强连通分量
+stranding_risk: 1 处滞留风险
+  -> exit=0
+# 多出 implementation → security_report 一条规则；security_report 有 producer
+# 也有 consumer（deployer），所以六项分析没有新增非零项。
+
+===== 4.2 被拒的组合：se_lifecycle + security_blocking（C2 冲突） =====
++ pact compose <REPO>/examples/domains/se_lifecycle.pact <REPO>/examples/fragments/security_blocking.pact
+error [ComposeConflict]: 片段组合冲突（1 处）
+  -> exit=1
++ pact --json compose ...（同一命令，取结构化错误）
+{"error":{"code":"ComposeConflict","detail":{"conflicts":["PreconditionMismatch { ty: TypeName(\"deployment\"), pre_a: {TypeName(\"test_report\")}, pre_b: {TypeName(\"security_report\"), TypeName(\"test_report\")} }"]},"message":"片段组合冲突（1 处）"}}
+# PreconditionMismatch：宿主说 deployment 的前置是 {test_report}，
+# 片段说是 {test_report, security_report}。共享类型出现两套不同前置 ⇒ C2 拒绝。
+# 这不是工具缺陷而是范式意图：前置图是生产合法性的唯一来源，两个片段对
+# 「什么算完成」理解不一致时必须显式解决，不能静默合并。
+# 正确做法是改宿主声明本身（把 deployment 的规则写成合取），而不是叠加矛盾片段。
+
+===== 4.3 组合后的域可以直接喂给在线流程 =====
+# compose 的输出就是合法的域声明文本，可直接 domain load（见 online/run.sh 第 3 步）。
+
+===== 5. replay：从事件日志离线重建状态 =====
+# 素材：fixtures/se_lifecycle.events.jsonl，由 examples/online/run.sh 录制。
+# 该文件共 12 行事件：1 条 DomainLoaded（重置状态）、1 条 Terminated（信息性）、
+# 10 条会改变状态的动作事件（1 seed + 4 produce + 5 consume）。
++ pact replay <REPO>/examples/offline/fixtures/se_lifecycle.events.jsonl
+replayed 10 events (domain se_lifecycle): counter=0 archive=5
+  -> exit=0
+# counter=0 archive=5 与在线轨迹第 11 步的 status 完全一致 ——
+# JSONL 是真相源，SQLite 索引与快照都只是派生物，删了也能重建。
+# 崩溃恢复走同一条路径：读最近快照，再重放其后的事件。
+# 想看新鲜日志：pact replay examples/online/run-data/se_lifecycle.events.jsonl
+
+演示结束。在线全生命周期见 examples/online/run.sh。

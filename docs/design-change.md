@@ -1,5 +1,39 @@
 # 设计变更记录
 
+## 2026-10-15（第 14 轮，通用示例与用户手册落盘）
+
+- **触发**：用户要求补一套与两技能无关的通用结构 + examples，向用户说明 PACT 范式系统的使用场景与方法（需求侧登记为 FR14，见 `docs/requirements-change.md` 第 6 轮）。
+- **新增决策 D22**：通用示例与用户手册作为交付资产——不接入 CI、不改任何 crate、运行产物入 `.gitignore`；取证中发现的三处实现与文档不一致只登记不修码。
+- **落盘资产**：
+  - `examples/domains/`：`se_lifecycle.pact`(45) / `re_pipeline.pact`(50) / `react_loop.pact`(38) / `cross_harness.pact`(36)
+  - `examples/fragments/`：`security_review.pact`（成功合并）/ `security_blocking.pact`（C2 冲突）
+  - `examples/offline/run.sh`(168) + `trace.txt`(187)：analyze × 4、compose × 2、replay × 1，含三类不良构域与陷阱域
+  - `examples/online/run.sh`(251) + `trace.txt`(238)：daemon 启动 → 装载 → 六规则全流程 → Rule-T → 卸载 → 清理（`trap ... EXIT`，因 CLI 无 `daemon stop`）
+  - `examples/README.md`(413)：场景导航与逐例讲解
+  - `docs/manual.md`(653)：12 章权威用户手册
+- **代码零改动**：本轮未修改任何 crate；`cargo test` 结论沿用第 12/13 轮（workspace 103 项全绿）。`.gitignore` 已含 `/examples/online/run-data`、`/examples/offline/out`（脚本每次运行重建）。
+- **architecture.md 无变更**：未引入新组件、未改变 crate 划分、进程与部署视图、数据流与质量属性落点，故不追加 architecture-change 记录。
+- **规范母本未触碰**：本轮全程未修改 `docs/pact*`（遵守第 13 轮纪律沉淀）；示例与手册中凡引用论文处均以"§x.y → pactv1_rev2.md"形式指向，不复制原文。
+- **安全审视结论**：本轮仅新增 Markdown 文档与 shell 教学脚本。脚本无网络出访、无 sudo、无密钥/令牌硬编码（在线示例走信任声明模式，`pact.toml` 中 `[auth.tokens]` 为空表）、无 `unsafe`、无依赖变更；`trap` 清理确保 daemon 与 unix socket 不残留。无新增攻击面，无需调整既有安全控制（恒时令牌比较、事件日志只追加、快照原子写）。
+
+## 2026-10-15（第 13 轮，论文改动回退：规范母本不动，实现登记为保守超集）
+
+- **触发**：用户指出第 12 轮"规范同步（pactv1_rev2.md 三处）"超出实现方工作范畴——论文是规范母本，实现方不得顺手修订。裁决：恢复原文。
+- **回退**：§1.4.3 Advisory 段、Appendix A.5 伪代码、A.5 Remediation 三处逐字恢复为参与者级原文（该文件不入仓库，纯本地还原，无版本控制影响）。
+- **D21 措辞修正**：删去"与论文一并对齐定案"，改为"论文维持参与者级原文，实现登记为参考算法的**保守超集**；规范是否修订由作者另行裁决"。
+- **保留**：`lib.rs` 注释/Display 的类型级表述仍然准确（回退后论文为参与者级、实现更宽，恰构成保守超集关系）；跨参与者回归用例；第 12 轮全部测试结论（103 项全绿，本轮代码零改动）。
+- **纪律沉淀**：涉及规范母本（`docs/pact*`）的任何文字改动，事前必须单列请求用户显式确认，不得随"更新文档"类概括指令默认授权；"实现宽于规范"的偏差以保守超集登记于 design.md，不回灌论文。
+
+## 2026-10-15（第 12 轮，SeedProduceOverlap 语义注释与规范对齐定案）
+
+- **背景**：技能适配轮发现 `precondition_wf` 的 `SeedProduceOverlap` 实现**宽于**其文档注释——`produced` 收集为全体参与者 produces gate 的全局类型集，跨参与者组合（SE `responsible_human` seeds + RE `release_manager` produces）也告警，方向为假阳性不漏报；既有测试只覆盖同参与者场景（skill-adaptation.md §10 第 1 轮登记）。用户裁决采处置 (b)：改注释承认现状、保留实现。
+- **代码变更（逻辑零变更）**：pact-analysis `WfWarning::SeedProduceOverlap` 文档注释改为**类型级判定**表述（produces gate 取全体参与者并集，`participant` 字段 = seed 持有者；比论文 §1.4.3 原表述更宽，假阳性方向不漏报）；`Display` 文本同步改写（旧文"同时持有 seed 权威与 produces gate"暗示同一参与者，与实现不符）。无测试断言依赖旧 Display 文本，JSON 序列化形态不变（变体名 + 字段）。
+- **规范同步（pactv1_rev2.md 三处）**：§1.4.3 Advisory 段改为类型级定义——重叠 = 非源类型 T 同时可 seed 与可 produce，同参与者双入口是退化情形，跨参与者重叠亦须显式部署裁决（recall 偏向，不漏报同参与者情形），警告 `participant` 字段为 seed 持有者；Appendix A.5 伪代码改为 `Produced ← { T : ∃ p, ("produce", T) ∈ Gate(p) }` 后按类型判属；A.5 Remediation 补类型级说明。
+- **测试**：`precondition_wf_warns_seed_produce_overlap` 增补第三块——跨参与者用例（p produces b、q seeds b、q ≠ p ⇒ 警告 `participant = q`），锁定类型级行为（第 1 轮偏差今后由测试捕获）。workspace 全量 **103 项全绿**（净增 0 项，扩充既有用例）；fmt/clippy 清零。
+- **D21 同步**：design.md D21(4) 补记类型级判定定案（produced 并集、participant 字段语义、假阳性方向）。
+- **执行偏差（沿用）**：distrobox `pact-dev` 仍不可达，验证在宿主机工具链（cargo 1.98.1，与 CI stable 同版）完成，命令与 CI 一致（fmt --check → clippy --locked -D warnings → test --workspace --locked）。
+- **安全审视**：本轮仅注释、Display 字符串、测试断言与文档，无网络、无进程、无密钥、无 unsafe、无依赖变更（`--locked` 通过即证 Cargo.lock 未动）；不触发推送/部署前置审视的重新评估，2026-09-06 第 8 轮结论继续有效。
+
 ## 2026-09-09（第 11 轮，CI 偶发失败修正：场景 B Counter 卫生断言）
 
 - **现象**：GitHub Actions 上 `unattended_e2e::unattended_scenarios_to_terminated` 偶发失败——`max_counter = 3` 违反"应恒 ≤ 2"断言；同轮本地（20+ 连跑）与全量回归均未复现。

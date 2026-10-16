@@ -1,0 +1,238 @@
+# ===== PACT 在线全生命周期演示 =====
+# 轨迹中 `+ pact ...` 是实际执行的命令，`#` 开头是讲解，其余是命令输出。
+# token id（ULID）、时间戳、daemon pid、绝对路径每次运行都不同；
+# 步骤结构、错误码与退出码应当完全一致。
+
+===== 0. 准备运行目录与配置（pact.toml） =====
++ cat examples/online/run-data/pact.toml
+# 由 examples/online/run.sh 生成；缺省值为 data_dir="./data"、listen_unix="./pact.sock"
+data_dir = "<REPO>/examples/online/run-data"
+listen_unix = "<REPO>/examples/online/run-data/pact.sock"
+
+===== 1. 启动 daemon =====
++ pact daemon start --config examples/online/run-data/pact.toml &
+# daemon pid=366904 socket=<REPO>/examples/online/run-data/pact.sock
+# daemon 是 Counter 的唯一权威；CLI / REST / MCP 三接口最终都汇聚到它
+
+===== 2. 装载前先离线分析（analyze 不经 daemon） =====
++ pact analyze domains/se_lifecycle.pact
+precondition_wf: 良构（0 项违规，0 项警告）
+reachability: 1 源类型，5 可达，0 不可达
+gate_coverage: 0 个无 producer 的非源类型
+consumption_reachability: 0 个无 consumer 的类型
+structural_deadlock: 0 个强连通分量
+stranding_risk: 1 处滞留风险
+# 六项分析全过；唯一非零项是 stranding_risk，第 12 步会把它跑成真实拒绝
++ pact --json analyze domains/se_lifecycle.pact | grep -A8 '"stranding_risk"'
+  "stranding_risk": [
+    {
+      "ty_b": "test_report",
+      "ty_a": "implementation",
+      "via_holder": "deployer",
+      "consumer": "tester",
+      "potential": false
+    }
+  ]
+
+===== 3. 域装载生命周期 =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock domain validate <REPO>/examples/domains/se_lifecycle.pact
+ok: types=5 participants=8 gates=17 seed_authority=1
+types: deployment, design, implementation, requirement, test_report
+participants: architect, deployer, developer, external_stakeholder, qa_lead, reviewer, stakeholder, tester
++ pact --unix <REPO>/examples/online/run-data/pact.sock domain load <REPO>/examples/domains/se_lifecycle.pact
+loaded se_lifecycle: types=5 gates=17 seed_authority=1 last_seq=1
++ pact --unix <REPO>/examples/online/run-data/pact.sock domain list
+se_lifecycle
++ pact --unix <REPO>/examples/online/run-data/pact.sock domain info --domain se_lifecycle
+se_lifecycle: counter=0 archive=0 terminated=true
++ pact --unix <REPO>/examples/online/run-data/pact.sock status --domain se_lifecycle
+se_lifecycle: counter=0 archive=0 terminated=true
+# 注意 terminated=true：Rule-T 的条件是 Counter=∅ 且无参与者 Rule-P-enabled，
+# 刚装载的域两条都满足，所以空域本身就是终止态。注入 seed 后会翻回 false。
+
+===== 4. 查看 Gate 与当前可用生产 =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock gates show --domain se_lifecycle --participant architect
+gates of architect in se_lifecycle: 3
+read requirement
+consume requirement
+produce design
++ pact --unix <REPO>/examples/online/run-data/pact.sock gates show --domain se_lifecycle --participant deployer
+gates of deployer in se_lifecycle: 3
+read test_report when via implementation
+consume test_report when via implementation
+produce deployment
+# deployer 两条子句带 when via implementation：读/消费 test_report 时，
+# 必须有一个 implementation token 仍在 Counter，且它是该 test_report 的直接前驱
++ pact --unix <REPO>/examples/online/run-data/pact.sock enabled --domain se_lifecycle --participant architect
+enabled productions for architect: 0
+# Counter 为空 ⇒ 没有任何生产可用（前置找不到见证）
+
+===== 5. 空 Counter 上的拒绝 =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle --participant architect --type design
+error [PredecessorNotOnCounter]: 前驱 token  不在 Counter 上（可能已被消费）
+  -> exit=1（预期非 0：引擎拒绝）
+# design 的前置是 requirement，Counter 里没有 requirement ⇒ Rule-P 不可用。
+# 顺带说明：produce 必须用 --predecessors 显式给出见证，引擎不会替你猜
+# （所以上面的报错里 token id 是空的）。多个前驱用逗号分隔。
++ pact --unix <REPO>/examples/online/run-data/pact.sock seed --domain se_lifecycle --participant architect --type requirement
+error [SeedAuthorityDenied]: (architect, requirement) ∉ SeedAuthority：无种子注入权
+  -> exit=1（预期非 0：引擎拒绝）
+# SeedAuthority 只授予 external_stakeholder ⇒ Rule-S 拒绝越权注入
+
+===== 6. 注入 seed（Rule-S，豁免前置但受 SeedAuthority 约束） =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock seed --domain se_lifecycle --participant external_stakeholder --type requirement --thing-ref REQ-001
+token 01M500J902XFZ23Q1CWWA3H3S2 type=requirement produced_by=external_stakeholder depends_on=[]
++ pact --unix <REPO>/examples/online/run-data/pact.sock counter ls --domain se_lifecycle
+counter: 1 tokens
+01M500J902XFZ23Q1CWWA3H3S2 type=requirement depends_on=[]
++ pact --unix <REPO>/examples/online/run-data/pact.sock status --domain se_lifecycle
+se_lifecycle: counter=1 archive=0 terminated=false
+# seed 之后 terminated 翻回 false —— Counter 非空
++ pact --unix <REPO>/examples/online/run-data/pact.sock enabled --domain se_lifecycle --participant architect
+enabled productions for architect: 1
+design witnesses=[01M500J902XFZ23Q1CWWA3H3S2]
+# witnesses=[01M500J902XFZ23Q1CWWA3H3S2] —— 引擎直接告诉 architect 该用哪个前驱
+
+===== 7. 身份与动作权限的拒绝 =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle --participant reviewer --token 01M500J902XFZ23Q1CWWA3H3S2
+error [StaticGateDenied]: 参与者 reviewer 无 consume requirement 的 gate 授权
+  -> exit=1（预期非 0：引擎拒绝）
+# reviewer 只有 reads 子句，没有 consumes requirement ⇒ Rule-E 拒绝
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle --participant ghost --type design --predecessors 01M500J902XFZ23Q1CWWA3H3S2
+error [StaticGateDenied]: 参与者 ghost 无 produce design 的 gate 授权
+  -> exit=1（预期非 0：引擎拒绝）
+# ghost 不在域的参与者集合里
+
+===== 8. 主链路：requirement → design → implementation → test_report → deployment =====
+# 关键顺序：Rule-P 要求前驱**仍在 Counter 上**，所以必须 produce 之后再 consume。
+# 反过来做会得到 PredecessorNotOnCounter —— 消费是不可逆的（token 入 Archive）。
++ pact --unix <REPO>/examples/online/run-data/pact.sock read --domain se_lifecycle --participant architect --token 01M500J902XFZ23Q1CWWA3H3S2
+token 01M500J902XFZ23Q1CWWA3H3S2 type=requirement produced_by=external_stakeholder depends_on=[]
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle --participant architect --type design --predecessors 01M500J902XFZ23Q1CWWA3H3S2 --thing-ref DES-001
+token 01M500J93S29SD8A04HPXZPD7N type=design produced_by=architect depends_on=[01M500J902XFZ23Q1CWWA3H3S2]
+# Rule-P 不消费前驱：01M500J902XFZ23Q1CWWA3H3S2 此刻仍在 Counter 上，design 只是记录了 depends_on=[01M500J902XFZ23Q1CWWA3H3S2]
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle --participant architect --token 01M500J902XFZ23Q1CWWA3H3S2
+consumed 01M500J902XFZ23Q1CWWA3H3S2 (type requirement, by architect at 2026-10-15T14:48:23Z)
++ pact --unix <REPO>/examples/online/run-data/pact.sock archive ls --domain se_lifecycle
+archive: 1 entries
+01M500J902XFZ23Q1CWWA3H3S2 type=requirement exhausted_by=architect at 2026-10-15T14:48:23Z
+# 入 Archive 是显式 consume 的结果，不是 produce 的副作用（无级联消费）
++ pact --unix <REPO>/examples/online/run-data/pact.sock read --domain se_lifecycle --participant developer --token 01M500J93S29SD8A04HPXZPD7N
+token 01M500J93S29SD8A04HPXZPD7N type=design produced_by=architect depends_on=[01M500J902XFZ23Q1CWWA3H3S2]
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle --participant developer --type implementation --predecessors 01M500J93S29SD8A04HPXZPD7N --thing-ref IMP-001
+token 01M500J966JEWJBHQXBT7H0SWJ type=implementation produced_by=developer depends_on=[01M500J93S29SD8A04HPXZPD7N]
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle --participant developer --token 01M500J93S29SD8A04HPXZPD7N
+consumed 01M500J93S29SD8A04HPXZPD7N (type design, by developer at 2026-10-15T14:48:23Z)
++ pact --unix <REPO>/examples/online/run-data/pact.sock read --domain se_lifecycle --participant tester --token 01M500J966JEWJBHQXBT7H0SWJ
+token 01M500J966JEWJBHQXBT7H0SWJ type=implementation produced_by=developer depends_on=[01M500J93S29SD8A04HPXZPD7N]
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle --participant tester --type test_report --predecessors 01M500J966JEWJBHQXBT7H0SWJ --thing-ref TR-001
+token 01M500J9885VYH02R6YER0XWAS type=test_report produced_by=tester depends_on=[01M500J966JEWJBHQXBT7H0SWJ]
+# tester 暂不 consume implementation —— 它还要充当 deployer 的 via 见证
++ pact --unix <REPO>/examples/online/run-data/pact.sock counter ls --domain se_lifecycle
+counter: 2 tokens
+01M500J966JEWJBHQXBT7H0SWJ type=implementation depends_on=[01M500J93S29SD8A04HPXZPD7N]
+01M500J9885VYH02R6YER0XWAS type=test_report depends_on=[01M500J966JEWJBHQXBT7H0SWJ]
+
+===== 9. 只读参与者与带 via 的消费 =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock read --domain se_lifecycle --participant reviewer --token 01M500J93S29SD8A04HPXZPD7N
+error [TokenNotOnCounter]: 目标 token 01M500J93S29SD8A04HPXZPD7N 不在 Counter 上
+  -> exit=1（预期非 0：引擎拒绝）
+# 预期失败：design 已被 developer 消费入 Archive，Rule-R 只对 Counter 上的 token 成立
++ pact --unix <REPO>/examples/online/run-data/pact.sock read --domain se_lifecycle --participant qa_lead --token 01M500J966JEWJBHQXBT7H0SWJ
+token 01M500J966JEWJBHQXBT7H0SWJ type=implementation produced_by=developer depends_on=[01M500J93S29SD8A04HPXZPD7N]
++ pact --unix <REPO>/examples/online/run-data/pact.sock read --domain se_lifecycle --participant qa_lead --token 01M500J9885VYH02R6YER0XWAS
+token 01M500J9885VYH02R6YER0XWAS type=test_report produced_by=tester depends_on=[01M500J966JEWJBHQXBT7H0SWJ]
++ pact --unix <REPO>/examples/online/run-data/pact.sock read --domain se_lifecycle --participant deployer --token 01M500J9885VYH02R6YER0XWAS
+token 01M500J9885VYH02R6YER0XWAS type=test_report produced_by=tester depends_on=[01M500J966JEWJBHQXBT7H0SWJ]
+# via implementation 成立：01M500J966JEWJBHQXBT7H0SWJ 在 Counter 里，且 01M500J9885VYH02R6YER0XWAS.depends_on 含 01M500J966JEWJBHQXBT7H0SWJ
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle --participant deployer --type deployment --predecessors 01M500J9885VYH02R6YER0XWAS --thing-ref DEP-001
+token 01M500J9ATA31H9349S3WABXVR type=deployment produced_by=deployer depends_on=[01M500J9885VYH02R6YER0XWAS]
+# 同样先 produce 后 consume：deployment 的前驱是 01M500J9885VYH02R6YER0XWAS，01M500J9885VYH02R6YER0XWAS 一旦被消费就不能再当见证
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle --participant deployer --token 01M500J9885VYH02R6YER0XWAS
+consumed 01M500J9885VYH02R6YER0XWAS (type test_report, by deployer at 2026-10-15T14:48:23Z)
+
+===== 10. 清空 Counter =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle --participant tester --token 01M500J966JEWJBHQXBT7H0SWJ
+consumed 01M500J966JEWJBHQXBT7H0SWJ (type implementation, by tester at 2026-10-15T14:48:23Z)
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle --participant stakeholder --token 01M500J9ATA31H9349S3WABXVR
+consumed 01M500J9ATA31H9349S3WABXVR (type deployment, by stakeholder at 2026-10-15T14:48:23Z)
++ pact --unix <REPO>/examples/online/run-data/pact.sock counter ls --domain se_lifecycle
+counter: 0 tokens
+
+===== 11. Rule-T：终止判定 =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock status --domain se_lifecycle
+se_lifecycle: counter=0 archive=5 terminated=true
+# terminated=true —— Counter=∅ 且没有任何参与者 Rule-P-enabled
++ pact --unix <REPO>/examples/online/run-data/pact.sock archive ls --domain se_lifecycle
+archive: 5 entries
+01M500J902XFZ23Q1CWWA3H3S2 type=requirement exhausted_by=architect at 2026-10-15T14:48:23Z
+01M500J93S29SD8A04HPXZPD7N type=design exhausted_by=developer at 2026-10-15T14:48:23Z
+01M500J9885VYH02R6YER0XWAS type=test_report exhausted_by=deployer at 2026-10-15T14:48:23Z
+01M500J966JEWJBHQXBT7H0SWJ type=implementation exhausted_by=tester at 2026-10-15T14:48:23Z
+01M500J9ATA31H9349S3WABXVR type=deployment exhausted_by=stakeholder at 2026-10-15T14:48:23Z
+# Archive 保留每个 token 的 exhausted_by / exhausted_at，这是审计线索
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle --participant architect --type design
+error [PredecessorNotOnCounter]: 前驱 token  不在 Counter 上（可能已被消费）
+  -> exit=1（预期非 0：引擎拒绝）
+# 拒绝理由是 PredecessorNotOnCounter：Counter 已空，找不到 design 的前驱见证。
+# 引擎里没有一条独立的「已终止」规则——终止态就是 Counter=∅ 且无 Rule-P-enabled
+# 的推论，所以终止后自然做不出任何生产。
+
+===== 12. 搁浅陷阱：把第 8 步的顺序换一下会怎样 =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock domain load <REPO>/examples/domains/se_lifecycle.pact --name se_lifecycle_trap
+loaded se_lifecycle_trap: types=5 gates=17 seed_authority=1 last_seq=1
++ pact --unix <REPO>/examples/online/run-data/pact.sock seed --domain se_lifecycle_trap --participant external_stakeholder --type requirement --thing-ref REQ-901
+token 01M500J9FM3KJQNWZYC1TJAY4P type=requirement produced_by=external_stakeholder depends_on=[]
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle_trap --participant architect --type design --predecessors 01M500J9FM3KJQNWZYC1TJAY4P --thing-ref DES-901
+token 01M500J9GG1RBXMRQRKFP5WJ39 type=design produced_by=architect depends_on=[01M500J9FM3KJQNWZYC1TJAY4P]
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle_trap --participant architect --token 01M500J9FM3KJQNWZYC1TJAY4P
+consumed 01M500J9FM3KJQNWZYC1TJAY4P (type requirement, by architect at 2026-10-15T14:48:23Z)
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle_trap --participant developer --type implementation --predecessors 01M500J9GG1RBXMRQRKFP5WJ39 --thing-ref IMP-901
+token 01M500J9HYZAXCKHWSFATF59S6 type=implementation produced_by=developer depends_on=[01M500J9GG1RBXMRQRKFP5WJ39]
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle_trap --participant developer --token 01M500J9GG1RBXMRQRKFP5WJ39
+consumed 01M500J9GG1RBXMRQRKFP5WJ39 (type design, by developer at 2026-10-15T14:48:23Z)
++ pact --unix <REPO>/examples/online/run-data/pact.sock produce --domain se_lifecycle_trap --participant tester --type test_report --predecessors 01M500J9HYZAXCKHWSFATF59S6 --thing-ref TR-901
+token 01M500J9KAS33AXHHH68R8XC0W type=test_report produced_by=tester depends_on=[01M500J9HYZAXCKHWSFATF59S6]
+# 这一次 tester 先消费 implementation（第 8 步刻意没这么做）
++ pact --unix <REPO>/examples/online/run-data/pact.sock consume --domain se_lifecycle_trap --participant tester --token 01M500J9HYZAXCKHWSFATF59S6
+consumed 01M500J9HYZAXCKHWSFATF59S6 (type implementation, by tester at 2026-10-15T14:48:23Z)
++ pact --unix <REPO>/examples/online/run-data/pact.sock read --domain se_lifecycle_trap --participant deployer --token 01M500J9KAS33AXHHH68R8XC0W
+error [GateConditionFailed]: 参与者 deployer 的 read test_report gate 条件不满足：Via(TypeName("implementation"))
+  -> exit=1（预期非 0：引擎拒绝）
+# via implementation 的见证已消失 ⇒ deployer 连读 test_report 都不行
+# 这正是 analyze 报的那条 stranding_risk：
+#   ty_b=test_report ty_a=implementation via_holder=deployer consumer=tester potential=false
+# potential=false 表示无环拓扑下的确定性报告（有环时为保守的 POTENTIAL_STRANDING）
++ pact --unix <REPO>/examples/online/run-data/pact.sock status --domain se_lifecycle_trap
+se_lifecycle_trap: counter=1 archive=3 terminated=false
+# 域卡在 terminated=false，Counter 里剩一个谁也消费不掉的 test_report
+# 修法（任选其一，都是改域声明而非改引擎）：
+#   a) tester 不 consume implementation（让见证活得比 test_report 久）
+#   b) deployer 的 via 换成生命周期更长的见证类型
+#   c) 去掉 via，接受更弱的溯源保证
+
+===== 13. 事件溯源：JSONL 是真相源，replay 可离线重建 =====
++ ls -1 examples/online/run-data
+daemon.log
+index.tursodb
+index.tursodb-wal
+pact.sock
+pact.toml
+se_lifecycle.events.jsonl
+se_lifecycle_trap.events.jsonl
+# 重放主链路域的完整事件日志（离线命令，不需要 daemon）：
++ pact replay examples/online/run-data/se_lifecycle.events.jsonl
+replayed 10 events (domain se_lifecycle): counter=0 archive=5
+# counter=0 archive=5 与第 11 步的 status 一致 —— 状态可从事件日志完全重建
+# 崩溃恢复走的是同一条路径：快照 + 其后的事件重放
+
+===== 14. 卸载域并停止 daemon =====
++ pact --unix <REPO>/examples/online/run-data/pact.sock domain unload --domain se_lifecycle_trap
+unloaded se_lifecycle_trap
++ pact --unix <REPO>/examples/online/run-data/pact.sock domain unload --domain se_lifecycle
+unloaded se_lifecycle
++ pact --unix <REPO>/examples/online/run-data/pact.sock domain list
+(无域)
+# daemon 已停止；run-data/ 下的事件日志与快照仍在，可用于事后审计
+
+演示结束。离线三件套见 examples/offline/run.sh。
