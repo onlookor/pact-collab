@@ -197,23 +197,17 @@ impl IndexStore for TursoIndexStore {
                         self.upsert_token(domain, token, &TokenStatus::Counter)
                             .await?;
                     }
-                    Event::Consumed {
-                        token_id, by, ts, ..
-                    } => {
-                        // apply_event 已保证目标在 Counter 上并移入 Archive；终态从 Archive 取
-                        if let Some(entry) =
-                            state.archive.iter().rev().find(|e| e.token.id == *token_id)
-                        {
-                            self.upsert_token(
-                                domain,
-                                &entry.token,
-                                &TokenStatus::Archived {
-                                    exhausted_by: by.clone(),
-                                    exhausted_at: ts.clone(),
-                                },
-                            )
-                            .await?;
-                        }
+                    Event::Consumed { token, by, ts, .. } => {
+                        // 事件自足：token 全量随行，直接投影归档终态
+                        self.upsert_token(
+                            domain,
+                            token,
+                            &TokenStatus::Archived {
+                                exhausted_by: by.clone(),
+                                exhausted_at: ts.clone(),
+                            },
+                        )
+                        .await?;
                     }
                     _ => {}
                 }
@@ -268,8 +262,9 @@ mod tests {
                 Event::Consumed {
                     seq: 4,
                     ts: "T3".into(),
-                    token_id: TokenId(format!("{domain}-t1")),
+                    token: token(&format!("{domain}-t1"), "req"),
                     by: ParticipantName("arch".into()),
+                    request_id: None,
                 },
             ],
         )

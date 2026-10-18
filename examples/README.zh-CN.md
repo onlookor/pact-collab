@@ -19,7 +19,7 @@
 
 ## 1. 覆盖范围
 
-### 1.1 四份通用域（`domains/`）
+### 1.1 五份通用域（`domains/`）
 
 计数由 `pact domain validate` 实测得出（该命令需 daemon，见 §2）。
 
@@ -29,8 +29,9 @@
 | [`domains/re_pipeline.pact`](domains/re_pipeline.pact) | 需求工程通用流水线（含合取前置与变更控制回环） | 7 | 7 | 19 | 2 | 0 |
 | [`domains/react_loop.pact`](domains/react_loop.pact) | 单智能体 ReAct 循环（前置图带环，仍自然终止） | 4 | 2 | 12 | 1 | 0 |
 | [`domains/cross_harness.pact`](domains/cross_harness.pact) | 多智能体协作，无中心编排器 | 5 | 4 | 13 | 1 | 0 |
+| [`domains/external_materialization.pact`](domains/external_materialization.pact) | 外部物化确认：以见证 token 把关消费（`readiness` token 门控 coordinator 的消费） | 3 | 4 | 4 | 2 | 0 |
 
-四份域的六项分析实测结果（逐字来自 `examples/offline/trace.txt`）：
+五份域的六项分析实测结果（逐字来自 `examples/offline/trace.txt`）：
 
 | 域 | 良构（违规/警告） | seed_types | 可达/不可达 | gate_coverage | consumption_reachability | structural_deadlock | stranding_risk |
 |----|-------------------|------------|-------------|---------------|--------------------------|---------------------|----------------|
@@ -38,6 +39,7 @@
 | re_pipeline | 0 / 0 | 2 | 7 / 0 | 0 | **2** | 0 | 0 |
 | react_loop | 0 / **1** | 1 | 4 / 0 | 0 | 0 | 0 | 0 |
 | cross_harness | 0 / 0 | 1 | 5 / 0 | 0 | 0 | 0 | 0 |
+| external_materialization | 0 / 0 | 2 | 3 / 0 | 0 | 0 | 0 | 0 |
 
 三份非零项都不是缺陷，都是**咨询性**结果，分类理由见 §4。
 
@@ -60,7 +62,7 @@
 | 文件 | 说明 |
 |------|------|
 | [`online/run.sh`](online/run.sh) → [`online/trace.txt`](online/trace.txt) | daemon 全生命周期 14 步（238 行）：启动 → 装载 → 四类动作 → Gate 拦截 → Rule-T 终止 → 事件重放 → 卸载 |
-| [`offline/run.sh`](offline/run.sh) → [`offline/trace.txt`](offline/trace.txt) | 离线三件套 5 步（187 行）：analyze × 4 域、三类良构违例、compose 成功与 C2 拒绝、replay |
+| [`offline/run.sh`](offline/run.sh) → [`offline/trace.txt`](offline/trace.txt) | 离线三件套 5 步（200 行）：analyze × 5 域、三类良构违例、compose 成功与 C2 拒绝、replay |
 | [`offline/fixtures/se_lifecycle.events.jsonl`](offline/fixtures/se_lifecycle.events.jsonl) | 12 行事件日志，让离线演示在 fresh clone 上自足（不依赖先跑在线脚本） |
 
 `trace.txt` 是**真实录制的输出**，不是手写样例：token id（ULID）、时间戳、
@@ -361,7 +363,7 @@ fixture 共 12 行：1 条 `DomainLoaded`（重置状态）、1 条 `Terminated`
 | 4 | Participant Count ≥ 1 | 单参与者系统也是合法的退化情形 |
 | 5 | Identifiable Entry Points | 每个源类型都能关联到一个种子权威 |
 
-四份域对这五条的落点各有侧重：
+五份域对这五条的落点各有侧重：
 
 - **se_lifecycle / re_pipeline** 是 1–5 全中的典型流水线；
 - **react_loop** 逼近第 4 条的退化情形——agent 独占全部 12 条 gate，user 只持
@@ -371,6 +373,10 @@ fixture 共 12 行：1 条 `DomainLoaded`（重置状态）、1 条 `Terminated`
   不只服务于源类型**，也是给纯循环域点火的手段（seed 豁免前置条件，§1.4.3）；
 - **cross_harness** 突出第 3 条：三个 harness 互不通信，全靠 Counter 上的 token
   传递产出，谁先谁后由 Rule-P 可用性决定，不需要中心调度。
+- **external_materialization** 落在第 5 条与见证 token 模式：外部系统的状态进不了
+  GateExpr（条件只读 Counter），于是把「产物已就位」表示成一枚 `readiness` token，
+  由 external_system 经 `seed_authority` 注入；coordinator 的 `consumes work_item`
+  仅在 `when exists readiness` 时准入，确认与消费落在同一次 GateHolds 判定里。
 
 ### 7.3 不适用边界（§2.3，九条）
 
@@ -392,8 +398,8 @@ fixture 共 12 行：1 条 `DomainLoaded`（重置状态）、1 条 `Terminated`
 ### 7.4 领域无关性（§2.2）
 
 范式本身不变，换域就是换四个注入点：TypeSchema、PreconditionGraph、GateMatrix、
-SeedAuthorityDecl。本目录四份域就是四次不同的填充——软件工程、需求工程、
-智能体循环、多智能体协作，用的是同一套原语和同一套 SOS 规则。
+SeedAuthorityDecl。本目录五份域就是五次不同的填充——软件工程、需求工程、
+智能体循环、多智能体协作、外部物化确认，用的是同一套原语和同一套 SOS 规则。
 
 论文还提到一个**可选**的第五注入点 Archival Policy（`AP: Counter → 2^Counter`，
 指定某个系统参与者在条件成立时该消费哪些 token）。它经正常 Rule-E 执行，不

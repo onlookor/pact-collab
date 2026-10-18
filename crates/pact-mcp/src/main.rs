@@ -111,6 +111,16 @@ struct TokenIn {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct ConsumeIn {
+    domain: String,
+    participant: String,
+    token_id: String,
+    /// 可选幂等键：同域内重复请求返回首次结果，不重复消费。
+    #[serde(default)]
+    request_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct TypeFilterIn {
     domain: String,
     /// 可选类型过滤。
@@ -260,13 +270,18 @@ impl PactMcp {
 
     #[tool(
         name = "pact_consume",
-        description = "Rule-E：消费 token（移出 Counter，归档）"
+        description = "Rule-E：消费 token（移出 Counter，归档）；可选 request_id 幂等去重"
     )]
-    async fn consume(&self, Parameters(in_): Parameters<TokenIn>) -> Result<String, String> {
+    async fn consume(&self, Parameters(in_): Parameters<ConsumeIn>) -> Result<String, String> {
         to_ok(
             &self
                 .client
-                .consume(&in_.domain, &in_.participant, &in_.token_id)
+                .consume(
+                    &in_.domain,
+                    &in_.participant,
+                    &in_.token_id,
+                    in_.request_id.as_deref(),
+                )
                 .await
                 .map_err(to_err)?,
         )

@@ -25,12 +25,16 @@ pub enum Event {
         ts: Timestamp,
         token: Token,
     },
-    /// 消费：token 移出 Counter 入 Archive（重放时从 Counter 取 token 全量）。
+    /// 消费：token 移出 Counter 入 Archive，携带 token 全量快照，使单行日志自足
+    /// （审计与重放均不依赖同域其他行；`exhausted_at` = `ts`，`exhausted_by` = `by`）。
+    /// `request_id` 为可选幂等键（客户端重试去重；见引擎提交契约）。
     Consumed {
         seq: u64,
         ts: Timestamp,
-        token_id: TokenId,
+        token: Token,
         by: ParticipantName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
     /// Rule-T 检测结果（信息性，无状态效果，可从状态重导出）。
     Terminated { seq: u64, ts: Timestamp },
@@ -74,7 +78,7 @@ impl Event {
     pub fn token_id(&self) -> Option<&TokenId> {
         match self {
             Event::Seeded { token, .. } | Event::Produced { token, .. } => Some(&token.id),
-            Event::Consumed { token_id, .. } => Some(token_id),
+            Event::Consumed { token, .. } => Some(&token.id),
             _ => None,
         }
     }
@@ -124,16 +128,11 @@ pub fn apply_event(state: &mut CounterState, ev: &Event) -> Result<ApplyOutcome,
             state.apply(Effect::Produced(token.clone()));
             Ok(ApplyOutcome::Applied)
         }
-        Event::Consumed {
-            token_id, by, ts, ..
-        } => {
-            let token = state.counter.get(token_id).cloned().ok_or_else(|| {
-                StoreError::ConsumeTargetMissing {
-                    token_id: token_id.clone(),
-                }
-            })?;
+        Event::Consumed { token, by, ts, .. } => {
+            // 自足：token 全量随事件落盘，重放不再从 Counter 反查
+            // （Effect::Consumed 只按 id 移除目标（不在则无操作）并追加 Archive）。
             state.apply(Effect::Consumed(pact_core::ArchiveEntry {
-                token,
+                token: token.clone(),
                 exhausted_by: by.clone(),
                 exhausted_at: ts.clone(),
             }));
@@ -183,34 +182,61 @@ mod tests {
     }
 
     #[test]
-    fn apply_event_consumed_rebuilds_archive_from_counter() {
+    fn apply_event_consumed_is_self_contained() {
+        // 空 Counter 上重放 Consumed：token 全量随事件而来，无需反查同域其他行
         let mut state = CounterState::new();
-        state.apply(Effect::Seeded(token("t1", "design")));
         let ev = Event::Consumed {
             seq: 2,
             ts: "T9".into(),
-            token_id: TokenId("t1".into()),
+            token: token("t1", "design"),
             by: ParticipantName("dev".into()),
+            request_id: None,
         };
         assert_eq!(apply_event(&mut state, &ev).unwrap(), ApplyOutcome::Applied);
         assert!(state.counter.is_empty());
         assert_eq!(state.archive.len(), 1);
         assert_eq!(state.archive[0].token.id.0, "t1");
         assert_eq!(state.archive[0].exhausted_by.0, "dev");
+        assert_eq!(state.archive[0].exhausted_at, "T9");
     }
 
     #[test]
-    fn apply_event_consumed_missing_target_fails() {
+    fn apply_event_consumed_removes_matching_counter_token() {
         let mut state = CounterState::new();
+        state.apply(Effect::Seeded(token("t1", "design")));
         let ev = Event::Consumed {
             seq: 2,
             ts: "T9".into(),
-            token_id: TokenId("ghost".into()),
+            token: token("t1", "design"),
             by: ParticipantName("dev".into()),
+            request_id: None,
         };
-        assert!(matches!(
-            apply_event(&mut state, &ev),
-            Err(StoreError::ConsumeTargetMissing { .. })
-        ));
+        assert_eq!(apply_event(&mut state, &ev).unwrap(), ApplyOutcome::Applied);
+        assert!(state.counter.is_empty());
+        assert_eq!(state.archive.len(), 1);
+    }
+
+    #[test]
+    fn consumed_event_roundtrips_request_id() {
+        let ev = Event::Consumed {
+            seq: 5,
+            ts: "T5".into(),
+            token: token("t1", "design"),
+            by: ParticipantName("dev".into()),
+            request_id: Some("rid-1".into()),
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert!(json.contains(r#""request_id":"rid-1""#));
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), ev);
+
+        // 无 request_id 时不序列化该字段（保持日志最小）
+        let ev2 = Event::Consumed {
+            seq: 6,
+            ts: "T6".into(),
+            token: token("t2", "design"),
+            by: ParticipantName("dev".into()),
+            request_id: None,
+        };
+        assert!(!serde_json::to_string(&ev2).unwrap().contains("request_id"));
     }
 }

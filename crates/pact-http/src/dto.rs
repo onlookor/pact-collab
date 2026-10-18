@@ -67,6 +67,15 @@ pub struct ParticipantReq {
     pub participant: String,
 }
 
+/// `POST .../tokens/{id}/consume`（Rule-E；可选幂等键）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsumeReq {
+    pub participant: String,
+    /// 可选幂等键：同域内重复请求返回首次结果，不重复消费。
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
 // ============ 响应 ============
 
 /// §6.3 成功响应（Rule-S/P/R）。

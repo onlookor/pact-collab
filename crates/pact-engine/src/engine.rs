@@ -35,6 +35,12 @@ pub enum EngineError {
     Compose(Vec<Conflict>),
     /// 启动恢复失败（日志/声明损坏，需人工介入；后续全部命令以此失败）。
     Recovery(String),
+    /// 幂等键冲突：同一 `request_id` 已用于另一 token 的消费。
+    IdempotencyConflict {
+        request_id: String,
+        existing: TokenId,
+        requested: TokenId,
+    },
     /// 引擎已停止。
     EngineStopped,
 }
@@ -48,6 +54,14 @@ impl std::fmt::Display for EngineError {
             EngineError::Rule(e) => write!(f, "规则拒绝：{e:?}"),
             EngineError::Compose(cs) => write!(f, "片段组合冲突：{cs:?}"),
             EngineError::Recovery(msg) => write!(f, "启动恢复失败：{msg}"),
+            EngineError::IdempotencyConflict {
+                request_id,
+                existing,
+                requested,
+            } => write!(
+                f,
+                "幂等键 {request_id} 已用于消费 token {existing}，与本次请求的 {requested} 冲突"
+            ),
             EngineError::EngineStopped => write!(f, "引擎已停止"),
         }
     }
@@ -135,6 +149,8 @@ pub enum Command {
         domain: String,
         participant: ParticipantName,
         token_id: TokenId,
+        /// 可选幂等键：同域内重复请求返回首次结果（不重复消费）。
+        request_id: Option<String>,
         resp: Responder<ArchiveEntry>,
     },
     QueryCounter {
@@ -254,6 +270,9 @@ struct DomainSession {
     events_since_snapshot: u64,
     /// 当前 Rule-T 判定（信息性，不锁定域——种子仍可注入）。
     terminated: bool,
+    /// Rule-E 幂等表：request_id → (目标 token id, 首次归档结果)。
+    /// 随事件日志持久化（Consumed 事件的 request_id 字段），启动时重建。
+    consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)>,
     notify: broadcast::Sender<Notification>,
 }
 
@@ -321,6 +340,32 @@ impl EngineActor {
         for ev in events.iter().filter(|e| e.seq() > base_seq) {
             apply_event(&mut state, ev)?;
         }
+        // 幂等表：从最后一次 DomainLoaded 之后的全部 Consumed(带 request_id) 事件重建。
+        // 不随快照基线截断——快照只决定 CounterState 的重放起点，幂等表必须完整。
+        let consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)> = events
+            .iter()
+            .skip(dl_idx + 1)
+            .filter_map(|e| match e {
+                Event::Consumed {
+                    token,
+                    by,
+                    ts,
+                    request_id: Some(rid),
+                    ..
+                } => Some((
+                    rid.clone(),
+                    (
+                        token.id.clone(),
+                        ArchiveEntry {
+                            token: token.clone(),
+                            exhausted_by: by.clone(),
+                            exhausted_at: ts.clone(),
+                        },
+                    ),
+                )),
+                _ => None,
+            })
+            .collect();
         let terminated = termination_holds(&domain, &state);
         let (notify, _) = broadcast::channel(self.config.notify_capacity);
         self.domains.insert(
@@ -331,6 +376,7 @@ impl EngineActor {
                 last_seq,
                 events_since_snapshot: 0,
                 terminated,
+                consumed_requests,
                 notify,
             },
         );
@@ -377,8 +423,13 @@ impl EngineActor {
                 domain,
                 participant,
                 token_id,
+                request_id,
                 resp,
-            } => respond(resp, self.consume(&domain, &participant, &token_id).await),
+            } => respond(
+                resp,
+                self.consume(&domain, &participant, &token_id, request_id)
+                    .await,
+            ),
             Command::QueryCounter {
                 domain,
                 filter,
@@ -459,6 +510,7 @@ impl EngineActor {
                 last_seq: next_seq,
                 events_since_snapshot: 0,
                 terminated,
+                consumed_requests: BTreeMap::new(),
                 notify,
             },
         );
@@ -517,7 +569,7 @@ impl EngineActor {
             name,
             session,
         )
-        .await?;
+        .await;
         Ok(token)
     }
 
@@ -566,7 +618,7 @@ impl EngineActor {
             name,
             session,
         )
-        .await?;
+        .await;
         Ok(token)
     }
 
@@ -586,9 +638,24 @@ impl EngineActor {
         name: &str,
         participant: &ParticipantName,
         token_id: &TokenId,
+        request_id: Option<String>,
     ) -> Result<ArchiveEntry, EngineError> {
         let now = self.clock.now();
         let session = self.domains.get_mut(name).ok_or_else(|| not_found(name))?;
+        // 幂等命中：同一 request_id 的重复请求直接返回首次结果，不重复消费。
+        // 首次结果随 Consumed 事件持久化，跨重启仍生效（恢复时重建幂等表）。
+        if let Some(rid) = &request_id {
+            if let Some((existing, entry)) = session.consumed_requests.get(rid) {
+                if existing == token_id {
+                    return Ok(entry.clone());
+                }
+                return Err(EngineError::IdempotencyConflict {
+                    request_id: rid.clone(),
+                    existing: existing.clone(),
+                    requested: token_id.clone(),
+                });
+            }
+        }
         let entry = rule_e(
             &session.domain,
             &session.state,
@@ -600,12 +667,19 @@ impl EngineActor {
         let ev = Event::Consumed {
             seq,
             ts: now.clone(),
-            token_id: token_id.clone(),
+            token: entry.token.clone(),
             by: participant.clone(),
+            request_id: request_id.clone(),
         };
-        self.store.append_consumed(name, &ev, &entry.token).await?;
+        // 提交点 = 日志落盘（store.append 内部 fsync）。其后步骤均不可失败（见 post_commit）。
+        self.store.append(name, &ev).await?;
         session.state.apply(Effect::Consumed(entry.clone()));
         session.last_seq = seq;
+        if let Some(rid) = request_id {
+            session
+                .consumed_requests
+                .insert(rid, (token_id.clone(), entry.clone()));
+        }
         notify_state_change(
             session,
             name,
@@ -621,7 +695,7 @@ impl EngineActor {
             name,
             session,
         )
-        .await?;
+        .await;
         Ok(entry)
     }
 
@@ -761,23 +835,26 @@ fn notify_state_change(
 }
 
 /// 状态变更后的公共提交尾部：定期快照 + Rule-T 惰性求值。
-/// 终止转移（false→true）时追加 Terminated 事件并广播；信息性，不锁定域。
+/// 二者均位于提交点（日志落盘）之后，为**尽力而为的派生步骤、不可失败**：
+/// - 快照失败：正确性由重放兜底（设计 §7.4），跳过本次并保留计数待下次重试；
+/// - Terminated 事件是可由状态重导出的信息，追加失败不影响已提交命令，重启时重算。
 async fn post_commit(
     store: &Store,
     clock: &dyn Clock,
     config: &EngineConfig,
     name: &str,
     session: &mut DomainSession,
-) -> Result<(), EngineError> {
-    // 定期快照（失败上报；重放兜底保证正确性不受影响，设计 §7.4）
+) {
+    // 定期快照（尽力而为）
     session.events_since_snapshot += 1;
     if config.snapshot_every > 0 && session.events_since_snapshot >= config.snapshot_every {
         let snap = Snapshot {
             seq: session.last_seq,
             state: session.state.clone(),
         };
-        store.write_snapshot(name, &snap)?;
-        session.events_since_snapshot = 0;
+        if store.write_snapshot(name, &snap).is_ok() {
+            session.events_since_snapshot = 0;
+        }
     }
 
     // Rule-T 惰性求值（D14：转调 core）
@@ -785,7 +862,7 @@ async fn post_commit(
     if now_terminated && !session.terminated {
         let seq = session.last_seq + 1;
         let ts = clock.now();
-        store
+        if store
             .append(
                 name,
                 &Event::Terminated {
@@ -793,21 +870,23 @@ async fn post_commit(
                     ts: ts.clone(),
                 },
             )
-            .await?;
-        session.last_seq = seq;
-        let _ = session.notify.send(Notification {
-            event: NotificationKind::Terminated,
-            domain: name.to_owned(),
-            seq,
-            ts,
-            token_id: None,
-            summary: NotificationSummary {
-                counter_size: session.state.counter.len(),
-            },
-        });
+            .await
+            .is_ok()
+        {
+            session.last_seq = seq;
+            let _ = session.notify.send(Notification {
+                event: NotificationKind::Terminated,
+                domain: name.to_owned(),
+                seq,
+                ts,
+                token_id: None,
+                summary: NotificationSummary {
+                    counter_size: session.state.counter.len(),
+                },
+            });
+        }
     }
     session.terminated = now_terminated;
-    Ok(())
 }
 
 fn respond<T>(resp: oneshot::Sender<Result<T, EngineError>>, result: Result<T, EngineError>) {
@@ -960,12 +1039,14 @@ impl Engine {
         domain: &str,
         participant: ParticipantName,
         token_id: TokenId,
+        request_id: Option<String>,
     ) -> Result<ArchiveEntry, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::Consume {
             domain: domain.to_owned(),
             participant,
             token_id,
+            request_id,
             resp,
         })
         .await?;

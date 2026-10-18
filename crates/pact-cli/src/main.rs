@@ -89,6 +89,9 @@ enum Command {
         participant: String,
         #[arg(long)]
         token: String,
+        /// 可选幂等键：同域内重复请求返回首次结果，不重复消费。
+        #[arg(long)]
+        request_id: Option<String>,
     },
     /// Counter 查询
     Counter {
@@ -378,14 +381,23 @@ async fn run(cli: Cli) -> ExitCode {
             domain,
             participant,
             token,
+            request_id,
         } => {
             let c = conn.client();
-            done(json, c.consume(&domain, &participant, &token).await, |r| {
-                println!(
-                    "consumed {} (type {}, by {} at {})",
-                    r.entry.token.id, r.entry.token.ty, r.entry.exhausted_by, r.entry.exhausted_at
-                );
-            })
+            done(
+                json,
+                c.consume(&domain, &participant, &token, request_id.as_deref())
+                    .await,
+                |r| {
+                    println!(
+                        "consumed {} (type {}, by {} at {})",
+                        r.entry.token.id,
+                        r.entry.token.ty,
+                        r.entry.exhausted_by,
+                        r.entry.exhausted_at
+                    );
+                },
+            )
         }
 
         // —— 查询 ——

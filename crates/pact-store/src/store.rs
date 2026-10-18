@@ -1,6 +1,7 @@
 //! Store 门面：真相源（JSONL）+ 快照 + 派生索引的统一生命周期。
 //!
-//! 写入路径（引擎临界区内，设计 §7.3）：追加 JSONL（fsync）→ 更新索引。
+//! 写入路径（引擎临界区内，设计 §7.3）：追加 JSONL（fsync）为**提交点**；
+//! 索引更新为尽力而为的派生投影（失败不回滚、不失败本次提交，由启动一致性校验重建自愈）。
 //! 启动路径：`recover()` 清洗日志（截断崩溃半行）→ 读取全部事件 →
 //! 索引与日志末尾 seq 一致性校验（不一致则全量重建）。
 //! 语义重放（解析声明、恢复 CounterState）由引擎层驱动（store 不依赖 parser）。
@@ -10,7 +11,6 @@ use crate::event::Event;
 use crate::index::{IndexStore, TokenStatus, TursoIndexStore};
 use crate::log::{self, EventLog, ReadOutcome};
 use crate::snapshot::{self, Snapshot};
-use pact_core::Token;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -99,11 +99,20 @@ impl Store {
         Ok(recovered)
     }
 
-    /// 追加事件（非 Consumed 类）：seq 校验 → JSONL fsync → 索引更新。
-    /// Seeded/Produced 同步维护 tokens 投影。
+    /// 追加事件：seq 校验 → JSONL fsync（**提交点**）→ 派生索引投影（尽力而为）。
+    ///
+    /// 索引是纯派生物（设计 §7.3/§7.4）：日志落盘即视为已提交；索引投影失败既不失败本次
+    /// 调用、也不回滚，由下次启动的一致性校验触发全量重建（自愈）。由此排除"日志已提交
+    /// 但调用方收到错误、内存未 apply"的日志/内存分歧。
     pub async fn append(&self, domain: &str, ev: &Event) -> Result<(), StoreError> {
         validate_domain_name(domain)?;
         self.log_append(domain, ev).await?;
+        let _ = self.index_project(domain, ev).await;
+        Ok(())
+    }
+
+    /// 派生索引投影（events 行 + tokens 终态）。返回 Err 仅供诊断，调用方忽略。
+    async fn index_project(&self, domain: &str, ev: &Event) -> Result<(), StoreError> {
         self.index.upsert_event(domain, ev).await?;
         match ev {
             Event::Seeded { token, .. } | Event::Produced { token, .. } => {
@@ -111,40 +120,21 @@ impl Store {
                     .upsert_token(domain, token, &TokenStatus::Counter)
                     .await?;
             }
+            Event::Consumed { token, by, ts, .. } => {
+                self.index
+                    .upsert_token(
+                        domain,
+                        token,
+                        &TokenStatus::Archived {
+                            exhausted_by: by.clone(),
+                            exhausted_at: ts.clone(),
+                        },
+                    )
+                    .await?;
+            }
             _ => {}
         }
         Ok(())
-    }
-
-    /// 追加 Consumed 事件：事件只记 token_id，tokens 投影需要的 token 全量
-    /// 由引擎提供（Rule-E 在线执行时目标 token 就在手边，by/ts 从事件提取）。
-    pub async fn append_consumed(
-        &self,
-        domain: &str,
-        ev: &Event,
-        token: &Token,
-    ) -> Result<(), StoreError> {
-        let (by, ts) = match ev {
-            Event::Consumed { by, ts, .. } => (by.clone(), ts.clone()),
-            _ => {
-                return Err(StoreError::Index(
-                    "append_consumed 只接受 Consumed 事件".into(),
-                ))
-            }
-        };
-        validate_domain_name(domain)?;
-        self.log_append(domain, ev).await?;
-        self.index.upsert_event(domain, ev).await?;
-        self.index
-            .upsert_token(
-                domain,
-                token,
-                &TokenStatus::Archived {
-                    exhausted_by: by,
-                    exhausted_at: ts,
-                },
-            )
-            .await
     }
 
     /// 追加 JSONL（含 seq 逐行 +1 校验与 fsync）。
@@ -211,7 +201,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
+    use pact_core::{ParticipantName, ThingRef, Token, TokenId, TypeName};
 
     fn token(id: u64, ty: &str) -> Token {
         Token {
@@ -250,15 +240,15 @@ mod tests {
             .await
             .unwrap();
         store
-            .append_consumed(
+            .append(
                 "d",
                 &Event::Consumed {
                     seq: 3,
                     ts: "T2".into(),
-                    token_id: TokenId("t1".into()),
+                    token: token(1, "req"),
                     by: ParticipantName("arch".into()),
+                    request_id: None,
                 },
-                &token(1, "req"),
             )
             .await
             .unwrap();

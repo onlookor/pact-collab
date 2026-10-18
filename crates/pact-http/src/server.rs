@@ -3,9 +3,9 @@
 //! 被拒动作返回 4xx + §6.3 结构化错误体；错误码 = RuleError / Problem 变体名。
 
 use crate::dto::{
-    conflicts_detail, problem_detail, rule_error_detail, ComposeReq, DomainInfo, DomainsResp,
-    EnabledOption, EnabledResp, EntryResp, ErrorBody, ErrorDetail, GatesResp, LoadDomainReq,
-    ParticipantReq, ProduceReq, SeedReq, TokenResp, ValidateReq, ValidateResp,
+    conflicts_detail, problem_detail, rule_error_detail, ComposeReq, ConsumeReq, DomainInfo,
+    DomainsResp, EnabledOption, EnabledResp, EntryResp, ErrorBody, ErrorDetail, GatesResp,
+    LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp, ValidateReq, ValidateResp,
 };
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, Request, State};
@@ -133,6 +133,24 @@ impl From<EngineError> for ApiError {
                 "Recovery",
                 format!("启动恢复失败：{msg}"),
             ),
+            EngineError::IdempotencyConflict {
+                request_id,
+                existing,
+                requested,
+            } => ApiError {
+                status: StatusCode::CONFLICT,
+                detail: ErrorDetail {
+                    code: "IdempotencyConflict".to_owned(),
+                    detail: serde_json::json!({
+                        "request_id": request_id,
+                        "existing_token_id": existing.0,
+                        "requested_token_id": requested.0,
+                    }),
+                    message: format!(
+                        "幂等键 {request_id} 已用于消费 token {existing}，与本次请求的 {requested} 冲突"
+                    ),
+                },
+            },
             EngineError::EngineStopped => ApiError::new(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "EngineStopped",
@@ -434,12 +452,17 @@ async fn consume_token(
     State(st): State<Arc<ServerState>>,
     Path((d, id)): Path<(String, String)>,
     headers: HeaderMap,
-    JsonReq(req): JsonReq<ParticipantReq>,
+    JsonReq(req): JsonReq<ConsumeReq>,
 ) -> Result<Json<EntryResp>, ApiError> {
     st.authorize(&req.participant, &headers)?;
     let entry = st
         .engine
-        .consume(&d, ParticipantName(req.participant), TokenId(id))
+        .consume(
+            &d,
+            ParticipantName(req.participant),
+            TokenId(id),
+            req.request_id,
+        )
         .await?;
     Ok(Json(EntryResp { entry }))
 }

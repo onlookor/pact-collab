@@ -27,7 +27,8 @@
 | D19 | 阶段 4 范围与接口接入方式 | pact-http **提前至阶段 4** 与 pact-cli、pact-mcp 同批交付；MCP 与 CLI 均不内嵌引擎，而是经 `pact_http::client`（REST over unix socket）接入同一 daemon；原规划的独立 `pact-server` bin 取消，daemon 由 `pact daemon start`（pact-cli 子命令）与 `pactd`（pact-http 裸 daemon bin）提供 | 用户决策。三接口共享单一 daemon 即单一 Counter 权威（D6），REST 成为唯一状态变更通道——接口等价性由构造保证（MCP/CLI 只是 REST 的形态转换），e2e 只需各走一遍 REST 即覆盖契约一致性；联网版（v2）只换传输与认证，接口层结构零改动 |
 | D20 | CLI 参数风格与 MCP 传输范围 | CLI 域操作命令一律 `--domain` / `--participant` / `--token` / `--type` flag（不采用设计稿中 `pact enabled <participant>` 式位置参数简写）；连接参数 `--unix` / `--tcp` / `--bearer` 与输出开关 `--json` 为全局 flag；MCP v1 仅 stdio，Streamable HTTP 移交联网演进（v2） | flag 风格消除位置参数歧义、便于脚本化与 `--json` 组合；MCP 经 REST 接入（D19）后 Streamable HTTP 与 REST 同端口价值消失，随 v2 TLS/远程接入一并落地 |
 | D21 | rev2 良构约束强制风格与 A.5 重构（用户选定推荐项） | (1) 空 LHS `{ } → T` 解析期语法拒绝（错误指名 Non-Empty LHS 约束），`validate_domain` 另设 `EmptyPrecondLhs` 声明期防御（覆盖程序化构造/组合出的 Domain）；(2) LHS 重复 `{A + A} → B` 在 parser `build_domain` 保留原始 `Vec<TypeName>` 序列时检测（`DuplicatePrecondLhs`）——`&Domain` 的 BTreeSet 会静默去重，此为唯一强制点；RHS 重复由 BTreeMap 键唯一构造性保证；(3) count 字面量 PosNat（`pos_nat()` 拒绝 0 与前导零，`ZeroCountLiteral` 二次防御）；(4) A.5 = `precondition_wf` 三元报告 `{well_formed, violations: Vec<DomainError>, warnings: Vec<WfWarning>}`，违规判定委托 `core::validate_domain`（单一判定源），Seed/Produce 重叠（§1.4.3 Advisory）为 `SeedProduceOverlap` 咨询性警告——**类型级判定**：produced 取全体参与者 produces gate 的并集，非源类型同时被 seed 与被任一人 produce 即告警，`participant` 字段为 seed 持有者；比论文 §1.4.3 的“同一参与者”表述更宽，取假阳性方向不漏报——论文维持参与者级原文，实现登记为参考算法的**保守超集**（2026-10-15 定案；论文曾误改三处、同日经用户裁决回退，规范是否修订由作者另行裁决）；聚合报告字段前置（附录 D：A.5 先于其余分析）；(5) `DomainError::UndeclaredType.referenced_by` 由 `&'static str` 改 `String`，使错误可内嵌进 serde 报告 | 解析期拒绝保持文法忠实；表示层（BTreeSet）无法承载的约束在序列仍在手时检测；A.5 委托避免判定逻辑分裂；前驱互异仅按 TokenId（Rule-P Note），类型级去重由 LHS Uniqueness 良构性免除 |
-| D22 | 通用示例与用户手册作为交付资产 | 新增 `examples/`（四份领域无关通用域 `domains/` + 两份组合片段 `fragments/` + 离线/在线两条上手脚本各带录制轨迹 + `README.md` 场景导航）与 `docs/manual.md`（权威用户手册，12 章）；**不接入 CI**（不新增遍历 `examples/**/*.pact` 的 cargo test）、**不改任何 crate**；脚本运行产物 `examples/online/run-data`、`examples/offline/out` 入 `.gitignore` | 用户决策（FR14）。示例是教学资产而非回归基线，接入 CI 会把示例漂移变成构建失败源，反而抑制示例演进；手册与示例分工为"参考权威 / 可运行路径"，交叉引用不重复维护同一事实。取证过程中发现的三处实现与文档不一致（CLI `reachability` 行把 `seed_types` 打印为"源类型"、MCP `pact_analyze` description 写"五项静态分析"实为六项、compose 语义在 CLI 只打印而 MCP/REST 会装载）**不改代码**，如实登记于 `docs/manual.md` §11 已知偏差与限制 |
+| D22 | 通用示例与用户手册作为交付资产 | 新增 `examples/`（领域无关通用域 `domains/`：初版四份，2026-10-18 按 D23 增设第五份 `external_materialization` 物化确认示例 + 两份组合片段 `fragments/` + 离线/在线两条上手脚本各带录制轨迹 + `README.md` 场景导航）与 `docs/manual.md`（权威用户手册，12 章）；**不接入 CI**（不新增遍历 `examples/**/*.pact` 的 cargo test）、**不改任何 crate**；脚本运行产物 `examples/online/run-data`、`examples/offline/out` 入 `.gitignore` | 用户决策（FR14）。示例是教学资产而非回归基线，接入 CI 会把示例漂移变成构建失败源，反而抑制示例演进；手册与示例分工为"参考权威 / 可运行路径"，交叉引用不重复维护同一事实。取证过程中发现的三处实现与文档不一致（CLI `reachability` 行把 `seed_types` 打印为"源类型"、MCP `pact_analyze` description 写"五项静态分析"实为六项、compose 语义在 CLI 只打印而 MCP/REST 会装载）**不改代码**，如实登记于 `docs/manual.md` §11 已知偏差与限制 |
+| D23 | 消耗提交契约与 Rule-E 幂等（2026-10-18，用户裁决） | (1) **提交点 = JSONL fsync**：`store.append` 追加日志即视为已提交；其后步骤（索引投影、定期快照、Terminated 事件、通知）为**尽力而为的派生动作——失败不回滚、不失败本次调用**，索引滞后由启动 seq 一致性校验触发 `rebuild` 自愈。(2) **Consumed 事件自足**：携带 token 全量快照（`exhausted_at` = `ts`、`exhausted_by` = `by`）与可选 `request_id`，重放与审计不再反查同域其他行。(3) **Rule-E 可选幂等**：同域内重复 `request_id` 返回首次归档结果（不重复消费；跨重启由日志重建幂等表生效），同一 `request_id` 用于另一 token → `IdempotencyConflict`。(4) **原子域含 gate 读集**：`rule_e` 对同一内存 `CounterState` 求 GateHolds 并随即 apply，单写者 actor 消除 TOCTOU 与并发双消费。(5) **边界**：引擎不执行外部副作用，`consume` 成功与外部动作成功是**两个独立承诺**；"产物未就位"不应表现为消费回滚，而应前移为 gate 准入条件（`exists` 型见证 token，见 §8.5） | 此前 Rule-E 仅有单步 SOS 语义、未声明实现级原子性；本决策把它显式化为可验证契约。原实现 `Consumed` 只记 `token_id`、重放反查 Counter，使单行日志不自足、与 NFR2（日志即完整审计）不符；原写路径"索引失败即返回 Err"会造成日志/内存瞬态分歧直至重启。拒绝"库事务 / 2PC / 分布式共识"方案：单写者 actor + 事件日志已满足线性化与崩溃一致性，引入它们只增复杂度 |
 
 ## 1. 总体结构
 
@@ -393,6 +394,15 @@ ArchiveEntry = Token + `"exhausted_by"` + `"exhausted_at"`。
 
 `error.code` = `RuleError` / `Problem` 变体名，机器可判；`message` 面向人类。拒绝动作一律整体失败，无部分效果。
 
+Rule-E 的请求体只带参与者，并可选一个幂等键：
+
+```json
+// 请求：POST /domains/{d}/tokens/{id}/consume  /  MCP pact_consume 参数
+{ "participant": "developer", "request_id": "retry-2f9c" }   // request_id 可省略
+```
+
+同域内重复的 `request_id` 返回首次归档结果（`{ "entry": ArchiveEntry }`），不重复消费；同一 `request_id` 用于另一 token 返回 HTTP 409 `IdempotencyConflict`（设计 D23）。
+
 ### 6.4 Counter 变更通知事件（Rule-W 唤醒，SSE `data:` / MCP notification）
 
 ```json
@@ -419,7 +429,8 @@ pub enum Event {
     DomainLoaded { name: String, declaration: String }, // 原文存档，可复现解析
     Seeded    { seq: u64, ts: Timestamp, token: Token },
     Produced  { seq: u64, ts: Timestamp, token: Token },  // token 内含 depends_on/produced_by
-    Consumed  { seq: u64, ts: Timestamp, token_id: TokenId, by: ParticipantName },
+    Consumed  { seq: u64, ts: Timestamp, token: Token, by: ParticipantName,
+                request_id: Option<String> }, // token 全量快照（自足）；request_id 为可选幂等键
     Terminated{ seq: u64, ts: Timestamp },                // Rule-T 检测结果（信息性）
 }
 ```
@@ -459,19 +470,22 @@ CREATE TABLE tokens(token_id TEXT PRIMARY KEY, domain TEXT, type TEXT, produced_
 CREATE INDEX idx_tokens_domain_type ON tokens(domain, type, status);
 ```
 
-写入路径（引擎临界区内）：追加 JSONL（fsync）→ 更新索引 → 更新内存态。启动路径：校验索引与日志末尾 seq 一致，不一致则 `rebuild`；加载最近快照 + 重放尾部事件恢复内存态。
+写入路径（引擎临界区内）：追加 JSONL（fsync）为**提交点** → 派生索引投影（**尽力而为**，失败不回滚、不失败本次调用）→ 更新内存态。启动路径：校验索引与日志末尾 seq 一致，不一致则 `rebuild`；加载最近快照 + 重放尾部事件恢复内存态。提交契约见 D23。
 
 ### 7.4 崩溃一致性
 
+- **提交点 = 日志 fsync**：日志落盘即视为已提交，调用方收到的成功/失败由它唯一决定；
+- 提交点之后的步骤（索引投影、快照、Terminated、通知）均可失败而**不回滚、不失败本次调用**——由此排除"日志已提交但返回错误、内存未 apply"的瞬态分歧（D23）；
 - 快照写失败不影响正确性（重放兜底）；
 - JSONL 半行写入（崩溃残留）→ 启动时检测并截断至最后一个完整行；
-- 索引文件永远可丢弃重建——真相源唯一。
+- 索引文件永远可丢弃重建——真相源唯一；索引滞后（投影失败）由启动 seq 一致性校验触发 `rebuild` 自愈；
+- Consumed 事件自足（携 token 全量快照），重放与审计不依赖同域其他行。
 
 ## 8. pact-engine：引擎 actor（阶段 3）
 
 ### 8.1 执行模型
 
-tokio 任务 + mpsc 命令通道，独占持有全部域的 `CounterState`。每个命令处理 = 查找域 → 调用 pact-core 纯函数 → 成功则 `state.apply(effect)` + 持久化 + 广播通知。检查与应用在同一临界区内原子完成（D6）。引擎**只编排不判定**（D14）：GateHolds、Rule-W、Rule-T 的判定全部转调 core。
+tokio 任务 + mpsc 命令通道，独占持有全部域的 `CounterState`。每个命令处理 = 查找域 → 调用 pact-core 纯函数 → 成功则 `store.append(事件)`（**提交点**）→ `state.apply(effect)` → 广播通知；提交点之后的步骤（索引/快照/通知）尽力而为（见 §8.5、D23）。检查与应用在同一临界区内原子完成（D6）。引擎**只编排不判定**（D14）：GateHolds、Rule-W、Rule-T 的判定全部转调 core。
 
 ```rust
 pub enum Command {
@@ -480,7 +494,7 @@ pub enum Command {
     Seed     { domain, participant, ty, thing_ref, resp },
     Produce  { domain, participant, ty, predecessors, thing_ref, resp },
     Read     { domain, participant, token_id, resp },
-    Consume  { domain, participant, token_id, resp },
+    Consume  { domain, participant, token_id, request_id, resp },  // request_id 可选幂等键
     QueryCounter { domain, filter, resp },
     QueryArchive { domain, filter, resp },
     QueryGates   { domain, participant, resp },
@@ -496,6 +510,8 @@ pub enum Command {
 
 启动恢复（actor 首要动作，失败则 fail-fast 排空后续命令）：逐域取**最后一次** DomainLoaded 解析声明；快照仅在 `snapshot.seq ≥ 该 DomainLoaded.seq` 时有效（防替换后旧快照复活）；重放尾部事件重建 CounterState 与 terminated 标记。Terminated 事件只在 false→true 转移时追加一次。
 
+Rule-E 处理顺序（D23）：幂等命中检查（同域 `request_id`）→ `rule_e`（对同一内存 `CounterState` 求 GateHolds）→ `store.append(Consumed)`（**提交点**）→ `state.apply` → 记入幂等表 → `post_commit`（快照/Terminated/通知，尽力而为）。幂等表为 `request_id → (token_id, ArchiveEntry)`，由日志中最后一次 DomainLoaded 之后的全部 Consumed 事件重建，跨重启生效；命中且 token 相同则返回首次结果，命中但 token 不同则 `IdempotencyConflict`。
+
 ### 8.2 通知（Rule-W 唤醒，D4）
 
 每域一个 `tokio::sync::broadcast` 通道，状态变更事件（Seeded/Produced/Consumed/Terminated）即时广播（格式见 §6.4）。MCP 端：工具调用返回 + 订阅通知（rmcp 支持 server notification）；REST 端：SSE `GET /domains/{d}/events`。轮询兜底 = `QueryEnabled` / `QueryStatus`。
@@ -507,6 +523,26 @@ pub enum Command {
 ### 8.4 时钟与 id 生成（D8/D10）
 
 `trait Clock { fn now(&self) -> Timestamp }` + `trait IdGen { fn next(&self) -> TokenId }`，由引擎构造时注入（生产: SystemClock + UlidGen；测试: LogicalClock + 顺序 id）。
+
+### 8.5 消耗原子性契约与物化边界（D23）
+
+Rule-E 的实现级保证（可验证契约）：
+
+| 保证 | 机制 |
+|------|------|
+| 线性化 | 单写者 actor 串行处理命令；线性化点 = `Consumed` 事件落盘 |
+| 至多一次 | 同一 TokenId 再次消费返回 `TokenNotOnCounter`；带 `request_id` 时重复请求返回首次结果 |
+| Gate 原子性 | `rule_e` 与 `apply` 落在同一临界区，GateHolds 读集（`via` / `exists` / `count` / `not`）不会在提交点前被并发修改（无 TOCTOU） |
+| 归档原子性 | Counter 移除与 Archive 追加由同一事件导出，二者永不分裂 |
+| 持久原子性 | 提交点 = 日志 fsync；此后步骤尽力而为，崩溃后重放等价于已提交前缀 |
+| 幂等 | 可选 `request_id`，重复请求返回首次结果（跨重启由日志重建幂等表生效） |
+
+**边界（引擎不承诺的部分）**：引擎不执行外部副作用，`ThingRef` 对引擎不透明、不校验其指向物是否存在。因此"`consume` 成功"与"外部动作（产物真正生成/落地）成功"是两个**独立承诺**，二者之间是**最终一致**而非同一事务：消费成功既不等待、也不回滚外部动作。落地方案有两种，**可并用、不互斥**（同一域可按入口分别选用）：
+
+- **前移为准入条件（witness-token 模式）**：把"外部产物已就位"表示为一枚 token（外部系统经 Rule-S 注入），消费 gate 加 `when exists <readiness>`。于是"就位确认"进入 GateHolds 读集，与消费共享同一次判定——未就位则 `GateConditionFailed` 拦下。示例见 `examples/domains/external_materialization.pact`。
+- **后置为显式补偿（saga 式）**：消费照常提交，外部动作失败后由参与者以一次新的 Rule-P 记录"未完成/需重做"事实；历史不可回滚，补偿是追加的新事实（引擎只负责把含全量 token 的 `Consumed` 事件发出，外部动作由 agent/执行器承担，即 outbox 语义）。
+
+两种方案都不引入库事务 / 2PC / 分布式共识——其代价高于本场景收益（D23）。
 
 ## 9. 接口层（阶段 4，已实现）
 
@@ -526,7 +562,7 @@ MCP server（rmcp），v1 传输仅 stdio（D20；Streamable HTTP 随 v2 联网�
 | `pact_seed` | Rule-S |
 | `pact_produce` | Rule-P（显式传前驱 token id 列表） |
 | `pact_read` | Rule-R（返回 token 全量数据） |
-| `pact_consume` | Rule-E |
+| `pact_consume` | Rule-E（可选 `request_id` 幂等去重） |
 | `pact_counter_query` / `pact_archive_query` | 状态查询（按类型过滤） |
 | `pact_my_gates` | 参与者的全部 gate 子句（含条件），agent 自省 |
 | `pact_enabled` | Rule-W 轮询：当前可满足的 Rule-P 组合 |
@@ -550,7 +586,7 @@ POST   /domains/{d}/tokens            Rule-P {participant, type, predecessors[],
 GET    /domains/{d}/counter?type=
 GET    /domains/{d}/archive?type=
 POST   /domains/{d}/tokens/{id}/read     {participant}   Rule-R
-POST   /domains/{d}/tokens/{id}/consume  {participant}   Rule-E
+POST   /domains/{d}/tokens/{id}/consume  {participant[, request_id]}   Rule-E
 GET    /domains/{d}/gates/{participant}
 GET    /domains/{d}/enabled?participant=
 GET    /domains/{d}/status
@@ -564,7 +600,7 @@ GET    /domains/{d}/events            SSE 订阅（Rule-W 唤醒）
 单二进制 `pact`（D20：域操作一律 `--domain` / `--participant` / `--token` / `--type` flag，不用位置参数简写）。全局 flag：`--unix <sock>`（缺省 ./pact.sock）/ `--tcp <addr>`（优先于 --unix）/ `--bearer <token>` / `--json`（§6 线上格式输出）。
 
 - 注入点：`pact domain validate <file.pact>`；`pact domain load <file.pact> [--name N]`；`pact seed --domain D --participant P --type T [--thing-ref R]`。
-- 领域操作：`pact produce --domain D --participant P --type T [--predecessors id1,id2] [--thing-ref R]`；`pact read|consume --domain D --participant P --token ID`；`pact counter ls --domain D [--type T]`；`pact archive ls --domain D [--type T]`；`pact gates show --domain D --participant P`；`pact enabled --domain D --participant P`；`pact status --domain D`。
+- 领域操作：`pact produce --domain D --participant P --type T [--predecessors id1,id2] [--thing-ref R]`；`pact read --domain D --participant P --token ID`；`pact consume --domain D --participant P --token ID [--request-id R]`；`pact counter ls --domain D [--type T]`；`pact archive ls --domain D [--type T]`；`pact gates show --domain D --participant P`；`pact enabled --domain D --participant P`；`pact status --domain D`。
 - 域管理：`pact domain list|info --domain D|unload --domain D`。
 - 离线能力（不经 daemon）：`pact analyze <file.pact>`、`pact compose f1.pact f2.pact ...`、`pact replay <domain>.events.jsonl`。
 - daemon 控制：`pact daemon start --config pact.toml`（前台运行，与裸 `pactd` bin 等价）。
@@ -592,7 +628,7 @@ architect = "…"   # Authorization: Bearer
 |------|------|------|
 | 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写 | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
-| 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序 | crates/tests |
+| 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程 | 阶段 4/5 的 e2e 测试 |
 
 ## 11. 实现阶段
@@ -601,7 +637,7 @@ architect = "…"   # Authorization: Bearer
 |------|------|------|------|
 | 1 | pact-core + pact-parser + 黄金轨迹/属性测试 | 论文全部示例轨迹通过；core 纯度约束清单（§2.1）逐条满足 | **已完成（2026-08-25，2026-08-26 按 rev1 更新）**：27 项测试全绿（11 单元含源类型约束专项 + 2 属性 × 512 用例 + 5 黄金 + 9 parser）；纯度核验（依赖树仅 serde、禁用 API 扫描零命中）；D15 已回滚、D17 生效（论文 rev1 源生产约束）；已知缺口：容器内无 rustfmt/clippy 组件（无 rustup/sudo），待环境补齐后补跑 |
 | 2 | pact-analysis + pact-compose | 六项分析对论文域输出正确；组合一致性冲突可检出 | **已完成（2026-08-26）**：20 项测试全绿（analysis 12：四论文域验证 + 死锁/馈入/不可达/循环保守/间接祖先/嵌套 via 用例；compose 8：论文 §1.8 示例逐字段比对 + 四条件冲突各型 + 单位元/交换律/幂等合并）；D18 落定（C2 实践语义） |
-| 3 | pact-store + pact-engine | 重放等价、崩溃恢复、多域会话 | **已完成（2026-08-26）**：新增 31 项测试全绿——store 17（事件 JSON 往返、Consumed 重放取全量、seq 逐行 +1、域名校验、索引滞后重建、快照原子写重启存活、日志清洗）；engine 单元 4（ISO-8601 纪元含闰日、逻辑时钟单调、顺序/ULID id）；集成 10（全生命周期 + 通知时序 seq/规模断言、快照路径与纯重放路径状态逐字段等价、崩溃半行截断后可续作、索引丢失重建、中部损坏 fail-fast、多域隔离、8 并发 seed 串行化、域替换恢复、validate/analyze/compose 命令、Clock/IdGen 确定性注入）。纯度核验：pact-core 依赖树仅 serde，IO/时钟/随机 API 扫描零命中。workspace 累计 80 项测试全绿 |
+| 3 | pact-store + pact-engine | 重放等价、崩溃恢复、多域会话 | **已完成（2026-08-26；2026-10-18 按 D23 补充消耗提交契约）**：新增 31 项测试全绿——store 18（事件 JSON 往返、**Consumed 自足（空 Counter 上重放）**、**幂等键序列化**、seq 逐行 +1、域名校验、索引滞后重建、快照原子写重启存活、日志清洗）；engine 单元 4（ISO-8601 纪元含闰日、逻辑时钟单调、顺序/ULID id）；集成 11（全生命周期 + 通知时序 seq/规模断言、快照路径与纯重放路径状态逐字段等价、崩溃半行截断后可续作、索引丢失重建、中部损坏 fail-fast、多域隔离、8 并发 seed 串行化、域替换恢复、validate/analyze/compose 命令、Clock/IdGen 确定性注入、**Rule-E request_id 幂等与跨重启生效**）。纯度核验：pact-core 依赖树仅 serde，IO/时钟/随机 API 扫描零命中。D23 落定（提交点 = 日志 fsync；索引投影尽力而为；Consumed 自足；Rule-E 可选幂等） |
 | 4 | pact-http + pact-cli + pact-mcp（stdio）（D19：pact-http 提前） | 人类与 agent 均可走完生命周期 | **已完成（2026-09-04）**：pact-http（axum daemon：unix socket 默认/TCP 可选、§6.3 类型化错误体、SSE 通知流、类型化 client、pactd bin）+ pact-mcp（rmcp stdio，15 个 `pact_` 工具，经 REST 接入，schemars 派生 schema）+ pact-cli（单二进制 `pact`：daemon start + 在线命令经 client + 离线 analyze/compose/replay + `--json`）。e2e 三绿：HTTP daemon 全生命周期（含 404/错误码映射、SSE、compose/unload）；CLI 真实子进程 daemon 全生命周期 + 错误路径 + 离线命令 + 事件日志回放对照；MCP 真实 stdio 子进程 15 工具全生命周期 + 3 错误路径。workspace 累计 95 项测试全绿。D19/D20 落定 |
 | 5 | 无人值守场景验证（pact-http 已提前至阶段 4 交付） | 多 agent 经 MCP 自驱完成 ReAct/软件工程域，全程无介入至 Terminated；含 MCP Streamable HTTP 与否由联网演进决定（D20：v1 不做） | **已完成（2026-09-05；2026-09-09 修正场景 B 卫生断言）**：`pact-mcp/tests/unattended_e2e.rs` 单测试内顺序验证两场景，测试进程只做"外部启动机制"（拉起 daemon + N 个真实 `pact-mcp` stdio 子进程），此后零 Rule-S/P/R/E 介入。场景 A（ReAct）：user 播种 + agent 私有生产预算 7，自驱两轮循环至 Terminated，7 产/8 消/7 读、Counter 恒 ≤2（单 agent 串行，真不变量）、archive 序两轮同构；场景 B（软件工程生命周期）：external_stakeholder 播种 + 5 worker 并发自驱接力至 Terminated，4 产/5 消/4 读、角色分工与溯源链 requirement→…→deployment 逐项核验、Counter ≤ 类型数 5（结构上界；典型调度 ≤2，但 CI 慢调度下下一阶段可在上一阶段 produce→consume 窗口内合法生产，窗口因 produces 门无条件子句而语义上不可消除，2026-09-09 CI 实测 max_counter=3 后断言修正为结构上界）。agent 自驱策略 P1 生产优先/P2 汇消费/P3 等待（订阅推送 + 轮询兜底，Rule-W）。修复两类自驱竞态：①播种前过早终止（域加载与种子注入间 Counter=∅ 使 `termination_holds` 平凡为真，worker 误判退出）→ 仅当 `archive_size>0` 才承认终止（符合 §"Terminated 信息性、不锁定域"，修复落在 agent 驱动层非引擎）；②Terminated 一次性推送与轮询判定竞态 → 终止后 500ms 宽限窗口排空在途推送。合并为单 runtime 顺序执行以规避 tokio 多 runtime 子进程回收陷阱。D20 生效（v1 不做 Streamable HTTP） |
 | 6（可选） | pact-cpn：CPN 编码生成（正片段直出，not 条件走互补库所编码） | CPN Tools 可加载验证 | 未开始 |

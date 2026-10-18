@@ -12,7 +12,7 @@ Conventions: every `pact ...` below means `./target/debug/pact` (or the same-nam
 
 ## 1. Coverage
 
-### 1.1 Four generic domains (`domains/`)
+### 1.1 Five generic domains (`domains/`)
 
 Counts were measured with `pact domain validate` (an online command — needs the daemon, see §2).
 
@@ -22,8 +22,9 @@ Counts were measured with `pact domain validate` (an online command — needs th
 | [`domains/re_pipeline.pact`](domains/re_pipeline.pact) | Generic requirements-engineering pipeline (conjunctive preconditions + a change-control loop) | 7 | 7 | 19 | 2 | 0 |
 | [`domains/react_loop.pact`](domains/react_loop.pact) | Single-agent ReAct loop (cyclic precondition graph that still terminates naturally) | 4 | 2 | 12 | 1 | 0 |
 | [`domains/cross_harness.pact`](domains/cross_harness.pact) | Multi-agent collaboration with no central orchestrator | 5 | 4 | 13 | 1 | 0 |
+| [`domains/external_materialization.pact`](domains/external_materialization.pact) | External materialization confirmation via a witness token (`readiness` token gates the consume) | 3 | 4 | 4 | 2 | 0 |
 
-Measured results of the six analyses for the four domains (verbatim from `examples/offline/trace.txt`):
+Measured results of the six analyses for the five domains (verbatim from `examples/offline/trace.txt`):
 
 | Domain | Well-formed (violations/warnings) | seed_types | reachable/unreachable | gate_coverage | consumption_reachability | structural_deadlock | stranding_risk |
 |--------|-----------------------------------|------------|------------------------|---------------|--------------------------|---------------------|----------------|
@@ -31,6 +32,7 @@ Measured results of the six analyses for the four domains (verbatim from `exampl
 | re_pipeline | 0 / 0 | 2 | 7 / 0 | 0 | **2** | 0 | 0 |
 | react_loop | 0 / **1** | 1 | 4 / 0 | 0 | 0 | 0 | 0 |
 | cross_harness | 0 / 0 | 1 | 5 / 0 | 0 | 0 | 0 | 0 |
+| external_materialization | 0 / 0 | 2 | 3 / 0 | 0 | 0 | 0 | 0 |
 
 The three non-zero items are not defects — they are all **advisory**; the rationale is in §4.
 
@@ -50,7 +52,7 @@ Analyzing a fragment on its own yields large unreachable sets (2 for security_re
 | File | Description |
 |------|-------------|
 | [`online/run.sh`](online/run.sh) → [`online/trace.txt`](online/trace.txt) | Full daemon lifecycle in 14 steps (238 lines): start → load → all four action types → Gate interception → Rule-T termination → event replay → unload |
-| [`offline/run.sh`](offline/run.sh) → [`offline/trace.txt`](offline/trace.txt) | Offline trio in 5 steps (187 lines): analyze × 4 domains, three kinds of well-formedness violations, compose success and C2 rejection, replay |
+| [`offline/run.sh`](offline/run.sh) → [`offline/trace.txt`](offline/trace.txt) | Offline trio in 5 steps (200 lines): analyze × 5 domains, three kinds of well-formedness violations, compose success and C2 rejection, replay |
 | [`offline/fixtures/se_lifecycle.events.jsonl`](offline/fixtures/se_lifecycle.events.jsonl) | A 12-line event log so the offline demo is self-sufficient on a fresh clone (no need to run the online script first) |
 
 `trace.txt` files are **real recorded output**, not hand-written samples: token ids (ULIDs), timestamps, daemon pids, and absolute paths differ per run and have been sanitized to `<REPO>`; step structure, error codes, analysis numbers, and exit codes should match your runs exactly.
@@ -284,11 +286,12 @@ What event sourcing means here: **the JSONL is the source of truth**; the SQLite
 | 4 | Participant Count ≥ 1 | A single-participant system is a legitimate degenerate case |
 | 5 | Identifiable Entry Points | Every source type can be tied to a seed authority |
 
-Where the four domains land on these five:
+Where the five domains land on these five:
 
 - **se_lifecycle / re_pipeline** hit all of 1–5, the classic pipelines;
 - **react_loop** approaches the degenerate case of criterion 4 — agent holds all 12 gates; user holds only seed authority and no gates at all: effectively "one worker + one injector". Its criterion 5 is **vacuously satisfied**: every type has exactly one predecessor, so there are no §1.4 source types. Yet the cycle still needs `seed_authority { user: seeds observation }` for the initial push — **SeedAuthority serves more than source types**; it is also how you ignite a pure cycle (seed waives preconditions, §1.4.3);
 - **cross_harness** highlights criterion 3: three harnesses never talk to each other, passing outputs purely through Counter tokens; ordering emerges from Rule-P availability, with no central scheduling.
+- **external_materialization** exercises criterion 5 and the witness-token pattern: the external system's state cannot be written into a GateExpr (conditions read only the Counter), so "the artifact is ready" is carried as a `readiness` token seeded by external_system; coordinator's `consumes work_item` is admitted only `when exists readiness`, so the confirmation and the consume fall in the same GateHolds step.
 
 ### 7.3 Non-applicability bounds (§2.3; nine items)
 
@@ -308,7 +311,7 @@ Row 8 is the reason `via` exists — and the root of step 12's stranding trap in
 
 ### 7.4 Domain independence (§2.2)
 
-The paradigm itself never changes; switching domains means re-filling four injection points: TypeSchema, PreconditionGraph, GateMatrix, SeedAuthorityDecl. The four domains in this directory are four different fillings — software engineering, requirements engineering, an agent loop, multi-agent collaboration — over the same primitives and the same SOS rules.
+The paradigm itself never changes; switching domains means re-filling four injection points: TypeSchema, PreconditionGraph, GateMatrix, SeedAuthorityDecl. The five domains in this directory are five different fillings — software engineering, requirements engineering, an agent loop, multi-agent collaboration, external materialization confirmation — over the same primitives and the same SOS rules.
 
 The paper also mentions an **optional** fifth injection point, an Archival Policy (`AP: Counter → 2^Counter`, specifying which tokens a system participant should consume when conditions hold). It executes through normal Rule-E, introducing neither new primitives nor implicit system actions. **This implementation does not build it in** (out of scope per [`docs/requirements.md`](../docs/requirements.md) §6); domains that want automatic cleanup can model the janitor as an ordinary participant, driven externally to call `consume`.
 

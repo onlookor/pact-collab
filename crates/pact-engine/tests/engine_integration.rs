@@ -88,7 +88,7 @@ async fn run_partial_flow(engine: &Engine, domain: &str) -> TokenId {
         .await
         .unwrap();
     engine
-        .consume(domain, par("architect"), req.id.clone())
+        .consume(domain, par("architect"), req.id.clone(), None)
         .await
         .unwrap();
     design.id
@@ -157,7 +157,7 @@ async fn full_lifecycle_with_notifications() {
         .await
         .unwrap();
     engine
-        .consume("proj", par("architect"), req.id.clone())
+        .consume("proj", par("architect"), req.id.clone(), None)
         .await
         .unwrap();
     let impl_t = engine
@@ -171,11 +171,11 @@ async fn full_lifecycle_with_notifications() {
         .await
         .unwrap();
     engine
-        .consume("proj", par("developer"), design.id.clone())
+        .consume("proj", par("developer"), design.id.clone(), None)
         .await
         .unwrap();
     engine
-        .consume("proj", par("user"), impl_t.id.clone())
+        .consume("proj", par("user"), impl_t.id.clone(), None)
         .await
         .unwrap();
 
@@ -305,7 +305,7 @@ async fn crash_recovery_truncates_partial_tail() {
 
     // 恢复后可继续工作：消费 design token，Rule-T 触发
     engine2
-        .consume("proj", par("developer"), design_id)
+        .consume("proj", par("developer"), design_id, None)
         .await
         .unwrap();
     let status = engine2.status("proj").await.unwrap();
@@ -421,7 +421,7 @@ async fn multi_domain_sessions_isolated() {
 
     // beta 上消费 alpha 的 token → 域不存在该 token，拒绝
     let err = engine
-        .consume("beta", par("architect"), req.id.clone())
+        .consume("beta", par("architect"), req.id.clone(), None)
         .await
         .unwrap_err();
     assert!(matches!(err, EngineError::Rule(_)));
@@ -628,4 +628,97 @@ async fn logical_clock_and_sequential_ids_are_deterministic() {
     assert_eq!(t.produced_at, "T1");
     assert_eq!(t.id, TokenId("seq-0".into()));
     engine.shutdown().await.unwrap();
+}
+
+// ============ 11. Rule-E 幂等（request_id） ============
+
+#[tokio::test]
+async fn consume_request_id_is_idempotent_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup(dir.path()).await;
+    engine.load_domain("proj", DECL).await.unwrap();
+    let req = engine
+        .seed(
+            "proj",
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+
+    // 首次消费：成功归档
+    let first = engine
+        .consume(
+            "proj",
+            par("architect"),
+            req.id.clone(),
+            Some("req-1".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.token.id, req.id);
+
+    // 重试（同 request_id、同 token）：返回首次结果，不重复消费、不再落盘
+    let lines_before = log_lines(dir.path(), "proj").len();
+    let retry = engine
+        .consume(
+            "proj",
+            par("architect"),
+            req.id.clone(),
+            Some("req-1".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry, first, "重试返回首次归档结果");
+    assert_eq!(
+        log_lines(dir.path(), "proj").len(),
+        lines_before,
+        "重试不产生新事件"
+    );
+    let status = engine.status("proj").await.unwrap();
+    assert_eq!((status.counter_size, status.archive_size), (0, 1));
+
+    // 同一 request_id 用于另一 token → 幂等冲突
+    let req2 = engine
+        .seed(
+            "proj",
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    let err = engine
+        .consume(
+            "proj",
+            par("architect"),
+            req2.id.clone(),
+            Some("req-1".into()),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EngineError::IdempotencyConflict { .. }));
+
+    // 跨重启：幂等表由日志重建，重试仍返回首次结果
+    engine.shutdown().await.unwrap();
+    let engine2 = setup(dir.path()).await;
+    let retry2 = engine2
+        .consume(
+            "proj",
+            par("architect"),
+            req.id.clone(),
+            Some("req-1".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry2, first, "重启后幂等表仍生效");
+
+    // 不带 request_id 的正常消费不受幂等表影响
+    let fresh = engine2
+        .consume("proj", par("architect"), req2.id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(fresh.token.id, req2.id);
+    engine2.shutdown().await.unwrap();
 }

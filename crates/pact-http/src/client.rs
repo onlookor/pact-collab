@@ -4,8 +4,9 @@
 //! 手动解析 `data:` 行为 [`Notification`]。
 
 use crate::dto::{
-    ComposeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody, ErrorDetail, GatesResp,
-    LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp, ValidateReq, ValidateResp,
+    ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody,
+    ErrorDetail, GatesResp, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp,
+    ValidateReq, ValidateResp,
 };
 use bytes::Bytes;
 use http::uri::Uri;
@@ -251,12 +252,14 @@ impl Client {
         domain: &str,
         participant: &str,
         token_id: &str,
+        request_id: Option<&str>,
     ) -> Result<EntryResp, ClientError> {
         let req = self.json_request(
             Method::POST,
             &format!("/domains/{domain}/tokens/{token_id}/consume"),
-            Some(&ParticipantReq {
+            Some(&ConsumeReq {
                 participant: participant.to_owned(),
+                request_id: request_id.map(str::to_owned),
             }),
         )?;
         decode(self.dispatch(req).await?).await

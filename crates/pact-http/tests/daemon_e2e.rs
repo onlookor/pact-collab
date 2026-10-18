@@ -117,10 +117,18 @@ async fn full_lifecycle_over_unix_socket() {
     let read = c.read_token("proj", "architect", &req_id).await.unwrap();
     assert_eq!(read.token.id.0, req_id);
 
-    // —— Rule-E ——
-    let entry = c.consume("proj", "developer", &design_id).await.unwrap();
+    // —— Rule-E（带幂等键；重试返回首次结果）——
+    let entry = c
+        .consume("proj", "developer", &design_id, Some("api-consume-1"))
+        .await
+        .unwrap();
     assert_eq!(entry.entry.token.id.0, design_id);
     assert_eq!(entry.entry.exhausted_by.0, "developer");
+    let retry = c
+        .consume("proj", "developer", &design_id, Some("api-consume-1"))
+        .await
+        .unwrap();
+    assert_eq!(retry.entry, entry.entry, "重试返回首次归档结果");
 
     // —— 查询 ——
     let counter = c.counter("proj", None).await.unwrap();

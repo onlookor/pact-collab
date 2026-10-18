@@ -28,10 +28,10 @@ Requires a recent stable Rust toolchain.
 cargo build --release
 ```
 
-The [`examples/`](examples/README.md) directory ships four ready-to-run domains, two composition fragments, and two reproducible demos with recorded traces:
+The [`examples/`](examples/README.md) directory ships five ready-to-run domains, two composition fragments, and two reproducible demos with recorded traces:
 
 ```bash
-examples/offline/run.sh    # six analyses × 4 domains, well-formedness rejections,
+examples/offline/run.sh    # six analyses × 5 domains, well-formedness rejections,
                            # compose accept + C2 rejection, event replay — no daemon needed
 examples/online/run.sh     # daemon full lifecycle: load → seed → produce/read/consume
                            # → gate rejection → termination → replay
@@ -76,7 +76,7 @@ seed_authority { external_stakeholder: seeds requirement }
 - **gates** — per-participant capabilities: `reads` (Rule-R, non-destructive), `consumes` (Rule-E, explicit, archived), `produces` (Rule-P, no condition clause). Read/consume gates may carry conditions: `via T` (provenance witness), `exists T`, `count T >= n` (positive integers only).
 - **seed_authority** — who may inject the initial tokens (Rule-S).
 
-A runnable version of this domain and four more (healthcare pathway with fan-in preconditions and `via` provenance, ReAct loop, cross-agent harness) live in [`examples/domains/`](examples/README.md).
+A runnable version of this domain and four more (healthcare pathway with fan-in preconditions and `via` provenance, ReAct loop, cross-agent harness, external materialization gated by a witness token) live in [`examples/domains/`](examples/README.md).
 
 **Try it live** — save the declaration above as `lifecycle.pact`, then:
 

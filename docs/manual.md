@@ -10,7 +10,7 @@
 | `§x.y` | 范式规范 `docs/pactv1_rev2.md`（论文母本，本手册不复述其推导） |
 | `设计 §x.y` | `docs/design.md`（实现决策与线上格式） |
 | `架构 §x.y` | `docs/architecture.md`（进程与数据流视图） |
-| `示例 §x` | `examples/README.md`（四份通用域 + 两条可复现轨迹） |
+| `示例 §x` | `examples/README.md`（五份通用域 + 两条可复现轨迹） |
 | `pact` | CLI 二进制，下文假定 `alias pact=./target/debug/pact` |
 
 ---
@@ -254,8 +254,8 @@ pact produce --domain D --participant architect --type design \
 # Rule-R：读取（非破坏）
 pact read    --domain D --participant reviewer --token 01M500J9…
 
-# Rule-E：消费（不可逆，入 Archive）
-pact consume --domain D --participant architect --token 01M500J9…
+# Rule-E：消费（不可逆，入 Archive；可选 --request-id 幂等去重）
+pact consume --domain D --participant architect --token 01M500J9… [--request-id RETRY-2F9C]
 ```
 
 `--thing-ref` 是产物内部结构的**唯一**出口：Token 本身不可变、不透明，
@@ -294,6 +294,42 @@ pact status     --domain D                   # counter / archive / terminated
 `Terminated` 是**一次性**推送。写自驱 agent 时要注意两个已知竞态（设计 §11 阶段 5 的修复记录）：
 播种前 Counter 为空会让终止判定平凡为真（应要求 `archive_size > 0` 才承认终止）；
 终止推送与轮询判定之间需要宽限窗口排空在途事件。
+
+### 4.5 消费的原子性与幂等
+
+引擎对每一次 Rule-E 的承诺（设计 §8.5、决策 D23）：
+
+- **提交点 = 事件日志落盘（fsync）**。成功返回即意味着该次消费已进入不可变日志；
+  其后的索引投影、快照、通知等派生步骤即使失败，也不会回滚、不会改变返回结果。
+- **原子域包含 GateHolds 的读集**。`via` / `exists` / `count` / `not` 读到的 Counter 子集，
+  与「目标 token 移出 Counter + 写入 Archive」在同一次判定里完成，不存在"检查通过后被人抢先消费"的 TOCTOU。
+- **至多一次**。同一 token 二次消费报 `TokenNotOnCounter`；要安全重试请带 `--request-id`：
+
+  ```bash
+  pact consume --domain D --participant architect --token ID --request-id RETRY-2F9C
+  ```
+
+  同一域内重复的 `request-id` 直接返回**首次**的归档结果（不重复消费），
+  因此响应丢失后可以原样重发。该幂等表随事件日志持久化，**跨重启仍生效**。
+  同一 `request-id` 却换了 token，会返回 `IdempotencyConflict`（HTTP 409）——那是键复用错误，不是消费失败。
+
+### 4.6 消费与外部动作：物化确认
+
+引擎**不执行**外部副作用：`ThingRef` 对它不透明，它也不校验指向物是否存在。
+所以"`consume` 成功"与"外部动作（产物真正生成/落地）成功"是**两个独立承诺**，
+二者最终一致而非同一事务——消费成功既不等待、也不回滚外部动作。
+
+要让"产物就位"成为消费的**准入条件**，用 **witness-token 模式**：
+外部系统确认就位后经 Rule-S 注入一枚 token（如 `readiness`），
+消费方 gate 写成 `consumes work_item when exists readiness`。
+于是"就位确认"进入 GateHolds 读集，与消费共享同一次判定；未就位则 `GateConditionFailed` 拦下。
+示例见 `examples/domains/external_materialization.pact`。
+
+若选择**先消费、后补做**（saga 式），则由参与者以一次新的 Rule-P 记录"未完成/需重做"事实——
+历史不可回滚，补偿是追加的新事实，而不是反向操作。
+
+两种方案**可并用、不互斥**：同一域可对不同入口分别选用（就位可确认的入口用 witness-token，
+无法预先确认的入口用 saga 补偿）。
 
 ---
 
@@ -459,7 +495,7 @@ error [ComposeConflict]: 片段组合冲突（1 处）
 DomainLoaded { name, declaration }   // 声明原文存档，可复现解析
 Seeded     { seq, ts, token }
 Produced   { seq, ts, token }        // token 内含 depends_on / produced_by
-Consumed   { seq, ts, token_id, by }
+Consumed   { seq, ts, token, by, request_id? }  // token 全量自足；request_id 可选幂等键（D23）
 Terminated { seq, ts }               // Rule-T 检测结果，信息性
 ```
 
@@ -619,6 +655,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 
 | code | HTTP | 触发 |
 |------|------|------|
+| `IdempotencyConflict` | 409 | 同一 `request_id` 已用于另一 token 的消费（复用幂等键，D23） |
 | `Unauthorized` | 401 | 令牌模式下列表无此参与者，或 Bearer 缺失/不匹配 |
 | `DomainNotFound` | 404 | 域未装载 |
 | `NotFound` | 404 | 路径不存在 |
@@ -642,6 +679,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `PredecessorNotOnCounter` | 前驱已被消费（顺序错了） | 无撤销；`domain unload` + `load` 重来，或重新 seed |
 | 装载后 `terminated=true` | Counter 为空即平凡满足 Rule-T | 正常。`seed` 之后翻回 `false` |
 | `GateConditionFailed: … Via(TypeName("x"))` | `via x` 的见证 token 已被消费 | 调整消费顺序，或改用不带 `via` 的 gate |
+| `IdempotencyConflict` | 复用了别的消费已经用过的 `request_id` | 换一个新的幂等键重发；同一键只对应一次消费（D23） |
 | `SourceTypeProduceGate` | 给 `Precond = ∅` 的类型写了 `produces` | 改成 `seed_authority`，或给它加前驱 |
 | `pact compose` 报 `UndeclaredType` | 片段引用了未在自己 `types` 段声明的类型 | 片段必须自足（§6.2） |
 | 停不掉 daemon | 没有 `daemon stop` | `kill <pid>`（§2.3） |
@@ -691,7 +729,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 |------|------|
 | [`docs/pactv1_rev2.md`](pactv1_rev2.md) | 范式规范母本：六原语、六规则、§2 适用性、§3 文法、Appendix A 分析算法 |
 | [`docs/requirements.md`](requirements.md) | 需求与范围（含明确的范围外项） |
-| [`docs/design.md`](design.md) | 实现设计：D1–D22 决策记录、§6 线上格式、§9 三接口 |
+| [`docs/design.md`](design.md) | 实现设计：D1–D23 决策记录、§6 线上格式、§9 三接口 |
 | [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复 |
 | [`docs/skill-adaptation.md`](skill-adaptation.md) | 领域适配层示例（RE / SE 技能），与本手册正交 |
-| [`examples/README.md`](../examples/README.md) | 四份通用域 + 两条可复现轨迹的逐例讲解 |
+| [`examples/README.md`](../examples/README.md) | 五份通用域 + 两条可复现轨迹的逐例讲解 |

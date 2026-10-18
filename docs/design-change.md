@@ -1,5 +1,20 @@
 # 设计变更记录
 
+## 2026-10-18（第 15 轮，消耗提交契约与 Rule-E 幂等：发现 A/B 修复 + D23）
+
+- **触发**：用户就"消耗原子性"组织评审后裁决——修复评审发现 A/B，采纳"文档化实现契约 + 补幂等 + witness-token 示例（2a）与 outbox 语义（2b）并行"组合。
+- **发现 A（高）**：`Event::Consumed` 只记 `token_id`，重放时从 Counter 反查 token（`StoreError::ConsumeTargetMissing`）——单行日志不自足，与 NFR2"日志自身即完整审计记录"不符。**修复**：`Consumed` 改携 `token` 全量快照（`exhausted_at`=`ts`、`exhausted_by`=`by`）+ 可选 `request_id`；`apply_event` 与索引 `rebuild` 直接取事件内 token，删除 `ConsumeTargetMissing` 变体。
+- **发现 B（中）**：`append`/`append_consumed` 先落日志再写索引，索引失败即返回 Err → 引擎不 apply、不推进 `last_seq`，日志/内存瞬态分歧直至重启。**修复**：确立**提交点 = JSONL fsync**；索引投影改为 `index_project`（尽力而为，失败不回滚、不失败本次调用），`append_consumed` 并入统一 `append`。同一原则推广到提交点之后的所有派生步骤：`post_commit` 改为**不可失败**（快照失败跳过并保留计数、Terminated 追加失败不回滚已提交命令）。
+- **新增决策 D23**：消耗提交契约与 Rule-E 幂等（提交点 / 事件自足 / 幂等 / 原子域含 gate 读集 / 物化边界五点），显式拒绝库事务、2PC、分布式共识。
+- **代码变更**：pact-store（`event.rs`/`index.rs`/`store.rs`/`error.rs`）、pact-engine（`EngineError::IdempotencyConflict`、`Command::Consume` 加 `request_id`、会话内幂等表 `consumed_requests`、recover/load 重建、`post_commit` 去 `Result`）、三接口（dto 新增 `ConsumeReq`、server 路由与错误映射、client、mcp `ConsumeIn`、cli `--request-id`）。
+- **测试**：store 单元 18（新增 Consumed 自足（空 Counter 上重放）、幂等键序列化，替换 2 项旧用例）；engine 集成 11（新增 request_id 去重 + 跨重启生效 + 同键异 token 冲突）；daemon e2e 补幂等重试断言；`daemon_e2e`/`engine_integration` 全部 consume 调用补 `request_id` 形参。workspace **105 项全绿**；fmt/clippy 清零。
+- **文档**：design.md（D23、§6.3 consume 请求、§7.1/§7.3/§7.4、§8.1、新增 §8.5、§9.2/§9.3、§10/§11 计数）；requirements.md（FR9 事件自足/提交契约、FR10 外部副作用边界、FR12 request_id、FR13、FR14 五份域、**新增 FR15**、NFR2、§6 范围外新增一条）；manual.md（§4.2 `--request-id`、新增 §4.5/§4.6、§7.2 Consumed 字段、§9.4 与 §10 增 `IdempotencyConflict`）；architecture.md（§2.1 提交点标注、§5 质量属性）。
+- **2a/2b 落盘**：`examples/domains/external_materialization.pact`（witness-token 物化确认示例）+ 手册 §4.6；离线脚本新增 step 1.5、重录 trace（187→200 行，仍为 5 个顶层步骤）、examples/README 与根 README 域数由四改五；`examples/offline/fixtures/se_lifecycle.events.jsonl` 的 5 条 `Consumed` 行补为 token 全量快照以匹配新事件形状（离线 `replay` 因此自洽，已实测通过）。
+- **磁盘事件格式变更（无旧格式兼容层）**：`Consumed` 由 `token_id` 改携 `token` 全量对象，属**不向后兼容**的日志格式变更——早于本轮的 `events.jsonl` 在重启重放时会被判为非法行（fail-fast）。本轮为**未发布**的 v1 早期，无历史部署需要迁移，故不加兼容垫片；既有示例 fixture 已重录为新格式。
+- **规范母本未触碰**：`docs/pact*` 全程未改；D23 为**实现层**契约（论文仅给单步 SOS 语义），不涉及修订母本。
+- **执行偏差**：沙箱缺 `cc` 与 glibc 开发文件，测试链接改用宿主机编译器 + `--sysroot=/run/host`（RUSTFLAGS），命令语义与 CI 一致。
+- **安全审视**：仅事件字段、存储写序、可选幂等键与文档/示例；无网络、无 sudo、无密钥、无 unsafe、无新依赖变更；幂等键为客户端自报字符串，仅作 map 键与日志字段，不参与文件路径构造，无新增攻击面。
+
 ## 2026-10-15（第 14 轮，通用示例与用户手册落盘）
 
 - **触发**：用户要求补一套与两技能无关的通用结构 + examples，向用户说明 PACT 范式系统的使用场景与方法（需求侧登记为 FR14，见 `docs/requirements-change.md` 第 6 轮）。

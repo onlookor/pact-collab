@@ -56,13 +56,13 @@
 ```
 agent ──MCP pact_produce──► pact-mcp ──REST POST /tokens──► pact-http ──Command::Produce──► engine actor
   engine: 查域会话 → rule_p(&domain, &state, ...)     [纯函数检查]
-        → Ok(token) → 追加 JSONL(fsync) → 更新派生索引(turso) → state.counter.insert
+        → Ok(token) → 追加 JSONL(fsync，**提交点**) → 派生索引投影(turso，尽力而为) → state.apply
         → broadcast Produced 通知（唤醒等待者）
         → 每次变更后惰性求值 Rule-T
   ←── Ok(Token) / Err(RuleError 结构化) ──
 ```
 
-检查与应用在 actor 临界区内原子完成；任何一步失败不产生部分效果。
+检查与应用在 actor 临界区内原子完成；**提交点（JSONL fsync）之前**的失败不产生部分效果；提交点之后的派生步骤（索引投影 / 快照 / Terminated / 通知）尽力而为、不回滚（design.md D23）。Rule-E 额外支持可选 `request_id` 幂等（重复键返回首次归档结果，幂等表由日志重建）。
 
 ### 2.2 Rule-W（等待与唤醒）
 
@@ -113,7 +113,7 @@ daemon 启动（pact daemon start / pactd）→ 读 data_dir：
 | 属性 | 架构手段 |
 |------|----------|
 | 语义保真 | 语义只存在于纯函数 core（含良构校验、Rule-W/Rule-T 判定，D14）；黄金轨迹测试锚定论文全部示例 |
-| 审计完整性 | JSONL 真相源即完整审计记录；DomainLoaded 事件存档声明原文 |
-| 可恢复性 | 快照 + 重放；索引（turso，经 IndexStore trait 隔离，D13）永远可重建 |
+| 审计完整性 | JSONL 真相源即完整审计记录；DomainLoaded 事件存档声明原文；每条事件自足（Consumed 携 token 全量快照），单行即可审计与重放 |
+| 可恢复性 | 快照 + 重放；索引（turso，经 IndexStore trait 隔离，D13）永远可重建、滞后由启动一致性校验触发重建自愈 |
 | 可测试性 | Clock/IdGen 注入；core 纯环境属性测试；四层测试组织（单元/属性/集成/端到端+回归） |
 | 安全边界 | 单机默认 unix socket；参与者令牌可选；核心不感知认证 |

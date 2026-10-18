@@ -28,10 +28,10 @@ PACT（Precondition-governed Autonomous Counter-based Token）是一种面向多
 cargo build --release
 ```
 
-[`examples/`](examples/README.md) 目录内置四份可直接运行的域声明、两份组合片段与两个可复现演示（附真实录制轨迹）：
+[`examples/`](examples/README.md) 目录内置五份可直接运行的域声明、两份组合片段与两个可复现演示（附真实录制轨迹）：
 
 ```bash
-examples/offline/run.sh    # 六项分析 × 4 域、三类良构违例、
+examples/offline/run.sh    # 六项分析 × 5 域、三类良构违例、
                            # compose 接受 + C2 拒绝、事件重放——无需 daemon
 examples/online/run.sh     # daemon 全生命周期：装载 → 播种 → 生产/读取/消费
                            # → gate 拦截 → 终止 → 重放
@@ -76,7 +76,7 @@ seed_authority { external_stakeholder: seeds requirement }
 - **gates**——参与者级能力：`reads`（Rule-R，非破坏）、`consumes`（Rule-E，显式、归档）、`produces`（Rule-P，不接受条件子句）。read/consume 门可带条件：`via T`（溯源见证）、`exists T`、`count T >= n`（仅正整数）。
 - **seed_authority**——谁可以注入初始 token（Rule-S）。
 
-本域的可运行版本与另外四份域（含扇入前置与 `via` 溯源的医疗路径、ReAct 循环、多智能体协作）都在 [`examples/domains/`](examples/README.md)。
+本域的可运行版本与另外四份域（含扇入前置与 `via` 溯源的医疗路径、ReAct 循环、多智能体协作，以及以见证 token 作为准入条件的外部物化确认）都在 [`examples/domains/`](examples/README.md)。
 
 **试一试**——把上文声明保存为 `lifecycle.pact`，然后：
 

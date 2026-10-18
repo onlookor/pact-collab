@@ -2,7 +2,7 @@
 # PACT 离线三件套演示：analyze / compose / replay，全程不需要 daemon。
 #
 # 演示什么
-#   1. analyze：四个通用域的六项静态分析，以及三项非零咨询输出的定性
+#   1. analyze：五个通用域的六项静态分析，以及三项非零咨询输出的定性
 #   2. analyze：三类典型良构违例长什么样（脚本临时生成，不入库）
 #   3. compose：片段组合成功（§1.8 C1–C4）与 C2 冲突被机械拦下
 #   4. replay：从事件日志离线重建 Counter/Archive
@@ -43,7 +43,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT"
 
 # ===========================================================================
-step "1. 四个通用域：pact analyze"
+step "1. 五个通用域：pact analyze"
 note "analyze 是纯函数（pact-analysis），不起进程、不碰存储，退出码 0 = 良构。"
 
 step "1.1 domains/se_lifecycle.pact —— 软件工程通用域（中等粒度）"
@@ -73,6 +73,12 @@ show analyze "$EXAMPLES/domains/cross_harness.pact"
 note "六项分析全 0。三个 harness 互不通信，全靠 Counter 上的 token 状态自驱："
 note "harness_a 放下 plan 就撒手，harness_b 看到 plan 才动，谁先谁后由引擎的"
 note "Rule-P 可用性决定，不需要中心调度。"
+
+step "1.5 domains/external_materialization.pact —— 外部物化确认：见证 token"
+show analyze "$EXAMPLES/domains/external_materialization.pact"
+note "外部系统的状态进不了 GateExpr（条件只读 Counter），于是把「产物已就位」表示"
+note "成一枚 readiness token，由外部系统经 seed_authority 注入；coordinator 的 consume"
+note "仅在 when exists readiness 时准入，确认与消费落在同一次 GateHolds 判定里（见 docs/design.md D23）。"
 
 # ===========================================================================
 step "2. 三项非零咨询输出的 JSON 详情"

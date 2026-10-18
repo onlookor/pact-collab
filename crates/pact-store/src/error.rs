@@ -1,6 +1,5 @@
 //! pact-store 错误类型。
 
-use pact_core::TokenId;
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -29,8 +28,6 @@ pub enum StoreError {
         expected: u64,
         got: u64,
     },
-    /// 重放 Consumed 事件时目标 token 不在 Counter 上（日志与状态不一致）。
-    ConsumeTargetMissing { token_id: TokenId },
     /// 域名非法（含路径分隔符等，防路径穿越）。
     InvalidDomainName { name: String },
 }
@@ -56,9 +53,6 @@ impl std::fmt::Display for StoreError {
                     "日志 {} 事件序号断裂：期望 {expected}，遇到 {got}",
                     path.display()
                 )
-            }
-            StoreError::ConsumeTargetMissing { token_id } => {
-                write!(f, "重放消费事件时目标 token 不在 Counter 上：{token_id}")
             }
             StoreError::InvalidDomainName { name } => {
                 write!(f, "非法域名：{name:?}（仅允许字母、数字、'-'、'_'）")
