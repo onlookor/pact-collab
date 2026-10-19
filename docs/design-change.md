@@ -1,5 +1,43 @@
 # 设计变更记录
 
+## 2026-10-19（第 17 轮，阶段 7 `pact-runtime` 落地）
+
+- **触发**：用户批准实施阶段 7（`docs/design.md` §11 行 7；D24），按 `spec.md`/`tasks.md`（**临时规划产物**，实现并更新 `docs/` 后删除）执行；硬约束为 pact-core / pact-store / pact-engine / 三接口 **零改动**。
+- **新增 crate `crates/pact-runtime/`**（lib `pact_runtime` + bin `pact-runtime`，根 `Cargo.toml` members 追加）：
+  - `src/client.rs`：`ParticipantClient` trait（`Send + Sync`）、`WakeStream`、`Endpoint`（`Unix`/`Tcp`）——传输层抽象；
+  - `src/rest.rs`：`RestClient` 包装 `pact_http::client`；`src/mcp.rs`：`McpClient`+`EventNotifier`（rmcp **stdio 子进程** MCP 客户端，镜像 `unattended_e2e` 用法）；
+  - `src/driver.rs`：`Bootstrap`/`DriverConfig`/`AgentReport`/`absorb`/`drive()`——P1（生产优先）/P2（汇消费）/P3（等待）策略、订阅推送 + 轮询兜底、`pristine` 守卫、500ms 终止宽限，与 `unattended_e2e` **逐条同构**（差异仅"错误以 `Result` 返回"而非 panic）；
+  - `src/orchestrator.rs`：`Transport`/`AgentSpec`/`BootstrapSpec`/`Orchestrator::run()`——每 agent `tokio::spawn`，未来对象 `Box::pin` 统一（REST/MCP 两具体 client 不引入 dyn）；
+  - `src/executor.rs`：`ExecutorConfig`/`Compensation`/`SideEffectHandler`/`SideEffectExecutor`/`StopSignal`——订阅 `Consumed` 通知、archive 游标增量处理、失败以 **Rule-S 追加补偿事实**（saga），不表现为消费回滚（FR15/D23 边界）；
+  - `src/bin/pact-runtime.rs`：TOML 配置驱动的生产编排入口（装配编排 + 可选执行器，输出各 agent 报告 JSON）。
+- **依赖方向落地**：`runtime → pact-http`（类型化 REST client）+ `pact-engine`（线上视图 `CounterView`/`StatusView`/`GateClause`/`Notification`）+ `pact-core`（`Token`/`ArchiveEntry`/标识符 newtype）；`pact-mcp` 仅作可执行文件由编排 spawn、**不**作 lib 依赖（避免给 `pact-http` 扩大公共 re-export 面，spec D-A）。engine/store/core/三接口 **零改动**（`git status` 核对）。
+- **两处修复**：
+  - ①**执行器域发现**：编排与执行器并发启动时，执行器可能先于引导者装载域而收到 `DomainNotFound` → 执行器增**域发现轮询**（对齐 `drive()` 的 `list_domains` 轮询再 `subscribe`）；
+  - ②**驱动 P1 需读见证**：P1 对每个见证前驱先 `read()` 再生产，测试域 `worker` 补 `reads task` 门（P1 见证可满足性前提）。
+- **测试**：新增 5 项——集成 1（`tests/runtime_e2e.rs`，单 `#[tokio::test]`(multi_thread) 内起 **in-process daemon**（`Store::open`+`Engine::spawn`+`ServerState`+`router`+`serve_unix`）顺序跑：REST 编排 SE 生命周期（Σ 产 4/消 5/读 4、溯源链、`max_counter ≤ 5`、终态 `counter_size:0/archive_size:5/terminated:true`）｜REST 编排 ReAct 循环（7 产/8 消/7 读、`max_counter ≤ 2`、archive 序两轮同构）｜副作用执行器（失败 → 补偿事实 `task_failure` 由 `materializer` 追加、成功计数、游标无重复））+ 单元 4（`absorb` 计数/`max_counter`/`notified_terminated`；`effect_types` 过滤；`Endpoint::args` 生成；`RuntimeError::Display` 与 `From<ClientError>` 映射）。MCP 路径代码镜像已验证可编译的 e2e 用法，不在测试内 spawn（spec D-D：跨 crate 取不到 `CARGO_BIN_EXE_pact-mcp`）。
+- **验证输出摘录**（沙箱，宿主机工具链包装）：
+  ```
+  cargo fmt --all --check                              → 无输出（FMT_OK）
+  cargo clippy --workspace --all-targets -- -D warnings → Finished `dev` profile … in 1.20s（零警告）
+  cargo test --workspace                                → TOTAL_PASSED=110（基线 105 + 本轮 5，全绿）
+    Running tests/runtime_e2e.rs  test result: ok. 5 passed; 0 failed; …
+  ```
+- **文档**：`docs/design.md`（D24 行补"已实现"+依赖细化；§1 crate 表去"未实现"、依赖行改 `runtime → http/engine/core` 并注明 `pact-mcp` 仅 bin；§11 阶段 7 状态 → 已完成并附验收摘要；§13 L3 与构建形态措辞更新）；`docs/architecture.md`（§6 标题去"未实现"+新增"落地形态"条+依赖方向细化；§5 层边界行更新）。`docs/requirements.md`/`docs/manual.md` **不改**（FR16 已存在）。
+- **规范母本未触碰**：`docs/pact*` 全程未改；D24 为**实现层**生产运行层，不新增范式语义（不触发边界判据 4）。
+- **执行偏差**：沙箱 rootfs 无任何链接器与 C 编译器，构建/测试经宿主机（`/run/host`）工具链包装（`/tmp/hostlink`，gcc/ld→ld.bfd/ar/…）完成，**未安装任何包、未改 /usr**；沙箱与宿主 glibc 同版，链接产物在沙箱内直接运行。命令语义与 CI 一致（同第 15 轮做法）。
+- **安全审视**：新增为客户端/编排/执行器代码——仅经 `pact_http::client` 与 `spawn` 子进程连接既有 daemon；无 `unsafe`；无新增密钥（bearer 由配置注入，不硬编码）；`McpClient` 的 `spawn` 仅拉 `pact-mcp` 可执行文件（路径来自配置）；无新依赖引入除 workspace 既有项之外（`toml`/`async-trait` 等已在 workspace）；无文件路径注入（配置项仅作连接参数与类型名）。无新增攻击面。
+
+## 2026-10-19（第 16 轮，生产化边界裁决：D24–D26）
+
+- **触发**：用户就"生产系统功能边界"提问并四问裁决（详见 `docs/requirements-change.md` 第 9 轮）。
+- **新增 D24 生产运行层归属**：本仓库新增 crate（暂名 `pact-runtime`），承载参与者驱动循环（订阅/轮询 → `my_gates`/`enabled` → 决策 → 行动）+ 多 agent 编排 + 外部副作用执行器（outbox/saga 消费端）；引擎保持被动（D5）、MCP 维持 stdio-only（D20）均不变。
+- **新增 D25 引擎生产化三项**：事件日志压缩与 schema 版本化（pact-store）；运维接口 health/ready + metrics + PID 文件 + 信号化优雅停机（pact-http/engine）；域级授权与审计读视图（pact-http 接口层，读审计**可选开启、默认关闭**——落地 D9 保留的审计扩展位，修订其默认值表述）。
+- **新增 D26 分发产物归属**：本仓库 `dist/`（Dockerfile、systemd unit、musl 静态打包脚本），不接入 CI 语义测试（同 D22）。
+- **结构更新**：§1 crate 划分增 `pact-runtime`（标注未实现）与其依赖方向（`runtime → mcp / http`，不反向）；§11 实现阶段增阶段 7/8/9（均"未开始"）；新增 §13「生产运行层与生产化边界」（含边界判据四条与构建形态）；§12 补 MCP 提供形态确认。
+- **代码/测试零变更**：本轮纯文档与设计裁决；workspace 105 项全绿结论沿用第 15 轮。
+- **规范母本未触碰**：`docs/pact*` 未改；本裁决为实现层工程边界，不涉及范式语义（不触发边界判据 4）。
+- **安全审视**：本轮仅新增文档，无网络、无密钥、无 `unsafe`、无依赖变更。**登记待办风险**：FR17 的域级 ACL 与读审计属访问控制面，实现时须单独做安全设计（不属本轮）。
+
 ## 2026-10-18（第 15 轮，消耗提交契约与 Rule-E 幂等：发现 A/B 修复 + D23）
 
 - **触发**：用户就"消耗原子性"组织评审后裁决——修复评审发现 A/B，采纳"文档化实现契约 + 补幂等 + witness-token 示例（2a）与 outbox 语义（2b）并行"组合。

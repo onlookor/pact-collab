@@ -117,3 +117,28 @@ daemon 启动（pact daemon start / pactd）→ 读 data_dir：
 | 可恢复性 | 快照 + 重放；索引（turso，经 IndexStore trait 隔离，D13）永远可重建、滞后由启动一致性校验触发重建自愈 |
 | 可测试性 | Clock/IdGen 注入；core 纯环境属性测试；四层测试组织（单元/属性/集成/端到端+回归） |
 | 安全边界 | 单机默认 unix socket；参与者令牌可选；核心不感知认证 |
+| 可运维性（NFR7，D25，未实现） | daemon 暴露 health/ready 与 metrics、PID 文件、信号化优雅停机；事件日志有压缩/保留策略与 schema 版本；域级 ACL 阻止任意客户端装卸域；读审计为可选开启扩展 |
+| 层边界（D24–D26） | 范式机制限于 `crates/`；领域内容在独立仓库；生产驱动逻辑收于 `pact-runtime` crate（已实现，经 REST 接入 daemon，不内嵌引擎）；分发产物在同仓库 `dist/`（详见 §6） |
+
+## 6. 生产运行层与分发（D24–D26，2026-10-19 裁决；L3 运行层已实现）
+
+在既有单机架构之上补一层 **L3 生产运行层**，与 L1 引擎、L2 领域层并列；引擎的被动性（D5）不变。
+
+```
+单机生产形态
+┌──────────────────────── 主机 ────────────────────────┐
+│  pact-runtime（L3，已交付 lib + bin）                  │
+│    ├─ 参与者驱动循环（订阅/轮询 → my_gates/enabled）    │
+│    ├─ 多 agent 编排（N 个 MCP/HTTP 客户端进程）         │
+│    └─ 外部副作用执行器（消费 Consumed，saga 补偿）      │
+│  pact-server (daemon, L1)  ← MCP stdio 或 REST+SSE      │
+│    └─ data_dir（JSONL + snapshot + index.tursodb）       │
+│  dist/: Dockerfile · systemd unit · musl 静态二进制      │
+└──────────────────────────────────────────────────────┘
+```
+
+- **依赖方向**：`pact-runtime → pact-http / pact-engine / pact-core`（lib 层；REST 经 `pact_http::client`，线上视图取自 `pact-engine`，标识符·token 类型取自 `pact-core`）；`pact-mcp` 仅作可执行文件由编排 spawn、**不**作 lib 依赖；不反向；引擎、存储、核心语义零改动。
+- **落地形态（阶段 7 已完成，2026-10-19）**：`crates/pact-runtime/` 交付 `ParticipantClient` 传输抽象（`RestClient` / `McpClient`）、驱动循环 `drive()`（P1/P2/P3 + 订阅推送/轮询兜底 + `pristine` 守卫与终止宽限）、编排 `Orchestrator`（每 agent `tokio::spawn`）、副作用执行器 `SideEffectExecutor`（archive 游标增量 + Rule-S 补偿事实）、TOML 配置驱动的 bin `pact-runtime`。
+- **进程拓扑**：`pact-runtime` 作为 systemd 托管的常驻编排进程（或独立 bin），拉起 daemon 与各 agent 子进程；MCP server 仍由 agent 宿主按配置以 stdio 子进程拉起（v1，D20）。
+- **归属边界**：L1 生产化增强（日志压缩/schema 版本、health/ready/metrics/PID/优雅停机、域级 ACL 与可选审计读视图）仍在 `crates/`（阶段 8）；L2 领域内容仍在独立仓库；L3 收于 `pact-runtime`；分发产物入本仓库 `dist/`（阶段 9，不接入 CI 语义测试，D26）。
+- **MCP 提供形态**：权威恒为 daemon；`pact-mcp` 是传输适配器，随本仓库交付、由 agent 宿主拉起；服务端形态（daemon 内建 Streamable HTTP）随 v2 落地，不另立项目。

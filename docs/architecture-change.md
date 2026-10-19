@@ -1,5 +1,20 @@
 # 架构变更记录
 
+## 2026-10-19（第 7 轮，阶段 7：L3 生产运行层落地）
+
+- **§6 落地核对**：标题去"未实现"、增注"L3 运行层已实现"；新增「落地形态（阶段 7 已完成）」条——`crates/pact-runtime/` 交付传输抽象（`ParticipantClient` / `RestClient` / `McpClient`）、驱动循环 `drive()`、编排 `Orchestrator`、副作用执行器 `SideEffectExecutor`、TOML 配置驱动 bin；部署图标注由"（目标）"改为已交付（L3 lib + bin）。
+- **§6 依赖方向细化**：由 `pact-runtime → pact-mcp / pact-http` 修正为 `pact-runtime → pact-http / pact-engine / pact-core`（lib 层）；`pact-mcp` 仅作可执行文件由编排 spawn、不作 lib 依赖——与 design.md §1 依赖行一致（D24 行依赖细化）。
+- **§5 质量属性更新**：层边界行"生产驱动逻辑收于新增 `pact-runtime`…"改为"已实现，经 REST 接入 daemon"。
+- **无结构性变更**：crate 划分（除 `pact-runtime` 由"未实现"转"已实现"，见 design.md §1）、单机进程/部署拓扑、单一状态变更通道、数据流、纯函数语义层均不变；引擎被动性（D5）不变。可运维性行（NFR7/D25）仍标"未实现"（属阶段 8）。
+- **验证**：`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo test --workspace` **110 项全绿**（基线 105 + 本轮 5）；engine/store/core/三接口零改动。
+
+## 2026-10-19（第 6 轮，生产运行层与生产化边界）
+
+- **新增 §6「生产运行层与分发」**：在既有单机架构之上补 **L3 生产运行层**（新增 crate `pact-runtime`），给出目标进程拓扑图、依赖方向（`runtime → mcp / http`，不反向）、进程拓扑（systemd 托管的常驻编排进程拉起 daemon 与 agent 子进程；MCP 仍由 agent 宿主以 stdio 子进程拉起）、归属边界与 MCP 提供形态（权威恒为 daemon）。
+- **§5 质量属性增两行**：可运维性（NFR7 / D25，未实现）、层边界（D24–D26）。
+- **无既有结构变更**：crate 划分（除新增 `pact-runtime`，见 design.md §1）、依赖方向、单机进程/部署视图、数据流、单一状态变更通道均不变；§2 数据流、§3 v1 部署视图、§4 联网演进不动。
+- **未实现标注**：§6 与 §5 新增行均标注"未实现"，本轮仅为架构裁决落档（对应 design.md D24–D26、requirements.md FR16–FR18）。
+
 ## 2026-10-18（第 5 轮，提交契约与事件自足落地核对）
 
 - **§2.1 数据流补正**：Rule-P 路径标注"追加 JSONL(fsync，**提交点**) → 派生索引投影(turso，尽力而为) → state.apply"，补提交点前后失败语义（提交点前无部分效果、提交点后不回滚）与 Rule-E 可选幂等键说明（对应 design.md D23）。

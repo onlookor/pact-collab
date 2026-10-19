@@ -1763,6 +1763,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pact-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "pact-core",
+ "pact-engine",
+ "pact-http",
+ "pact-store",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "pact-store"
 version = "0.1.0"
 dependencies = [
