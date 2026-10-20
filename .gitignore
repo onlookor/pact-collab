@@ -9,5 +9,8 @@ pact.sock
 # 论文手稿族：不入公开仓库（仅本地保留）
 /docs/pact*
 
+# 分发打包产物（dist/build-static.sh 生成）
+/dist/target/
+
 # IDE/工具目录（Trae 会话产物）
 /.trae/

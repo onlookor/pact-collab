@@ -182,6 +182,85 @@ curl --unix-socket ./pact.sock http://localhost/metrics  # Prometheus 文本格�
 
 **域级 ACL（可选）**：`[auth.acl]` 非空时启用实例级授权（`domain/instance` 或 `domain/*`），覆盖生命周期、动作、查询、压缩与读审计视图；未配置时保持上述信任声明/令牌行为不变。配置必须同时提供 `[auth.tokens]`，否则 daemon 拒绝启动。详见 §7.6。
 
+### 2.5 分发与部署（阶段 9，D26）
+
+仓库 `dist/` 提供三条等价部署路径，载荷是同一批静态二进制：`pact`（CLI + daemon）、
+`pactd`（裸 daemon）、`pact-mcp`（stdio MCP server）、`pact-runtime`（生产编排）。
+
+#### 2.5.1 musl 静态二进制打包
+
+前置：
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+# C 依赖（turso）需要 musl C 工具链：
+#   Fedora/Aurora: dnf install musl-gcc
+#   Debian/Ubuntu: apt install musl-tools
+#   Alpine:        apk add musl-dev gcc
+```
+
+```bash
+dist/build-static.sh
+# → dist/target/pact-0.1.0-x86_64-unknown-linux-musl.tar.gz
+#   dist/target/pact-0.1.0-x86_64-unknown-linux-musl.tar.gz.sha256
+```
+
+脚本行为：`cargo build --release --locked --target x86_64-unknown-linux-musl --bins`；
+四个二进制逐个 strip 并用 `readelf -d` 核验**无 `NEEDED` 动态依赖**（失败即中止，不回退 glibc）；
+归档内含 `bin/`、`pact.toml.example`、`lib/systemd/system/pactd.service`、`LICENSE`、`SHA256SUMS`。
+缺前置时脚本显式报错并给出安装提示。`TARGET`、`MUSL_CC`、`NO_STRIP` 可覆盖缺省。
+
+#### 2.5.2 systemd
+
+```bash
+# 1) 系统用户与目录（StateDirectory/RuntimeDirectory 由 systemd 创建并归 pact 所有）
+useradd --system --home-dir /var/lib/pact --shell /usr/sbin/nologin pact
+
+# 2) 安装二进制与 unit
+install -m 0755 bin/pact bin/pactd bin/pact-mcp bin/pact-runtime /usr/local/bin/
+install -m 0644 lib/systemd/system/pactd.service /etc/systemd/system/pactd.service
+
+# 3) 配置（含令牌时收紧权限）
+install -d -m 0755 /etc/pact
+install -o root -g pact -m 0640 pact.toml.example /etc/pact/pact.toml
+
+# 4) 启动
+systemctl daemon-reload
+systemctl enable --now pactd
+systemctl status pactd
+```
+
+unit 要点：前台运行 `pactd --config /etc/pact/pact.toml`；`WorkingDirectory=/var/lib/pact`；
+`StateDirectory=pact`（`/var/lib/pact`，0700）、`RuntimeDirectory=pact`（`/run/pact`，0700）；
+`Restart=on-failure`；`TimeoutStopSec=20s` 覆盖 daemon 的 10s 优雅停机窗口。
+加固项包括 `ProtectSystem=strict`、`ProtectHome`、`PrivateDevices`、空 `CapabilityBoundingSet`、
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`；daemon 只需写数据目录与运行目录。
+日志：`journalctl -u pactd -f`。
+
+#### 2.5.3 容器
+
+```bash
+# 构建（仓库根目录；需要 BuildKit，Docker 23+ 默认启用）
+# 上下文过滤依赖 dist/Dockerfile.dockerignore，避免把 docs/（含未公开论文）带入构建
+docker build -f dist/Dockerfile -t pact:0.1.0 .
+
+# 运行：只绑回环（v1 无 TLS，切勿 -p 8787:8787 暴露到公网）
+docker run --rm --name pact \
+  -p 127.0.0.1:8787:8787 \
+  -v pact-data:/var/lib/pact \
+  pact:0.1.0
+
+# 自定义配置（配置里须启用 listen_tcp，容器内默认配置已启用）
+docker run --rm -p 127.0.0.1:8787:8787 \
+  -v "$PWD/pact.toml:/etc/pact/pact.toml:ro" \
+  -v pact-data:/var/lib/pact pact:0.1.0
+```
+
+镜像以 uid/gid 10001 的 `pact` 用户运行，`/var/lib/pact` 为数据卷，暴露 `8787`，
+`HEALTHCHECK` 每 30s 请求 `/health`。容器内默认配置为 `dist/pact.container.toml`
+（`listen_unix=""`，`listen_tcp="0.0.0.0:8787"`）；跨主机访问须在容器前置 TLS 终结，
+并配置 `[auth.tokens]` / `[auth.acl]`（§2.4、§7.6）。
+
 ---
 
 ## 3. 写一份域声明
@@ -835,8 +914,9 @@ PreconditionMismatch { ty: TypeName("deployment"),
    作为规范的安全超集登记于设计 D21，不回灌论文母本。
 5. **Rule-R 不入事件日志**（D9）。可选 `read_audit = true` 将读审计写入独立审计流（§7.5，fail-closed）；未开启时需在外层自行记录。
 6. **Archival Policy 未内置**（§3.2），需要时用一个持 `consumes` gate 的参与者表达。
-7. **无 `daemon stop`**，无 systemd unit（阶段 9 交付）；**PID 文件已提供**（`pid_file` 可选配置，
-   含陈旧检测），停机靠 SIGINT/SIGTERM 优雅退出（§2.3）。
+7. **无 `daemon stop`**；systemd unit 与容器镜像由阶段 9 交付（`dist/pactd.service`、
+   `dist/Dockerfile`，§2.5）；**PID 文件已提供**（`pid_file` 可选配置，含陈旧检测），
+   停机靠 SIGINT/SIGTERM 优雅退出（§2.3）。
 8. **v1 传输范围**：MCP 仅 stdio，无 Streamable HTTP；daemon 单机单进程，无联网协作（D20，架构 §4）。
 9. **旧日志不自动迁移**（D27）：双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`；顶层遗留单层文件启动即 `LegacyLayoutDetected` fail-fast，须人工迁移（§7.1），不静默丢数据。
 10. **跨实例不协同**（D27）：同一域声明的多个 Counter 实例彼此隔离（各自 Counter/Archive/订阅）；跨实例协同不在范式保障范围内（论文 rev3 §1.3 实现自由条款，见 §1.3）。

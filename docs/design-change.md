@@ -1,5 +1,21 @@
 # 设计变更记录
 
+## 2026-10-20（第 27 轮，阶段 9：分发产物 dist/（D26））
+
+- **交付形态**：新增 `dist/` 六个文件——`Dockerfile`（多阶段 `rust:1.98-alpine` → `alpine:3.22`，非 root uid/gid 10001、`/var/lib/pact` 数据卷、`EXPOSE 8787`、`HEALTHCHECK` 探 `/health`、入口 `pactd --config /etc/pact/pact.toml`）、`Dockerfile.dockerignore`（排除 `.git`/`target`/`docs`/`examples`/本地数据，避免论文母本进入构建上下文）、`pact.container.toml`、`pactd.service`、`pact.toml.example`、`build-static.sh`。
+- **systemd unit**：`User/Group=pact`、`StateDirectory=pact`（`/var/lib/pact` 0700）、`RuntimeDirectory=pact`（`/run/pact` 0700）、`Restart=on-failure`、`KillSignal=SIGTERM` + `TimeoutStopSec=20s`（覆盖 10s drain）、`UMask=0077`；加固 `ProtectSystem=strict`/`ProtectHome`/`PrivateDevices`/`ProtectKernel*`/`ProtectControlGroups`/`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`/`RestrictNamespaces`/`LockPersonality`/空 `CapabilityBoundingSet`。
+- **静态打包**：`build-static.sh` 缺省目标 `x86_64-unknown-linux-musl`；自动探测 `musl-gcc` 或 musl 系 `cc` 并导出 `CC_<target>`/`CARGO_TARGET_<target>_LINKER`（turso 的 C 依赖需要）；`cargo build --release --locked --bins`；strip 后逐 bin `readelf -d` 无 `NEEDED` 校验；归档含 `bin/`、unit、配置示例、`LICENSE`、`SHA256SUMS`，并产出 tar.gz 与 `.sha256`；缺前置显式失败，不回退 glibc。
+- **配置示例**：systemd 侧 `/var/lib/pact` + `/run/pact/pact.sock`；容器侧 `listen_unix=""` + `0.0.0.0:8787`，文档强制 `-p 127.0.0.1:8787:8787`（v1 无 TLS）。
+- **形式层与代码零改动**：`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` / `pact-store` / `pact-engine` / 三接口与 `pact-runtime` 均未修改；`docs/pact*` 母本未动；`dist/**` 按 D26 不接入 CI 语义测试。
+- **验证**：`bash -n dist/build-static.sh` 通过；两份 TOML 由 Python `tomllib` 解析通过；用临时目录替换路径后，`pactd` 实际以两份示例配置启动并优雅停机（unix 套接字与 TCP 两种监听均正常）；`systemd-analyze verify`（临时 root，补齐目标 stub）单元语义通过；`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo test --workspace` **155 项全绿**（无代码改动，与上一轮基线一致）。**未执行**：musl 静态构建与容器镜像构建——当前沙箱无 musl C 工具链、无 Docker/Podman；脚本对缺失前置显式失败，实际构建需在具备 `musl-gcc` 的主机（或 Docker 构建阶段）执行。
+- **全面安全审视（零可利用发现）**：
+  - **构建上下文**：`Dockerfile.dockerignore` 排除 `.git`、`docs`（含未公开论文母本 `docs/pact*`）、`examples`、`target` 与本地数据；该机制要求 BuildKit（Docker 23+ 默认），未使用经典构建器，手册与 Dockerfile 均标注。
+  - **镜像运行**：非 root uid/gid 10001；数据目录为卷；运行阶段不额外 `apk add`（仅基础镜像 busybox，无额外 CVE 面）；配置为无密钥示例。
+  - **网络暴露**：容器内 `0.0.0.0:8787` 仅为端口映射可达，手册强制 `-p 127.0.0.1:8787:8787`；v1 无 TLS 且默认信任声明模式，跨主机使用须外部 TLS + `[auth.tokens]`/`[auth.acl]`（已在 §2.4/§7.6 与示例注释登记）。
+  - **systemd 权限**：`StateDirectory`/`RuntimeDirectory` 0700、`UMask=0077`、空 capability 集、`ProtectSystem=strict`/`ProtectHome`/`PrivateDevices`/`ProtectKernel*`；只放开 unix/inet 地址族；`TimeoutStopSec=20s` 覆盖 10s drain。配置文件按 `root:pact 0640` 安装（可含令牌）。
+  - **打包脚本**：无 `eval`；strip 后以 `readelf -d` 拒绝任何 `NEEDED` 动态依赖（防误发 glibc 产物）；归档不含密钥或未公开文档；校验和未签名，已在设计 §14 列为非目标。
+  - **代码面**：零 Rust 改动、无 `unsafe`、无新增依赖；`docs/pact*` 母本未动。
+
 ## 2026-10-20（第 26 轮，D25 子项 3：域级 ACL 与读审计视图实施）
 
 - **四项设计取舍（用户裁决，均选推荐项）**：ACL 粒度 = 实例级条目 `domain/instance` + `domain/*` 通配；ACL 范围 = 生命周期（load / instantiate / unload / compact / `:analyze` / `:compose`）+ 四类动作 + 查询 + 读审计视图，未配置时保持既有行为；读审计 = 独立 `<instance>.read-audit.jsonl`（append + fsync），不进入主事件日志；审计语义 = fail-closed + REST 只读视图。

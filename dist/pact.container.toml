@@ -1,0 +1,19 @@
+# 容器内默认配置（D26）。覆盖方式：-v /path/pact.toml:/etc/pact/pact.toml:ro
+#
+# 安全提示：容器内监听 0.0.0.0 仅为使端口映射可用；发布时务必绑定回环
+# （-p 127.0.0.1:8787:8787）。v1 无 TLS，跨主机访问须自行加 TLS 终结，
+# 并配置 [auth.tokens] / [auth.acl]（见 docs/manual.md §2.4、§7.6）。
+
+data_dir = "/var/lib/pact"
+listen_unix = ""                   # 容器内不暴露 unix socket
+listen_tcp = "0.0.0.0:8787"
+
+# compact_on_start = false
+# compact_keep_last = 0
+# read_audit = false
+
+# [auth]
+# [auth.tokens]
+# architect = "…"
+# [auth.acl]
+# architect = ["proj/*"]

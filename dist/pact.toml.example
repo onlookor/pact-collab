@@ -1,0 +1,18 @@
+# PACT daemon 配置示例（systemd 部署，D26）。
+# 安装到 /etc/pact/pact.toml；字段语义见 docs/manual.md §2.2。
+
+data_dir = "/var/lib/pact"
+listen_unix = "/run/pact/pact.sock"
+# listen_tcp = "127.0.0.1:8787"    # 可选；跨主机访问须自行加 TLS 终结
+# pid_file = "/run/pact/pactd.pid" # 可选；systemd 已跟踪主进程，通常不需要
+
+compact_on_start = false           # 启动恢复后自动压缩全部实例日志（D25）
+compact_keep_last = 0              # 自动压缩保留的尾部事件条数
+read_audit = false                 # Rule-R 读审计（独立审计流，fail-closed）
+
+# 身份与授权（缺省 = 信任声明模式；非空 ACL 必须同时配置令牌表）
+# [auth]
+# [auth.tokens]
+# architect = "…"
+# [auth.acl]
+# architect = ["proj/*", "other/default"]

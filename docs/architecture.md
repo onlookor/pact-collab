@@ -165,7 +165,7 @@ ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；
 | 安全边界 | 单机默认 unix socket；参与者令牌可选；**启用 `[auth.acl]` 后**（D25 子项 3）全部域作用域端点按 `(domain, instance)` 授权（支持 `domain/*` 通配），无令牌 `401`、越权 `403`，`GET /domains` 按授权过滤；ACL 非空而令牌表为空 ⇒ 拒绝启动。未配置 ACL 时保持既有信任声明行为（生命周期/查询不绑定身份）。`/health` `/ready` `/metrics` `/validate` 免令牌，由部署网络边界兜底；核心不感知认证 |
 | 可运维性（NFR7，D25，**子项 1+2+3 已实现**） | **子项 2（2026-10-20）**：daemon 暴露**免令牌** `/health`（存活）、`/ready`（就绪：引擎可应答）、`/metrics`（Prometheus 文本格式），可选 `pid_file`（启动写入/退出删除/陈旧检测），SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → `engine.shutdown()` 终态快照）。**子项 1（2026-10-20）**：事件日志前缀压缩（REST `/compact`、CLI `pact compact`、MCP `pact_compact`、可选启动自动压缩）+ schema 版本化（`WireEvent.version`，更高版本 fail-fast），详见 §2.3/§2.4。**子项 3（2026-10-20）**：域级 ACL 阻止任意客户端装卸域/触发压缩（`(domain, instance)` 授权，见 §2.5）；可选读审计流（`read_audit = true`，append+fsync，fail-closed）与只读视图 `GET .../read-audit` |
 | 多实例承载（FR19，D27，**已实现**） | 同一域声明可并发承载多个 **Counter 实例**（实例键 `instance`）；实例为接口层一等键，各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / 幂等表。**存储布局（已定案 + 已实现）**：域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、审计流 `‹instance›.read-audit.jsonl`、声明原文 `declaration.pact` 同目录）；索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键）。顶层遗留单层文件（`‹domain›.events.jsonl`）**不识别、fail-fast**（`LegacyLayoutDetected`）。同一 `data_dir` 上多实例以 flock（`‹data_dir›/pactd.lock`）保证单写者，禁止交错写同一日志；非空实例再加载默认拒绝（`DomainBusy`，须 `force`）。实例键以路径段承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` ≡ `default`），键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越 |
-| 层边界（D24–D26） | 范式机制限于 `crates/`；领域内容在独立仓库；生产驱动逻辑收于 `pact-runtime` crate（已实现，经 REST 接入 daemon，不内嵌引擎）；分发产物在同仓库 `dist/`（详见 §6） |
+| 层边界（D24–D26） | 范式机制限于 `crates/`；领域内容在独立仓库；生产驱动逻辑收于 `pact-runtime` crate（已实现，经 REST 接入 daemon，不内嵌引擎）；分发产物在同仓库 `dist/`（**阶段 9 已交付**：容器镜像 / systemd unit / musl 静态打包，详见 §6） |
 
 ## 6. 生产运行层与分发（D24–D26，2026-10-19 裁决；L3 运行层已实现）
 
@@ -180,12 +180,13 @@ ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；
 │    └─ 外部副作用执行器（消费 Consumed，saga 补偿）      │
 │  pact-server (daemon, L1)  ← MCP stdio 或 REST+SSE      │
 │    └─ data_dir（JSONL + snapshot + index.tursodb）       │
-│  dist/: Dockerfile · systemd unit · musl 静态二进制      │
+│  dist/（阶段 9 已交付）: Dockerfile · pactd.service · musl 静态打包  │
 └──────────────────────────────────────────────────────┘
 ```
 
 - **依赖方向**：`pact-runtime → pact-http / pact-engine / pact-core`（lib 层；REST 经 `pact_http::client`，线上视图取自 `pact-engine`，标识符·token 类型取自 `pact-core`）；`pact-mcp` 仅作可执行文件由编排 spawn、**不**作 lib 依赖；不反向；引擎、存储、核心语义零改动。
 - **落地形态（阶段 7 已完成，2026-10-19）**：`crates/pact-runtime/` 交付 `ParticipantClient` 传输抽象（`RestClient` / `McpClient`）、驱动循环 `drive()`（P1/P2/P3 + 订阅推送/轮询兜底 + `pristine` 守卫与终止宽限）、编排 `Orchestrator`（每 agent `tokio::spawn`）、副作用执行器 `SideEffectExecutor`（archive 游标增量 + Rule-S 补偿事实）、TOML 配置驱动的 bin `pact-runtime`。
 - **进程拓扑**：`pact-runtime` 作为 systemd 托管的常驻编排进程（或独立 bin），拉起 daemon 与各 agent 子进程；MCP server 仍由 agent 宿主按配置以 stdio 子进程拉起（v1，D20）。
-- **归属边界**：L1 生产化增强（日志压缩/schema 版本、health/ready/metrics/PID/优雅停机、域级 ACL 与可选审计读视图）仍在 `crates/`（阶段 8）；L2 领域内容仍在独立仓库；L3 收于 `pact-runtime`；分发产物入本仓库 `dist/`（阶段 9，不接入 CI 语义测试，D26）。
+- **归属边界**：L1 生产化增强（日志压缩/schema 版本、health/ready/metrics/PID/优雅停机、域级 ACL 与可选审计读视图）仍在 `crates/`（阶段 8，已交付）；L2 领域内容仍在独立仓库；L3 收于 `pact-runtime`；分发产物入本仓库 `dist/`（阶段 9，已交付；不接入 CI 语义测试，D26）。
+- **分发形态（阶段 9 已完成，2026-10-20）**：`dist/` 提供三条部署路径，均以**同一批静态二进制**为载荷（`pact` / `pactd` / `pact-mcp` / `pact-runtime`）——① 容器：`dist/Dockerfile` 多阶段构建（`rust:1.98-alpine` → `alpine:3.22`），非 root uid 10001、数据卷 `/var/lib/pact`、`EXPOSE 8787`、`HEALTHCHECK` 探 `/health`，默认配置 `dist/pact.container.toml`；② systemd：`dist/pactd.service` 以 `pact` 用户运行 `pactd --config /etc/pact/pact.toml`，`StateDirectory`/`RuntimeDirectory` 提供 `/var/lib/pact` 与 `/run/pact`，`TimeoutStopSec=20s` 覆盖 10s 优雅停机；③ 静态包：`dist/build-static.sh` 交叉构建 `x86_64-unknown-linux-musl` 并产出含 `SHA256SUMS` 的 tar.gz。三条路径均不改变进程拓扑、依赖方向与数据流；容器与 systemd 都要求仅绑回环/受信网络（v1 无 TLS）。
 - **MCP 提供形态**：权威恒为 daemon；`pact-mcp` 是传输适配器，随本仓库交付、由 agent 宿主拉起；服务端形态（daemon 内建 Streamable HTTP）随 v2 落地，不另立项目。

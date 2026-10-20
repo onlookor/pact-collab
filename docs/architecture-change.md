@@ -1,5 +1,11 @@
 # 架构变更记录
 
+## 2026-10-20（第 14 轮，阶段 9：分发产物落地）
+
+- **§6 新增「分发形态（阶段 9 已完成）」**：`dist/` 提供三条部署路径——容器（多阶段 musl 构建、非 root uid 10001、`/var/lib/pact` 卷、`EXPOSE 8787`、`HEALTHCHECK`）、systemd（`pact` 用户、`StateDirectory`/`RuntimeDirectory`、20s 停机窗口、`ProtectSystem=strict` 等加固）、静态包（`x86_64-unknown-linux-musl` tar.gz + `SHA256SUMS`）。三者载荷为同一批静态二进制（`pact`/`pactd`/`pact-mcp`/`pact-runtime`）。
+- **§6 部署图与归属边界更新**：图中 `dist/` 标注「阶段 9 已交付」；归属边界由「阶段 9 未开始」改为「已交付」，L1 生产化标「阶段 8 已交付」；§5 层边界行同步。
+- **无结构性变更**：crate 划分、依赖方向（单向、无回指）、单机进程/部署拓扑、单一状态变更通道（D6/D19）、引擎被动性（D5）、纯函数语义层均不变；本轮仅新增**部署/分发描述与产物**，不改数据流、启动恢复与任何代码路径。
+
 ## 2026-10-20（第 13 轮，D25 子项 3：域级 ACL 与读审计落地）
 
 - **§2.5 新增读审计与域级授权数据流**：Rule-R 成功后由引擎 actor（单写者）向 `<domain>/<instance>.read-audit.jsonl` 追加一行 + fsync；失败即 `500`（fail-closed）；审计流不产生事件、不推进 `seq`、不参与重放 / Rule-T / 快照 / 压缩。REST 入口在 ACL 非空时由 Bearer 令牌反查参与者并按 `(domain, instance)` 授权（支持 `domain/*`），覆盖生命周期 / 动作 / 查询 / compact / 审计视图，`GET /domains` 按授权过滤。

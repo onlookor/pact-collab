@@ -1,0 +1,46 @@
+[Unit]
+Description=PACT daemon (REST + SSE)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pact
+Group=pact
+SyslogIdentifier=pactd
+ExecStart=/usr/local/bin/pactd --config /etc/pact/pact.toml
+WorkingDirectory=/var/lib/pact
+StateDirectory=pact
+StateDirectoryMode=0700
+RuntimeDirectory=pact
+RuntimeDirectoryMode=0700
+UMask=0077
+
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

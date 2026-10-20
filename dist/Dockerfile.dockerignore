@@ -1,0 +1,12 @@
+# Dockerfile 专属忽略清单（BuildKit：<Dockerfile>.dockerignore）。
+# 仅发送构建所需内容，避免把论文母本（docs/pact*）、示例与本地数据带入构建上下文。
+.git
+.github
+.trae
+target
+dist/target
+docs
+examples
+data
+pact.sock
+*.md
