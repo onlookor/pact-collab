@@ -31,6 +31,12 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         compact_keep_last: cfg.compact_keep_last(),
         ..EngineConfig::default()
     };
+    if engine_config.compact_on_start && engine_config.compact_keep_last == 0 {
+        eprintln!(
+            "pactd: 警告：compact_on_start 已启用且 compact_keep_last=0，\
+             启动时将丢弃全部已入快照的审计事件前缀（如需留存请显式设置 compact_keep_last）"
+        );
+    }
     let engine = Engine::spawn_with_config(
         store,
         Arc::new(SystemClock),

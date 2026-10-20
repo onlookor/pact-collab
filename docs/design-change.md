@@ -1,5 +1,21 @@
 # 设计变更记录
 
+## 2026-10-20（第 25 轮，推送前全面安全审视）
+
+- **审查范围**：本轮全部改动（`pact-store` 版本化与压缩、`pact-engine` 快照锚与 Compact、`pact-http` 端点与压缩配置、`pact-cli`/`pact-mcp` 入口、文档）。
+- **核对项与结论（零可利用漏洞）**：
+  - **路径穿越**：`compact` 端点键与既有端点同经 `InstanceKey::validate()`（谓词 `[A-Za-z0-9_-]{1,128}`，天然禁 `..` 与分隔符），存储层路径构造仍集中在 `log::events_path` / `domain_dir`；新增 `logmeta_path` 同源复用同一 `(domain, instance)` 参数与校验，无新增可达的穿越面。
+  - **SQL 注入**：`prune_events` 为 `DELETE … WHERE domain = ?1 AND instance = ?2 AND seq <= ?3` 全参数化绑定，无字符串拼接。
+  - **内存安全**：全仓 `unsafe` 零出现；新增代码不含 `unsafe`、不含 `unwrap()` 于外部输入路径（仅锁中毒 `.expect()` 与测试）。
+  - **崩溃原子性与数据丢失**：压缩五步序中「快照（提交点）→ logmeta 水位 → 日志 tmp+fsync+rename → 索引裁剪」保证任一中间点崩溃均落到两个一致态；`SnapshotRequiredForCompactedLog` 护栏防「日志已截断而快照缺失」的静默丢数据；索引自愈路径（`base_seq > 0` 补 `prune_events`）不删 tokens 投影。
+  - **版本兼容**：读到更高 `version` 一律 fail-fast（日志/快照/logmeta 三处），不静默按 v1 重放未知语义；缺 `version` 才按 v1 兼容。
+  - **拒绝服务面**：`keep_last` 为 `u64`，计算用 `saturating_sub`，无溢出/下溢；`/compact` 为 O(日志大小) 写放大操作，单个实例 flock 互斥故不可并发放大；`/health`/`/ready`/`/metrics` 及 `/compact` 均不参与令牌比较路径，不构成恒时比较旁路。
+  - **信息泄露**：新增错误变体（`UnsupportedSchemaVersion`、`SnapshotRequiredForCompactedLog`）的 HTTP 映射只回显版本号/`base_seq` 等非敏感结构量，不额外暴露服务器路径（沿用既有 `Store` 500 通道）。令牌比较仍走恒时 `ct_eq`。
+- **发现并处置（均为「补文档/补告警」，非代码缺陷）**：
+  1. **压缩端点不校验令牌**（认证边界问题）：`POST .../compact` 与域生命周期端点一致不绑定参与者身份，且属**破坏性**操作。处置：在 `manual.md` §2.3.1/§7.4/§8.2 明确「令牌只覆盖四类动作端点，daemon 不得暴露给不可信网络，域级 ACL 属子项 (3) 未实现」，并在 `architecture.md` §5 安全边界行同步登记。
+  2. **`compact_on_start` 静默丢弃审计前缀**：`compact_on_start = true` + `compact_keep_last = 0` 时每次重启都会丢弃全部已入快照前缀。处置：daemon 启动打印显式告警，manual §7.4 记入风险。
+- **未处置（受限于范围，登记为已知限制）**：压缩端点无速率限制/并发配额（单写者锁已兜底）；域级 ACL 仍缺（D25 子项 3）。
+
 ## 2026-10-20（第 24 轮，D25 子项 1：日志压缩与 schema 版本化实施）
 
 - **四项设计取舍（用户裁决，均选推荐项）**：压缩触发 = **显式运维接口 + 可选启动自动**；截断机制 = **前缀删除 + 旁路 base_seq 清单**；幂等表 = **纳入快照**；version 形态 = **每事件顶层 `version` 字段**。

@@ -155,7 +155,7 @@ pact daemon start --config pact.toml      # 前台运行；Ctrl-C 或 SIGTERM �
 
 ### 2.3.1 运维端点（免令牌）
 
-daemon 提供三个仅供本地/内网使用的运维端点（**不校验令牌**，域操作端点仍照常校验）：
+daemon 提供三个仅供本地/内网使用的运维端点（**不校验令牌**）。需注意认证边界：**参与者令牌只覆盖四类动作端点**（seed / produce / read / consume）；域生命周期（声明、实例化、卸载）、日志压缩（`/compact`）与下述运维端点均**不绑定参与者身份、不校验令牌**。因此 daemon 应仅监听 unix socket、回环或受信网络，**不得把 TCP 端口暴露给不可信网络**（域级 ACL 属 D25 子项 (3)，尚未实现）。
 
 ```bash
 curl --unix-socket ./pact.sock http://localhost/health   # {"status":"ok"}（存活）
@@ -563,6 +563,7 @@ pact compact --domain D --instance I --keep-last 100   # 保留最近 100 条，
   （`SnapshotRequiredForCompactedLog`），不静默丢数据。
 - **代价**：被丢弃前缀**不再可从日志审计**——审计视图退化为「快照 + 保留的尾部事件」。
   需要完整历史时保留 `keep_last` 足够大，或先备份 JSONL 再压缩。
+- **安全边界**：压缩是**破坏性**运维操作且**不校验令牌**（同域生命周期端点）——只应在 unix socket / 回环 / 受信网络暴露。另注意 `compact_on_start = true` 且 `compact_keep_last = 0` 时，**每次重启都会丢弃全部已入快照的审计前缀**；需要留存审计时务必显式设置 `compact_keep_last`（pactd 启动会打印告警）。
 - 可选启动自动压缩：`compact_on_start = true` + `compact_keep_last = N`；
   恢复后逐实例压缩，单个实例失败只告警、不阻断 daemon 启动。
 - REST 等价入口：`POST /domains/{d}[/instances/{i}]/compact {"keep_last": 0}`，
@@ -640,7 +641,7 @@ pact compact --domain D --instance I --keep-last 100   # 保留最近 100 条，
 | `POST /domains/{d}/compact` | `{keep_last?}`（缺省 0） | `200` `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`（D25） |
 | `GET /domains/{d}/events` | — | SSE 流（含 keep-alive），每条 `data:` 是 §6.4 通知 |
 
-**运维端点（D25，免令牌）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验令牌**、也不用 §6 线上格式（详见 §2.3.1）。
+**运维端点（D25，免令牌）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验令牌**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact` 同样不校验令牌**（破坏性运维操作，会丢弃已入快照的审计前缀），暴露边界见 §2.3.1。
 
 **实例路由（D27）**：上表 `/domains/{d}/…` 的语义 = **`default` 实例**。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events 全套同形。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。
 
