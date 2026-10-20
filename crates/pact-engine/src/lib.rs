@@ -26,5 +26,6 @@ pub use idgen::{IdGen, SequentialIdGen, UlidGen};
 pub use notify::{Notification, NotificationKind, NotificationSummary};
 pub use pact_store::InstanceKey;
 pub use views::{
-    AnalysisReport, ArchiveView, CounterView, DomainListing, DomainSummary, GateClause, StatusView,
+    AnalysisReport, ArchiveView, CompactionOutcome, CounterView, DomainListing, DomainSummary,
+    GateClause, StatusView,
 };

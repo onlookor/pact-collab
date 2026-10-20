@@ -5,6 +5,19 @@ use crate::error::StoreError;
 use pact_core::{CounterState, Effect, ParticipantName, Timestamp, Token, TokenId};
 use serde::{Deserialize, Serialize};
 
+/// 事件 schema 版本（日志行与线上事件共用，D25 子项 1）。
+///
+/// 兼容契约（设计 §7.5）：
+/// - 写入方恒发当前版本（`EVENT_SCHEMA_VERSION`）；
+/// - 缺失 `version` 字段的历史日志行按 **v1** 解析（`serde` 缺省）；
+/// - 版本高于本实现支持上限 → `StoreError::UnsupportedSchemaVersion`（fail-fast，
+///   不静默降级，避免把未知语义当 v1 重放）。
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
+
+fn default_schema_version() -> u32 {
+    EVENT_SCHEMA_VERSION
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "PascalCase")]
 pub enum Event {
@@ -94,6 +107,47 @@ impl Event {
         }
         self
     }
+}
+
+/// 日志行 / 线上事件的封装：顶层 `version` + 事件体（内部 tag `kind`）。
+///
+/// 线上形态：`{"version":1,"kind":"Produced","seq":3,"ts":"…","token":{…}}`。
+/// 事件体展开为同一 JSON 对象（`flatten`），使 `version` 与 `kind` 处于同一层。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireEvent {
+    #[serde(default = "default_schema_version")]
+    pub version: u32,
+    #[serde(flatten)]
+    pub event: Event,
+}
+
+impl WireEvent {
+    /// 以当前 schema 版本封装事件。
+    pub fn current(event: Event) -> Self {
+        Self {
+            version: EVENT_SCHEMA_VERSION,
+            event,
+        }
+    }
+
+    /// 解封装并校验版本：高于支持上限 → `UnsupportedSchemaVersion`（fail-fast）。
+    pub fn into_event(self) -> Result<Event, StoreError> {
+        if self.version > EVENT_SCHEMA_VERSION {
+            return Err(StoreError::UnsupportedSchemaVersion {
+                found: self.version,
+                supported: EVENT_SCHEMA_VERSION,
+            });
+        }
+        Ok(self.event)
+    }
+}
+
+/// 事件 → 日志行 JSON（含顶层 `version`）。
+pub fn to_wire_json(ev: &Event) -> Result<String, StoreError> {
+    serde_json::to_string(&WireEvent::current(ev.clone())).map_err(|e| StoreError::Json {
+        context: "事件序列化",
+        source: e,
+    })
 }
 
 /// `apply_event` 的结果分类。

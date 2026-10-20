@@ -256,6 +256,22 @@ fn lifecycle_through_real_daemon() {
     assert_eq!(replay["counter"].as_object().unwrap().len(), 1);
     assert_eq!(replay["archive"].as_array().unwrap().len(), 1);
 
+    // —— 日志压缩（D25 子项 1）：截断前缀后状态不变、水位单调 ——
+    let compacted = ok_json(&pact(&sock, true, &["compact", "--domain", "proj"]));
+    assert_eq!(compacted["instance"], "default");
+    assert_eq!(compacted["base_seq"], 4);
+    assert_eq!(compacted["discarded_events"], 4);
+    let status = ok_json(&pact(&sock, true, &["status", "--domain", "proj"]));
+    assert_eq!(status["counter_size"], 1);
+    assert_eq!(status["archive_size"], 1);
+    let out = pact(&sock, false, &["compact", "--domain", "proj"]);
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("base_seq=4"),
+        "人类输出: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
     daemon.kill().unwrap();
     let _ = daemon.wait();
 }

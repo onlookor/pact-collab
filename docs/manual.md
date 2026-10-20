@@ -117,6 +117,9 @@ cargo build -p pact-mcp        # → target/debug/pact-mcp（stdio MCP server，
 data_dir    = "./data"            # 事件日志 / 快照 / 索引目录
 listen_unix = "./pact.sock"       # 默认监听；单机安全
 # listen_tcp  = "127.0.0.1:8787"  # 可选，与 listen_unix 可同时启用
+# pid_file    = "./pactd.pid"     # 可选；启动写入、退出删除（含陈旧检测）
+# compact_on_start = false        # 可选；启动恢复后自动压缩全部实例日志（D25）
+# compact_keep_last = 0           # 可选；自动压缩保留的尾部事件条数
 
 [mcp]
 enabled = true
@@ -127,7 +130,7 @@ architect = "sekret"              # 参与者 → 令牌，请求头 Authorizati
 ```
 
 缺省语义（文件不存在或字段缺省时）：`data_dir = "./data"`、`listen_unix = "./pact.sock"`、
-无 TCP、无令牌表。两个易踩点：
+无 TCP、无令牌表、无 PID 文件、不自动压缩（`compact_on_start = false`、`compact_keep_last = 0`）。两个易踩点：
 
 - 配置用 `deny_unknown_fields`，**写错键名会直接报错**，不会静默忽略。
 - `listen_unix = ""`（空串）= 禁用 unix socket；只写 `listen_tcp` 而不写 `listen_unix`，
@@ -136,12 +139,33 @@ architect = "sekret"              # 参与者 → 令牌，请求头 Authorizati
 ### 2.3 启动与停止 daemon
 
 ```bash
-pact daemon start --config pact.toml      # 前台运行；Ctrl-C 停止
+pact daemon start --config pact.toml      # 前台运行；Ctrl-C 或 SIGTERM 优雅停止
 ```
 
 **没有 `daemon stop` 子命令。** 停止就是终止进程（`kill <pid>`）；
 `examples/online/run.sh` 的 `cleanup()` 就是这么做的，并用 `trap ... EXIT` 保证兜底。
 状态不会丢：JSONL 是真相源，下次启动自动做「快照 + 其后事件重放」恢复（架构 §2.3）。
+
+**优雅停机（D25）**：SIGINT（Ctrl-C）与 SIGTERM 走同一路径——停止接受新连接 → 最多等 10 秒
+让在途请求完成 → 写终态快照 → 删除 PID 文件与 unix 套接字。SSE 长连接会占满宽限窗口，
+超时后强制进入快照并退出（不阻塞）。
+
+**PID 文件（可选）**：配置 `pid_file` 后启动写入自身 PID、退出删除。启动时若该文件已存在
+且记录的 PID 仍存活，则**拒绝启动**（防两个 pactd 争同一文件）；确认是无用残留后再手动删除。
+
+### 2.3.1 运维端点（免令牌）
+
+daemon 提供三个仅供本地/内网使用的运维端点（**不校验令牌**，域操作端点仍照常校验）：
+
+```bash
+curl --unix-socket ./pact.sock http://localhost/health   # {"status":"ok"}（存活）
+curl --unix-socket ./pact.sock http://localhost/ready    # 就绪；引擎不可应答时 503
+curl --unix-socket ./pact.sock http://localhost/metrics  # Prometheus 文本格式
+```
+
+`/metrics` 指标：`pact_domains_declared`、`pact_instances_loaded`、
+`pact_counter_size{domain,instance}`、`pact_archive_size{domain,instance}`、
+`pact_terminated{domain,instance}`（1/0）、`pact_uptime_seconds`。仅统计**已加载**的域实例。
 
 ### 2.4 身份与令牌
 
@@ -483,7 +507,8 @@ error [ComposeConflict]: 片段组合冲突（1 处）
 <data_dir>/
   <domain>/                        # 每个域声明一个子目录
     <instance>.events.jsonl        # 实例级真相源，只追加
-    <instance>.snapshot.json       # 定期快照（seq + CounterState），原子写（tmp + rename）
+    <instance>.snapshot.json       # 定期 / 压缩时写入的快照（自足锚），原子写（tmp + rename）
+    <instance>.logmeta.json        # 压缩水位（base_seq，缺省不存在）
     declaration.pact               # 声明原文（启动恢复时回填声明注册表）
   index.tursodb                    # 全部实例共用的查询索引（派生物，(domain, instance) 双列）
   index.tursodb-wal
@@ -510,12 +535,38 @@ Terminated { seq, ts }               // Rule-T 检测结果，信息性
 ### 7.3 离线重放
 
 ```bash
-pact replay <data_dir>/se_lifecycle.events.jsonl
+pact replay <data_dir>/se_lifecycle/default.events.jsonl
 # → replayed 10 events (domain se_lifecycle): counter=0 archive=5
 ```
 
 不需要 daemon。重放结果与线上状态逐字段等价（集成测试锚定）。
 崩溃恢复走同一条路径：最新快照 + 其后的事件重放；JSONL 末行半截（写入中途崩溃）可被安全跳过续作。
+
+**事件 schema 版本**：每行事件带顶层 `version`（当前 `1`，如 `{"version":1,"kind":"Seeded",…}`）。
+缺 `version` 的旧日志按 v1 重放（向后兼容）；`version` 高于当前支持版本时 **fail-fast
+（`UnsupportedSchemaVersion`）**，不会静默按 v1 误读——升级 pactd 后旧数据可直接用，降级则须先迁移。
+
+### 7.4 日志压缩（D25）
+
+事件日志只追加，长期运行会无限增长。压缩 = **写全量快照后截断已覆盖的前缀**：
+
+```bash
+pact compact --domain D                      # 丢弃全部已入快照的前缀（keep_last = 0）
+pact compact --domain D --instance I --keep-last 100   # 保留最近 100 条，便于审计
+```
+
+- 压缩后日志可能不再包含 `DomainLoaded`——恢复改用**快照为锚**（快照内置声明原文、
+  `dl_seq`、Counter/Archive 状态与 Rule-E 幂等表），旧前缀内被丢弃的 `Consumed` 行
+  不会破坏「同 `request_id` 重试返回首次结果」。
+- 水位记在 `<instance>.logmeta.json`（`base_seq`），**单调不回退**；重复压缩不会让 `seq` 重号。
+- **数据安全**：若日志已被截断但快照缺失/不覆盖水位，启动直接 fail-fast
+  （`SnapshotRequiredForCompactedLog`），不静默丢数据。
+- **代价**：被丢弃前缀**不再可从日志审计**——审计视图退化为「快照 + 保留的尾部事件」。
+  需要完整历史时保留 `keep_last` 足够大，或先备份 JSONL 再压缩。
+- 可选启动自动压缩：`compact_on_start = true` + `compact_keep_last = N`；
+  恢复后逐实例压缩，单个实例失败只告警、不阻断 daemon 启动。
+- REST 等价入口：`POST /domains/{d}[/instances/{i}]/compact {"keep_last": 0}`，
+  返回 `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`；MCP 为 `pact_compact`。
 
 ---
 
@@ -553,9 +604,10 @@ pact replay <data_dir>/se_lifecycle.events.jsonl
 | `gates show --domain D --participant P [--instance I]` | 在线 | 我的 gate 子句（含条件） |
 | `enabled --domain D --participant P [--instance I]` | 在线 | Rule-W：当前可执行的生产 |
 | `status --domain D [--instance I]` | 在线 | Counter 概要 + `terminated` |
+| `compact --domain D [--instance I] [--keep-last N]` | 在线 | 日志前缀压缩（D25；缺省 `--keep-last 0` = 丢弃全部已入快照的前缀） |
 | `analyze <FILE>` | **离线** | 六项静态分析 |
 | `compose <FILES…>` | **离线** | 片段组合（≥2 个），打印合并文本 |
-| `replay <FILE>` | **离线** | 重放 `<domain>.events.jsonl` |
+| `replay <FILE>` | **离线** | 重放 `<instance>.events.jsonl`（校验事件 schema `version`） |
 
 **实例 flag（D27）**：所有域操作命令的 `--instance I` 可选，**缺省 = 默认实例 `default`**——既有不带该 flag 的调用与脚本语义不变。`--force` 仅用于对**非空实例**（`last_seq > DomainLoaded.seq`）的再加载：默认拒绝（`DomainBusy`），加 `--force` 才重置其 Counter。
 
@@ -585,9 +637,12 @@ pact replay <data_dir>/se_lifecycle.events.jsonl
 | `GET /domains/{d}/gates/{participant}` | — | `200` `{gates: [...]}` |
 | `GET /domains/{d}/enabled?participant=` | — | `200` `{options: [{type, witness_predecessors[]}]}` |
 | `GET /domains/{d}/status` | — | `200` `{counter_size, archive_size, terminated}` |
+| `POST /domains/{d}/compact` | `{keep_last?}`（缺省 0） | `200` `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`（D25） |
 | `GET /domains/{d}/events` | — | SSE 流（含 keep-alive），每条 `data:` 是 §6.4 通知 |
 
-**实例路由（D27）**：上表 `/domains/{d}/…` 的语义 = **`default` 实例**。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / events 全套同形。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。
+**运维端点（D25，免令牌）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验令牌**、也不用 §6 线上格式（详见 §2.3.1）。
+
+**实例路由（D27）**：上表 `/domains/{d}/…` 的语义 = **`default` 实例**。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events 全套同形。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。
 
 实现注记：`{d}:analyze` / `{d}:compose` 因路由库不支持同段「参数 + 字面量」，
 在 `/domains/{d}` 统一入口内按段内冒号后缀分发，**对外 URL 不变**。
@@ -618,9 +673,10 @@ pact-mcp --unix <sock> [--bearer <token>]     # 或 --tcp <addr>（优先）
 | `pact_my_gates` | 参与者的全部 gate 子句（含条件），agent 自省 |
 | `pact_enabled` | Rule-W 轮询：当前可满足的 Rule-P 组合 |
 | `pact_status` | Counter 概要 + `terminated` 判定 |
+| `pact_compact` | 日志前缀压缩（D25；`keep_last` 缺省 0） |
 | `pact_subscribe` | 注册 Counter 变更通知；事件经 `notifications/pact/event` 推送 |
 
-共 **16** 个工具。除 `pact_domain_validate` / `pact_analyze` / `pact_compose` / `pact_list_domains` 外，全部工具接受可选 `instance` 参数（缺省 = `default` 实例，D27）。
+共 **17** 个工具。除 `pact_domain_validate` / `pact_analyze` / `pact_compose` / `pact_list_domains` 外，全部工具接受可选 `instance` 参数（缺省 = `default` 实例，D27）。
 
 ---
 
@@ -681,7 +737,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `NotFound` | 404 | 路径不存在 |
 | `MethodNotAllowed` | 405 | 方法与路径不匹配（如 `GET /domains/{d}:analyze`） |
 | `BadRequest` | 400 | JSON 请求体解析失败 |
-| `Store` | 500 | 存储写入失败；**含顶层遗留单层文件的启动 fail-fast**（`LegacyLayoutDetected`，须人工迁移） |
+| `Store` | 500 | 存储写入失败；**含 `UnsupportedSchemaVersion`**（日志/快照 `version` 高于当前支持版本）、**`SnapshotRequiredForCompactedLog`**（日志已截断但快照缺失/不覆盖水位）、**顶层遗留单层文件**（`LegacyLayoutDetected`，须人工迁移） |
 | `Recovery` | 500 | 启动恢复失败 |
 | `EngineStopped` | 503 | 引擎已停止 |
 | `Transport` | —（仅 CLI/MCP） | 连不上 daemon：`client error (Connect)` |
@@ -709,6 +765,9 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | 启动报 `Store` / `LegacyLayoutDetected` | `data_dir` 顶层有旧版单层文件（`<domain>.events.jsonl`） | 手工迁移到 `<domain>/default.events.jsonl` 后重启（§7.1，不自动迁移） |
 | `DomainBusy` | 对非空实例再 `load`（会重置 Counter） | 确认要替换则加 `--force`（CLI）/ `force: true`（REST）；否则换实例名 |
 | daemon 启动即退出（锁冲突） | 同一 `data_dir` 已有另一 daemon | 停掉旧实例，或换 `data_dir`（`pactd.lock` 独占，§7.1） |
+| 启动报 `UnsupportedSchemaVersion` | 数据由更新版 pactd 写入（事件 schema 版本更高） | 升级 pactd 或按新版格式迁移；**不可**期望旧版静默重放（§7.3） |
+| 启动报 `SnapshotRequiredForCompactedLog` | 日志已被压缩截断，但快照缺失/未覆盖 `base_seq` | 从备份恢复 `<instance>.snapshot.json`；勿手工删除快照（§7.4） |
+| 压缩后早期事件查不到 | 前缀已随快照丢弃（预期取舍） | 需要完整历史时先备份 JSONL，或用 `--keep-last` 保留足够尾部后重压（§7.4） |
 
 ---
 
@@ -725,10 +784,12 @@ PreconditionMismatch { ty: TypeName("deployment"),
    作为规范的安全超集登记于设计 D21，不回灌论文母本。
 5. **Rule-R 不入事件日志**（D9），读审计需在外层自行记录。
 6. **Archival Policy 未内置**（§3.2），需要时用一个持 `consumes` gate 的参与者表达。
-7. **无 `daemon stop`**，无进程管理（PID 文件、systemd unit 均未提供）。
+7. **无 `daemon stop`**，无 systemd unit（阶段 9 交付）；**PID 文件已提供**（`pid_file` 可选配置，
+   含陈旧检测），停机靠 SIGINT/SIGTERM 优雅退出（§2.3）。
 8. **v1 传输范围**：MCP 仅 stdio，无 Streamable HTTP；daemon 单机单进程，无联网协作（D20，架构 §4）。
 9. **旧日志不自动迁移**（D27）：双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`；顶层遗留单层文件启动即 `LegacyLayoutDetected` fail-fast，须人工迁移（§7.1），不静默丢数据。
 10. **跨实例不协同**（D27）：同一域声明的多个 Counter 实例彼此隔离（各自 Counter/Archive/订阅）；跨实例协同不在范式保障范围内（论文 rev3 §1.3 实现自由条款，见 §1.3）。
+11. **压缩会牺牲前缀审计**（D25）：被丢弃前缀不再可查，审计视图 = 自足快照 + 保留尾部事件；v1 不做自动周期性轮转，压缩为运维显式动作或启动开关（§7.4）。
 
 ---
 

@@ -4,7 +4,7 @@
 //! 手动解析 `data:` 行为 [`Notification`]。
 
 use crate::dto::{
-    ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody,
+    CompactReq, ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody,
     ErrorDetail, GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq,
     TokenResp, ValidateReq, ValidateResp,
 };
@@ -16,7 +16,9 @@ use hyper::body::Incoming;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use pact_engine::notify::Notification;
-use pact_engine::views::{AnalysisReport, ArchiveView, CounterView, DomainSummary, StatusView};
+use pact_engine::views::{
+    AnalysisReport, ArchiveView, CompactionOutcome, CounterView, DomainSummary, StatusView,
+};
 use pact_engine::DEFAULT_INSTANCE;
 use serde::de::DeserializeOwned;
 use std::collections::VecDeque;
@@ -207,6 +209,22 @@ impl Client {
     ) -> Result<(), ClientError> {
         let req = self.json_request::<()>(Method::DELETE, &base_path(domain, instance), None)?;
         expect_empty(self.dispatch(req).await?).await
+    }
+
+    /// `POST /domains/{d}[/instances/{i}]/compact`：日志前缀压缩（D25 子项 1）。
+    /// `keep_last` = 保留最近的事件条数（0 = 丢弃全部已入快照的前缀）。
+    pub async fn compact(
+        &self,
+        domain: &str,
+        instance: Option<&str>,
+        keep_last: u64,
+    ) -> Result<CompactionOutcome, ClientError> {
+        let req = self.json_request(
+            Method::POST,
+            &format!("{}/compact", base_path(domain, instance)),
+            Some(&CompactReq { keep_last }),
+        )?;
+        decode(self.dispatch(req).await?).await
     }
 
     /// `POST /domains/{d}:analyze`（定义级，无实例维度）。

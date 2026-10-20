@@ -11,8 +11,8 @@
 use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
 use pact_engine::views::DomainListing;
 use pact_engine::{
-    Engine, EngineError, InstanceKey, LogicalClock, NotificationKind, SequentialIdGen,
-    DEFAULT_INSTANCE,
+    Engine, EngineConfig, EngineError, InstanceKey, LogicalClock, NotificationKind,
+    SequentialIdGen, DEFAULT_INSTANCE,
 };
 use pact_store::Store;
 use std::sync::Arc;
@@ -802,6 +802,184 @@ async fn consume_request_id_is_idempotent_and_persists() {
         .unwrap();
     assert_eq!(fresh.token.id, req2.id);
     engine2.shutdown().await.unwrap();
+}
+
+// ============ 13. 日志前缀压缩与 schema 版本化（D25 子项 1） ============
+
+/// 带配置的引擎（压缩测试用）。
+async fn setup_with(dir: &std::path::Path, config: EngineConfig) -> Engine {
+    let store = Store::open(dir).await.unwrap();
+    Engine::spawn_with_config(
+        store,
+        Arc::new(LogicalClock::new()),
+        Arc::new(SequentialIdGen::new()),
+        config,
+    )
+}
+
+#[tokio::test]
+async fn compact_truncates_prefix_preserving_state_and_idempotency() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup(dir.path()).await;
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    let req = engine
+        .seed(
+            key("proj"),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    let first = engine
+        .consume(
+            key("proj"),
+            par("architect"),
+            req.id.clone(),
+            Some("req-1".into()),
+        )
+        .await
+        .unwrap();
+
+    // 压缩前 4 行（DomainLoaded/Seeded/Consumed/Terminated）；
+    // 压缩（keep_last = 0）后日志清空、快照承载全部状态
+    assert_eq!(log_lines(dir.path(), "proj").len(), 4);
+    let out = engine.compact(key("proj"), 0).await.unwrap();
+    assert_eq!((out.snapshot_seq, out.base_seq), (4, 4));
+    assert_eq!((out.retained_events, out.discarded_events), (0, 4));
+    assert!(log_lines(dir.path(), "proj").is_empty());
+
+    // 压缩不改状态；seq 自 5 续接（不重号）
+    let status = engine.status(key("proj")).await.unwrap();
+    assert_eq!((status.counter_size, status.archive_size), (0, 1));
+    assert!(
+        status.terminated,
+        "消费唯一 token 后 Counter 空 → Rule-T 成立"
+    );
+    let req2 = engine
+        .seed(
+            key("proj"),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        log_lines(dir.path(), "proj").len(),
+        1,
+        "新事件自 seq=5 追加"
+    );
+    assert!(log_lines(dir.path(), "proj")[0].contains(r#""seq":5"#));
+
+    // 重启：日志已无 DomainLoaded，靠快照锚恢复（状态 + 幂等表）
+    engine.shutdown().await.unwrap();
+    let engine2 = setup(dir.path()).await;
+    let status2 = engine2.status(key("proj")).await.unwrap();
+    assert_eq!((status2.counter_size, status2.archive_size), (1, 1));
+    assert_eq!(log_lines(dir.path(), "proj").len(), 1);
+    assert!(log_lines(dir.path(), "proj")[0].contains(r#""seq":5"#));
+    let retry = engine2
+        .consume(
+            key("proj"),
+            par("architect"),
+            req.id.clone(),
+            Some("req-1".into()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry, first, "压缩+重启后幂等表仍生效（快照承载）");
+    let _ = req2;
+    engine2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn compact_keep_last_retains_tail_and_schema_version_on_wire() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup(dir.path()).await;
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    let mut rx = engine.subscribe(key("proj")).await.unwrap();
+    let design = run_partial_flow(&engine, "proj").await;
+
+    // 通知顶层携带 schema 版本
+    let note = rx.recv().await.unwrap();
+    assert_eq!(note.version, pact_store::EVENT_SCHEMA_VERSION);
+
+    // keep_last = 1：保留末尾 1 行（Consumed seq=4）
+    let out = engine.compact(key("proj"), 1).await.unwrap();
+    assert_eq!(
+        (out.base_seq, out.retained_events, out.discarded_events),
+        (3, 1, 3)
+    );
+    let lines = log_lines(dir.path(), "proj");
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].contains(r#""version":1"#), "事件行含 schema 版本");
+    assert!(lines[0].contains(r#""seq":4"#));
+
+    // 尾部继续产生新事件
+    let impl_t = engine
+        .produce(
+            key("proj"),
+            par("developer"),
+            tyn("implementation"),
+            vec![design.clone()],
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    let lines = log_lines(dir.path(), "proj");
+    assert_eq!(lines.len(), 2);
+    assert!(lines[1].contains(r#""seq":5"#), "续接 seq 正确");
+    let _ = impl_t;
+
+    engine.shutdown().await.unwrap();
+    let engine2 = setup(dir.path()).await;
+    let status = engine2.status(key("proj")).await.unwrap();
+    assert_eq!(status.archive_size, 1);
+    let lines = log_lines(dir.path(), "proj");
+    assert_eq!(lines.len(), 2);
+    assert!(lines[1].contains(r#""seq":5"#), "重启后 seq 续接正确");
+    engine2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn compact_on_start_config_compacts_after_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let engine = setup(dir.path()).await;
+        engine
+            .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+            .await
+            .unwrap();
+        run_partial_flow(&engine, "proj").await;
+        engine.shutdown().await.unwrap();
+    }
+    assert_eq!(log_lines(dir.path(), "proj").len(), 4);
+
+    // 启动时自动压缩（keep_last = 0）
+    let engine = setup_with(
+        dir.path(),
+        EngineConfig {
+            compact_on_start: true,
+            compact_keep_last: 0,
+            ..EngineConfig::default()
+        },
+    )
+    .await;
+    // 先经一次命令串行化（确保 actor 已完成恢复与启动压缩）
+    let status = engine.status(key("proj")).await.unwrap();
+    assert_eq!((status.counter_size, status.archive_size), (1, 1));
+    assert!(
+        log_lines(dir.path(), "proj").is_empty(),
+        "启动自动压缩已清空前缀"
+    );
+    engine.shutdown().await.unwrap();
 }
 
 // ============ 12. 域双键：同一声明并发承载多个实例（D27） ============

@@ -35,6 +35,21 @@ pub enum StoreError {
     /// 检测到旧单层布局（`<data_dir>/<domain>.events.jsonl` 等）残留。
     /// 双键布局下不再识别，须人工迁移（fail-fast，不静默丢数据）。
     LegacyLayoutDetected { path: PathBuf },
+    /// 事件/快照 schema 版本高于本实现支持上限（向前不兼容，fail-fast）。
+    /// 发生于读到更高版本日志/快照时（不静默按 v1 重放未知语义）。
+    UnsupportedSchemaVersion {
+        /// 记录中声明的版本。
+        found: u32,
+        /// 本实现支持的版本上限。
+        supported: u32,
+    },
+    /// 日志前缀已被压缩（`base_seq > 0` 或首行 seq > 1）却找不到覆盖其前缀的快照。
+    /// 意味着历史状态不可恢复（数据已丢失），fail-fast 并须人工介入。
+    SnapshotRequiredForCompactedLog {
+        path: PathBuf,
+        /// 需要被快照覆盖的最小事件 seq（含）。
+        base_seq: u64,
+    },
 }
 
 impl std::fmt::Display for StoreError {
@@ -69,6 +84,17 @@ impl std::fmt::Display for StoreError {
                 f,
                 "检测到旧单层布局残留 {}：双键布局（<domain>/<instance>.events.jsonl）\
                  不再识别旧文件，请人工迁移后再启动",
+                path.display()
+            ),
+            StoreError::UnsupportedSchemaVersion { found, supported } => write!(
+                f,
+                "记录 schema 版本 v{found} 高于本实现支持上限 v{supported}：\
+                 请升级 pactd，或迁移数据后再启动（不按旧版本静默重放）"
+            ),
+            StoreError::SnapshotRequiredForCompactedLog { path, base_seq } => write!(
+                f,
+                "日志 {} 的前缀已被压缩（需覆盖 seq ≤ {base_seq}），但缺少可用快照：\
+                 历史状态不可恢复，请人工介入（禁止静默丢数据）",
                 path.display()
             ),
         }

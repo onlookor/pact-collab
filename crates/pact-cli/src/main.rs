@@ -11,7 +11,7 @@ use pact_http::client::{Client, ClientError};
 use pact_http::config::Config;
 use pact_http::daemon::run_daemon;
 use pact_http::dto::{conflicts_detail, problem_detail, ErrorBody, ErrorDetail};
-use pact_store::{apply_event, ApplyOutcome, Event};
+use pact_store::{apply_event, ApplyOutcome, Event, WireEvent};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -137,6 +137,17 @@ enum Command {
         /// 目标实例名（缺省 default）
         #[arg(long)]
         instance: Option<String>,
+    },
+    /// 日志前缀压缩（D25 子项 1）：写全量快照后截断已覆盖的前缀
+    Compact {
+        #[arg(long)]
+        domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
+        /// 保留最近的事件条数（缺省 0 = 丢弃全部已入快照的前缀）
+        #[arg(long, default_value_t = 0)]
+        keep_last: u64,
     },
     /// 离线：静态分析（不经 daemon）
     Analyze {
@@ -636,6 +647,28 @@ async fn run(cli: Cli) -> ExitCode {
                 );
             })
         }
+        Command::Compact {
+            domain,
+            instance,
+            keep_last,
+        } => {
+            let c = conn.client();
+            done(
+                json,
+                c.compact(&domain, instance.as_deref(), keep_last).await,
+                |r| {
+                    println!(
+                        "{}/{}: snapshot_seq={} base_seq={} retained={} discarded={}",
+                        r.domain,
+                        r.instance,
+                        r.snapshot_seq,
+                        r.base_seq,
+                        r.retained_events,
+                        r.discarded_events
+                    );
+                },
+            )
+        }
 
         // —— 离线命令 ——
         Command::Analyze { file } => offline_analyze(json, &file),
@@ -839,7 +872,10 @@ fn offline_replay(json: bool, file: &PathBuf) -> ExitCode {
         if line.is_empty() {
             continue;
         }
-        let ev: Event = match serde_json::from_str(line) {
+        let ev: Event = match serde_json::from_str::<WireEvent>(line)
+            .map_err(|e| e.to_string())
+            .and_then(|w| w.into_event().map_err(|e| e.to_string()))
+        {
             Ok(e) => e,
             Err(e) => {
                 return fail(

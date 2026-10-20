@@ -1,5 +1,23 @@
 # 需求变更记录
 
+## 2026-10-20（第 15 轮，D25 子项 1 日志压缩与 schema 版本化落地）
+
+- **触发**：用户裁决「开始实现日志压缩与 schema 版本化」，并就四项设计取舍选定推荐项：压缩触发 = **显式运维接口 + 可选启动自动**；截断机制 = **前缀删除 + 旁路 base_seq 清单**；幂等表 = **纳入快照**；version 形态 = **每事件顶层 `version` 字段**。
+- **FR17 第 1 条细化（语义未变，仅把概括落为可实现口径）**：
+  - 截断机制：快照为提交点 → `<instance>.logmeta.json` 记 `base_seq` 水位（先于日志重写）→ 日志 tmp+fsync+rename 原子重写（保留 `seq > base_seq` 行）；水位单调不回退。
+  - 快照自足：快照承载 `version`/`seq`/`dl_seq`/`declaration`/`state`/`consumed_requests`，**Rule-E 幂等表随快照持久化**；恢复以快照为锚补尾部事件。
+  - 数据安全：日志已截断而快照缺失/不覆盖水位 ⇒ fail-fast（`SnapshotRequiredForCompactedLog`）。
+  - 版本兼容：`EVENT_SCHEMA_VERSION = 1`；缺 `version` 视为 v1；更高版本 fail-fast（`UnsupportedSchemaVersion`）。
+  - 触发：REST / CLI / MCP 显式入口 + `pact.toml` 可选 `compact_on_start` / `compact_keep_last`。
+  - 固有取舍：压缩后审计视图退化为「快照 + 保留尾部事件」，须在 design/manual 文档化。
+- **无新增/删除需求**：FR1–FR19、NFR1–NFR7 编号与语义不变；NFR2 的「日志即完整审计」在压缩后由「快照 + 保留尾部」共同承担（已写入 FR17）。子项 (3) 域级 ACL 与审计读视图仍未实现。
+
+## 2026-10-20（第 14 轮，D25 子项 2 运维接口落地）
+
+- **触发**：用户裁决「继续开发」，并选定阶段 8 先做**子项 (2) 运维接口**（另三项取舍：Prometheus 文本格式、运维端点免令牌、PID 文件可选+陈旧检测、系统化优雅停机）。
+- **NFR7 条目具体化**（语义未变，仅把原先一句概括落为可实现口径）：`GET /health` / `GET /ready` / `GET /metrics`（Prometheus 文本）、可选 `pid_file`（缺省不写、含陈旧检测）、SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界等待在途 → 终态快照 → 清理）；明确**运维端点不校验令牌**（仅本地/内网）。
+- **无新增/删除需求**：FR1–FR19、NFR1–NFR7 编号与语义不变；子项 (1) 压缩与 schema 版本化、(3) 域级 ACL 与审计读视图仍未实现。
+
 ## 2026-10-20（第 13 轮，术语精化：幂等/自足作用域改用「域实例」）
 
 - **触发**：用户指出第 12 轮「同域→同一实例」的措辞会与工程上的「实例」混淆，且须为将来类型-实例分离（如分布式 counter）留余地，要求统一写「域实例」。

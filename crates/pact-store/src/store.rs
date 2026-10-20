@@ -24,6 +24,21 @@ pub struct RecoveredInstance {
     pub events: Vec<Event>,
     /// 启动时是否截断了崩溃残留的尾部半行。
     pub truncated: bool,
+    /// 日志前缀压缩水位（已被快照覆盖、可从日志丢弃的事件上界；0 = 未压缩）。
+    pub base_seq: u64,
+}
+
+/// 单实例前缀压缩结果（设计 §7.5）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionResult {
+    /// 快照已覆盖到的最后事件 seq（压缩前日志末尾 seq）。
+    pub snapshot_seq: u64,
+    /// 压缩后的日志保留水位（可从日志丢弃的事件上界）。
+    pub base_seq: u64,
+    /// 日志中保留的事件行数。
+    pub retained: u64,
+    /// 本次丢弃的事件行数。
+    pub discarded: u64,
 }
 
 pub struct Store {
@@ -66,12 +81,56 @@ impl Store {
         // 1. 两层扫描 → 实例键（域子目录 + 实例日志文件）
         let keys = self.scan_instance_keys();
 
-        // 2. 逐域实例清洗 + 读取
+        // 2. 逐域实例清洗 + 读取（含压缩水位与快照覆盖校验）
         let mut recovered = Vec::new();
         for key in keys {
             let path = log::events_path(&self.data_dir, &key.domain, &key.instance);
-            let ReadOutcome { events, truncated } = log::read_and_sanitize(&path)?;
-            let last_seq = events.last().map(|e| e.seq()).unwrap_or(0);
+            let meta_path = log::logmeta_path(&self.data_dir, &key.domain, &key.instance);
+            let base_seq = log::load_logmeta(&meta_path)?
+                .map(|m| m.base_seq)
+                .unwrap_or(0);
+            let ReadOutcome { events, truncated } = log::read_and_sanitize(&path, base_seq)?;
+            let snap = snapshot::load_snapshot(&log::snapshot_path(
+                &self.data_dir,
+                &key.domain,
+                &key.instance,
+            ))?;
+            let snap_seq = snap.as_ref().map(|s| s.seq).unwrap_or(0);
+
+            // 压缩覆盖校验：日志中已无 `DomainLoaded`（前缀被压缩丢弃）时，
+            // 被丢弃前缀的状态只能由快照承载；快照缺失 → 历史不可恢复（fail-fast，
+            // 不静默丢数据）。允许"日志尚未截断"的崩溃中间态（超集，无害）。
+            let has_domain_loaded = events
+                .iter()
+                .any(|e| matches!(e, Event::DomainLoaded { .. }));
+            if !has_domain_loaded {
+                let need = events
+                    .first()
+                    .map(|e| e.seq().saturating_sub(1))
+                    .unwrap_or(0)
+                    .max(base_seq);
+                if snap_seq < need {
+                    return Err(StoreError::SnapshotRequiredForCompactedLog {
+                        path,
+                        base_seq: need,
+                    });
+                }
+            }
+
+            // 写侧续接点：取「日志末尾 seq / 压缩水位 / 快照 seq」三者最大
+            // （压缩后日志可能为空，续接点必须回落到快照/水位，否则会重号覆盖）。
+            let last_seq = events
+                .last()
+                .map(|e| e.seq())
+                .unwrap_or(0)
+                .max(base_seq)
+                .max(snap_seq);
+
+            // 索引与压缩水位对齐（幂等自愈「日志已截断但索引未裁剪」的崩溃窗口）
+            if base_seq > 0 {
+                let _ = self.index.prune_events(&key, base_seq).await;
+            }
+
             self.logs
                 .lock()
                 .unwrap()
@@ -80,15 +139,21 @@ impl Store {
                 key,
                 events,
                 truncated,
+                base_seq,
             });
         }
 
-        // 3. 索引一致性：任一实例末尾 seq 与索引不符 → 全量重建（设计 §7.3）
+        // 3. 索引一致性：任一实例末尾 seq 与索引不符 → 全量重建（设计 §7.3）。
+        //    压缩后索引的合法上界可能回落到水位（`base_seq`），此时接受 `idx_last <= base_seq`。
         let mut consistent = true;
         for rd in &recovered {
-            let log_last = rd.events.last().map(|e| e.seq());
+            let log_last = rd.events.last().map(|e| e.seq()).unwrap_or(0);
             let idx_last = self.index.last_event_seq(&rd.key).await?;
-            if log_last != idx_last {
+            let ok = match idx_last {
+                Some(s) => s == log_last || (log_last == 0 && s <= rd.base_seq),
+                None => log_last == 0,
+            };
+            if !ok {
                 consistent = false;
                 break;
             }
@@ -196,6 +261,62 @@ impl Store {
         ))
     }
 
+    /// 单实例日志前缀压缩（设计 §7.5）：写快照 → 记水位 → 原子重写日志 → 裁剪索引。
+    ///
+    /// 语义：`snap` 必须覆盖实例当前全部状态（引擎在临界区内构造，seq = 日志末尾 seq）。
+    /// 日志只保留最近 `keep_last` 条（`keep_last = 0` 即清空已覆盖前缀）。
+    /// 崩溃安全：快照先行（提交点），水位清单先于日志重写落盘；任一时刻中断，
+    /// 恢复看到的都是「未截断（超集）」或「已截断 + 水位 + 快照」之一。
+    pub async fn compact(
+        &self,
+        key: &InstanceKey,
+        snap: &Snapshot,
+        keep_last: u64,
+        compacted_at: &str,
+    ) -> Result<CompactionResult, StoreError> {
+        key.validate()?;
+        let path = log::events_path(&self.data_dir, &key.domain, &key.instance);
+        let meta_path = log::logmeta_path(&self.data_dir, &key.domain, &key.instance);
+
+        // 1. 快照（提交点）：压缩后仅此文件承载被丢弃前缀的状态与幂等表
+        self.write_snapshot(key, snap)?;
+
+        // 2. 水位清单（先于日志重写）：记录可丢弃上界（水位单调不回退）
+        let prev_base = log::load_logmeta(&meta_path)?
+            .map(|m| m.base_seq)
+            .unwrap_or(0);
+        let base_seq = snap.seq.saturating_sub(keep_last).max(prev_base);
+        log::write_logmeta(
+            &meta_path,
+            &log::LogMeta {
+                base_seq,
+                compacted_at: Some(compacted_at.to_owned()),
+                ..Default::default()
+            },
+        )?;
+
+        // 3. 原子重写日志：仅保留 seq > base_seq 的行（失败时旧句柄仍有效）
+        let (retained, discarded) = log::rewrite_retaining(&path, base_seq)?;
+
+        // 4. 索引裁剪（尽力而为的派生投影；中断由启动一致性校验自愈）
+        let _ = self.index.prune_events(key, base_seq).await;
+
+        // 5. 释放并重建追加句柄（重写后 inode 变化，旧句柄指向被替换的旧文件；
+        //    续接点 = 快照 seq，压缩后末尾 seq 不变）
+        self.logs.lock().unwrap().remove(key);
+        self.logs
+            .lock()
+            .unwrap()
+            .insert(key.clone(), (EventLog::open(&path)?, snap.seq));
+
+        Ok(CompactionResult {
+            snapshot_seq: snap.seq,
+            base_seq,
+            retained,
+            discarded,
+        })
+    }
+
     /// 写声明原文（`<domain>/declaration.pact`，定义态缓存；原子写）。
     pub fn write_declaration(&self, domain: &str, text: &str) -> Result<(), StoreError> {
         validate_domain_name(domain)?;
@@ -285,7 +406,9 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pact_core::{ParticipantName, ThingRef, Token, TokenId, TypeName};
+    use pact_core::{
+        ArchiveEntry, CounterState, Effect, ParticipantName, ThingRef, Token, TokenId, TypeName,
+    };
 
     fn key() -> InstanceKey {
         InstanceKey::new("d", "default")
@@ -476,7 +599,10 @@ mod tests {
         let mut state = pact_core::CounterState::new();
         state.apply(pact_core::Effect::Seeded(token(9, "req")));
         store
-            .write_snapshot(&key(), &Snapshot { seq: 1, state })
+            .write_snapshot(
+                &key(),
+                &Snapshot::new(1, 1, "domain d", state, BTreeMap::new()),
+            )
             .unwrap();
         assert!(store.load_snapshot(&key()).unwrap().is_some());
 
@@ -496,5 +622,171 @@ mod tests {
             store.load_declaration("d").unwrap().as_deref(),
             Some("domain d\n")
         );
+    }
+
+    // ── 前缀压缩（D25 子项 1）──────────────────────────────────────────────
+
+    fn seeded_events() -> Vec<Event> {
+        vec![
+            domain_loaded(1),
+            Event::Seeded {
+                seq: 2,
+                ts: "T1".into(),
+                token: token(1, "req"),
+            },
+            Event::Produced {
+                seq: 3,
+                ts: "T2".into(),
+                token: token(2, "req"),
+            },
+        ]
+    }
+
+    fn snapshot_at(seq: u64) -> Snapshot {
+        let mut state = CounterState::new();
+        state.apply(Effect::Seeded(token(1, "req")));
+        state.apply(Effect::Produced(token(2, "req")));
+        let mut consumed = BTreeMap::new();
+        consumed.insert(
+            "r1".to_string(),
+            (
+                TokenId("t1".into()),
+                ArchiveEntry {
+                    token: token(1, "req"),
+                    exhausted_by: ParticipantName("arch".into()),
+                    exhausted_at: "T3".into(),
+                },
+            ),
+        );
+        Snapshot::new(seq, 1, "domain d", state, consumed)
+    }
+
+    #[tokio::test]
+    async fn compact_truncates_prefix_and_seq_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        for ev in seeded_events() {
+            store.append(&key(), &ev).await.unwrap();
+        }
+        let res = store
+            .compact(&key(), &snapshot_at(3), 0, "T9")
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            CompactionResult {
+                snapshot_seq: 3,
+                base_seq: 3,
+                retained: 0,
+                discarded: 3
+            }
+        );
+        // 压缩后日志为空，但续接点仍为 3（不会重号覆盖）
+        assert_eq!(store.last_seq(&key()), 3);
+        store
+            .append(
+                &key(),
+                &Event::Consumed {
+                    seq: 4,
+                    ts: "T4".into(),
+                    token: token(1, "req"),
+                    by: ParticipantName("arch".into()),
+                    request_id: Some("r1".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        // 重启：日志无 DomainLoaded，由快照锚恢复；seq 自 4 续接
+        let store2 = Store::open(dir.path()).await.unwrap();
+        let rec = store2.recover().await.unwrap();
+        assert_eq!(rec.len(), 1);
+        assert_eq!(rec[0].base_seq, 3);
+        assert_eq!(rec[0].events.len(), 1);
+        assert_eq!(rec[0].events[0].seq(), 4);
+        assert_eq!(store2.last_seq(&key()), 4);
+        let snap = store2.load_snapshot(&key()).unwrap().unwrap();
+        assert_eq!(snap.seq, 3);
+        assert_eq!(snap.consumed_requests.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn compact_keep_last_retains_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        for ev in seeded_events() {
+            store.append(&key(), &ev).await.unwrap();
+        }
+        store
+            .append(
+                &key(),
+                &Event::Consumed {
+                    seq: 4,
+                    ts: "T4".into(),
+                    token: token(1, "req"),
+                    by: ParticipantName("arch".into()),
+                    request_id: None,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .append(
+                &key(),
+                &Event::Terminated {
+                    seq: 5,
+                    ts: "T5".into(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .compact(&key(), &snapshot_at(5), 2, "T9")
+            .await
+            .unwrap();
+        assert_eq!(
+            res,
+            CompactionResult {
+                snapshot_seq: 5,
+                base_seq: 3,
+                retained: 2,
+                discarded: 3
+            }
+        );
+        let store2 = Store::open(dir.path()).await.unwrap();
+        let rec = store2.recover().await.unwrap();
+        assert_eq!(rec[0].base_seq, 3);
+        let seqs: Vec<u64> = rec[0].events.iter().map(|e| e.seq()).collect();
+        assert_eq!(seqs, vec![4, 5]);
+    }
+
+    #[tokio::test]
+    async fn compacted_log_without_snapshot_is_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = Store::open(dir.path()).await.unwrap();
+            for ev in seeded_events() {
+                store.append(&key(), &ev).await.unwrap();
+            }
+        }
+        // 手工制造"日志已截断、水位已记，但快照缺失"
+        let path = log::events_path(dir.path(), "d", "default");
+        log::rewrite_retaining(&path, 3).unwrap();
+        log::write_logmeta(
+            &log::logmeta_path(dir.path(), "d", "default"),
+            &log::LogMeta {
+                base_seq: 3,
+                compacted_at: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let store = Store::open(dir.path()).await.unwrap();
+        assert!(matches!(
+            store.recover().await.unwrap_err(),
+            StoreError::SnapshotRequiredForCompactedLog { base_seq: 3, .. }
+        ));
     }
 }

@@ -5,12 +5,14 @@
 
 use pact_engine::{Engine, LogicalClock, SequentialIdGen};
 use pact_http::client::{Client, ClientError};
-use pact_http::server::{router, serve_unix, ServerState};
+use pact_http::server::{router, serve_unix, ConnTracker, ServerState};
 use pact_store::Store;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::watch;
 
 const DECL: &str = r#"
 types { requirement; design; implementation }
@@ -42,7 +44,7 @@ async fn spawn_daemon(dir: &Path, tokens: BTreeMap<String, String>) -> (PathBuf,
     let sock = dir.join("pact.sock");
     let s = sock.clone();
     tokio::spawn(async move {
-        let _ = serve_unix(app, &s).await;
+        let _ = serve_unix(app, &s, watch::channel(false).1, ConnTracker::default()).await;
     });
     // 等套接字可连
     for _ in 0..100 {
@@ -307,7 +309,13 @@ async fn tcp_listener_equivalent() {
     // 端口 0：由系统分配，但本工具函数只接受字符串地址；用固定高位端口
     let addr = "127.0.0.1:18791";
     tokio::spawn(async move {
-        let _ = pact_http::server::serve_tcp(app, addr).await;
+        let _ = pact_http::server::serve_tcp(
+            app,
+            addr,
+            watch::channel(false).1,
+            ConnTracker::default(),
+        )
+        .await;
     });
     // 等监听就绪
     for _ in 0..100 {
@@ -404,4 +412,230 @@ async fn invalid_key_names_rejected_without_touching_fs() {
         }
     }
     assert!(!dir.path().join("data").join("evil").exists());
+}
+
+// ============ 运维端点（D25 子项 2：health / ready / metrics） ============
+
+/// 裸 HTTP/1.1 GET（unix socket），返回 (状态码, 响应体)。
+async fn raw_get(sock: &Path, path: &str) -> (u16, String) {
+    let mut stream = tokio::net::UnixStream::connect(sock).await.unwrap();
+    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf).await.unwrap();
+    let status = buf
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let body = buf
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_owned())
+        .unwrap_or_default();
+    (status, body)
+}
+
+/// 运维端点不校验令牌：即便配了令牌表，health/ready/metrics 仍免认证放行。
+#[tokio::test]
+async fn ops_endpoints_bypass_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tokens = BTreeMap::new();
+    tokens.insert("external".to_owned(), "sekret".to_owned());
+    let (sock, _engine) = spawn_daemon(dir.path(), tokens).await;
+
+    let (s, b) = raw_get(&sock, "/health").await;
+    assert_eq!(s, 200);
+    assert!(b.contains("\"status\":\"ok\""), "body={b}");
+
+    let (s, b) = raw_get(&sock, "/ready").await;
+    assert_eq!(s, 200);
+    assert!(b.contains("\"status\":\"ready\""), "body={b}");
+
+    let (s, b) = raw_get(&sock, "/metrics").await;
+    assert_eq!(s, 200);
+    assert!(b.contains("pact_uptime_seconds"), "body={b}");
+    assert!(b.contains("pact_instances_loaded 0"), "body={b}");
+}
+
+/// 指标反映已加载域实例的 counter/archive/terminated。
+#[tokio::test]
+async fn metrics_reports_loaded_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn_daemon(dir.path(), BTreeMap::new()).await;
+    let c = Client::unix(sock.clone());
+    c.load_domain("proj", DECL, None, false).await.unwrap();
+
+    let (s, b) = raw_get(&sock, "/metrics").await;
+    assert_eq!(s, 200);
+    assert!(b.contains("pact_domains_declared 1"), "body={b}");
+    assert!(b.contains("pact_instances_loaded 1"), "body={b}");
+    assert!(
+        b.contains("pact_counter_size{domain=\"proj\",instance=\"default\"} 0"),
+        "body={b}"
+    );
+    assert!(
+        b.contains("pact_terminated{domain=\"proj\",instance=\"default\"} 1"),
+        "body={b}"
+    );
+}
+
+// ============ 日志压缩与 schema 版本化（D25 子项 1） ============
+
+/// `default` 实例的事件日志路径。
+fn log_path(dir: &Path, domain: &str) -> PathBuf {
+    dir.join("data").join(domain).join("default.events.jsonl")
+}
+
+fn log_lines(dir: &Path, domain: &str) -> Vec<String> {
+    std::fs::read_to_string(log_path(dir, domain))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// `POST .../compact`：截断已入快照的前缀、状态与幂等表经快照存活、重启后续接不重号。
+#[tokio::test]
+async fn compact_endpoint_truncates_log_and_preserves_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, engine) = spawn_daemon(dir.path(), BTreeMap::new()).await;
+    let c = Client::unix(sock);
+
+    c.load_domain("proj", DECL, None, false).await.unwrap();
+    let req = c
+        .seed("proj", None, "external", "requirement", Some("REQ-1"))
+        .await
+        .unwrap();
+    let design = c
+        .produce(
+            "proj",
+            None,
+            "architect",
+            "design",
+            vec![req.token.id.0.clone()],
+            Some("DES-1"),
+        )
+        .await
+        .unwrap();
+    let first = c
+        .consume("proj", None, "architect", &req.token.id.0, Some("req-1"))
+        .await
+        .unwrap();
+    let _ = design;
+
+    // 线上格式带顶层 version（schema 版本化）
+    let before = log_lines(dir.path(), "proj");
+    assert_eq!(before.len(), 4, "DomainLoaded/Seeded/Produced/Consumed");
+    assert!(before.iter().all(|l| l.contains(r#""version":1"#)));
+    let status = c.status("proj", None).await.unwrap();
+    assert_eq!((status.counter_size, status.archive_size), (1, 1));
+
+    // 压缩（keep_last = 0）：日志清空，返回水位与丢弃计数
+    let out = c.compact("proj", None, 0).await.unwrap();
+    assert_eq!(
+        (out.domain.as_str(), out.instance.as_str()),
+        ("proj", "default")
+    );
+    assert_eq!((out.snapshot_seq, out.base_seq), (4, 4));
+    assert_eq!((out.retained_events, out.discarded_events), (0, 4));
+    assert!(log_lines(dir.path(), "proj").is_empty());
+
+    // 状态不变；重复压缩水位不回退
+    let status = c.status("proj", None).await.unwrap();
+    assert_eq!((status.counter_size, status.archive_size), (1, 1));
+    let again = c.compact("proj", None, 0).await.unwrap();
+    assert_eq!((again.base_seq, again.discarded_events), (4, 0));
+
+    // 新事件自 seq=5 续接
+    c.seed("proj", None, "external", "requirement", Some("REQ-2"))
+        .await
+        .unwrap();
+    let tail = log_lines(dir.path(), "proj");
+    assert_eq!(tail.len(), 1);
+    assert!(tail[0].contains(r#""seq":5"#), "tail={tail:?}");
+
+    // 重启：日志无 DomainLoaded 行，靠快照锚恢复状态与幂等表
+    engine.shutdown().await.unwrap();
+    let (sock2, engine2) = spawn_daemon(dir.path(), BTreeMap::new()).await;
+    let c2 = Client::unix(sock2);
+    let status = c2.status("proj", None).await.unwrap();
+    assert_eq!((status.counter_size, status.archive_size), (2, 1));
+    let retry = c2
+        .consume("proj", None, "architect", &req.token.id.0, Some("req-1"))
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&retry.entry).unwrap(),
+        serde_json::to_value(&first.entry).unwrap(),
+        "压缩 + 重启后幂等表仍生效（快照承载）"
+    );
+    assert_eq!(log_lines(dir.path(), "proj").len(), 1, "幂等重试不追加事件");
+    engine2.shutdown().await.unwrap();
+}
+
+/// 压缩不存在的实例 → 404 InstanceNotFound（不静默成功）。
+#[tokio::test]
+async fn compact_unknown_instance_returns_404() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn_daemon(dir.path(), BTreeMap::new()).await;
+    let c = Client::unix(sock);
+    c.load_domain("proj", DECL, None, false).await.unwrap();
+    let err = c.compact("proj", Some("nope"), 0).await.unwrap_err();
+    match err {
+        ClientError::Api(d) => assert_eq!(d.code, "InstanceNotFound"),
+        other => panic!("期望 Api 错误：{other:?}"),
+    }
+}
+
+// ============ 优雅停机（D25 子项 2） ============
+
+/// 停机信号置位后监听循环退出（不再接受新连接），在途连接归零。
+#[tokio::test]
+async fn graceful_shutdown_stops_accepting_and_drains() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("data")).await.unwrap();
+    let engine = Engine::spawn(
+        store,
+        Arc::new(LogicalClock::new()),
+        Arc::new(SequentialIdGen::new()),
+    );
+    let app = router(ServerState::new(engine, BTreeMap::new()));
+
+    let sock = dir.path().join("pact.sock");
+    let (tx, rx) = watch::channel(false);
+    let tracker = ConnTracker::default();
+    let s = sock.clone();
+    let tk = tracker.clone();
+    let handle = tokio::spawn(async move { serve_unix(app, &s, rx, tk).await });
+
+    // 等待监听就绪（一次成功连接即可）
+    let mut ready = false;
+    for _ in 0..100 {
+        if tokio::net::UnixStream::connect(&sock).await.is_ok() {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(ready, "监听未就绪");
+
+    // 广播停机 → 监听循环应返回
+    tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("监听循环应在停机信号后退出")
+        .unwrap()
+        .unwrap();
+
+    // 监听已关闭：新连接应被拒绝
+    assert!(
+        tokio::net::UnixStream::connect(&sock).await.is_err(),
+        "停机后不应再接受新连接"
+    );
+    // 在途连接归零
+    tokio::time::timeout(Duration::from_secs(5), tracker.wait_idle())
+        .await
+        .expect("在途连接应归零");
+    assert_eq!(tracker.active(), 0);
 }

@@ -7,7 +7,8 @@ use crate::clock::Clock;
 use crate::idgen::IdGen;
 use crate::notify::{Notification, NotificationKind, NotificationSummary};
 use crate::views::{
-    AnalysisReport, ArchiveView, CounterView, DomainListing, DomainSummary, GateClause, StatusView,
+    AnalysisReport, ArchiveView, CompactionOutcome, CounterView, DomainListing, DomainSummary,
+    GateClause, StatusView,
 };
 use pact_analysis as analysis;
 use pact_compose::{compose as compose_fragments, Conflict};
@@ -128,6 +129,10 @@ pub struct EngineConfig {
     pub notify_capacity: usize,
     /// 命令通道容量。
     pub command_capacity: usize,
+    /// 启动恢复后是否自动压缩全部实例日志（D25 子项 1；默认关闭，运维可显式触发）。
+    pub compact_on_start: bool,
+    /// 压缩时保留的最近事件条数（0 = 丢弃全部已入快照的前缀）。
+    pub compact_keep_last: u64,
 }
 
 impl Default for EngineConfig {
@@ -136,6 +141,8 @@ impl Default for EngineConfig {
             snapshot_every: 64,
             notify_capacity: 256,
             command_capacity: 256,
+            compact_on_start: false,
+            compact_keep_last: 0,
         }
     }
 }
@@ -244,6 +251,13 @@ pub enum Command {
         instance: String,
         resp: Responder<DomainSummary>,
     },
+    /// 日志前缀压缩（D25 子项 1）：写全量快照后截断已覆盖前缀。
+    Compact {
+        key: InstanceKey,
+        /// 保留的最近事件条数（0 = 清空已入快照的前缀）。
+        keep_last: u64,
+        resp: Responder<CompactionOutcome>,
+    },
     Shutdown {
         resp: Responder<()>,
     },
@@ -297,6 +311,9 @@ impl Command {
             Command::Analyze { resp, .. } | Command::AnalyzeLoaded { resp, .. } => {
                 let _ = resp.send(Err(err));
             }
+            Command::Compact { resp, .. } => {
+                let _ = resp.send(Err(err));
+            }
             Command::Shutdown { resp } => {
                 let _ = resp.send(Err(err));
             }
@@ -314,9 +331,8 @@ struct DeclarationEntry {
 
 /// 实例会话（**实例键** `InstanceKey`）；`declaration` = 实例创建时的声明快照。
 struct InstanceSession {
-    /// 实例创建时的声明原文（重放自封闭：后续 `declare` 覆盖不影响本实例）。
-    /// 保留为实例的声明快照记录；语义重放的声明来源是该实例日志的 `DomainLoaded`。
-    #[allow(dead_code)]
+    /// 实例创建（或最近一次域重置）时的声明原文。日志前缀被压缩后，
+    /// 该字段随快照持久化，成为重放恢复的唯一声明来源（D25 子项 1）。
     declaration: String,
     domain: Domain,
     state: CounterState,
@@ -411,45 +427,79 @@ impl EngineActor {
         for ri in recovered {
             self.recover_instance(ri)?;
         }
+
+        // 可选的启动自动压缩（D25 子项 1，默认关闭）：以当前状态写真快照并截断已覆盖前缀。
+        // 失败不阻断启动（压缩是空间优化而非正确性前提），仅告警。
+        if self.config.compact_on_start {
+            let keys: Vec<InstanceKey> = self.instances.keys().cloned().collect();
+            let keep_last = self.config.compact_keep_last;
+            for key in keys {
+                if let Err(e) = self.compact(&key, keep_last).await {
+                    eprintln!("pactd: 启动自动压缩实例 {key} 失败（跳过）：{e}");
+                }
+            }
+        }
         Ok(())
     }
 
-    /// 单实例恢复：最后一个 DomainLoaded 解析声明（该实例的声明快照）→
-    /// 快照快速路径（snapshot.seq ≥ DomainLoaded.seq 才有效）→ 尾部重放。
+    /// 单实例恢复：优先用日志最后一个 `DomainLoaded` 解析声明；日志前缀被压缩
+    /// （无 `DomainLoaded`）时改用快照锚（快照承载声明原文、域重置基线与幂等表）→
+    /// 快照快速路径（`snapshot.seq ≥ DomainLoaded.seq` 且不超日志末尾才有效）→ 尾部重放。
     fn recover_instance(&mut self, ri: pact_store::RecoveredInstance) -> Result<(), EngineError> {
         let key = ri.key;
         let events = ri.events;
-        let Some(dl_idx) = events
+        let snap = self.store.load_snapshot(&key)?;
+        let snap_seq = snap.as_ref().map(|s| s.seq).unwrap_or(0);
+        // 续接点：日志末尾 / 压缩水位 / 快照三者最大（压缩后日志可能为空）
+        let last_seq = events
+            .last()
+            .map(|e| e.seq())
+            .unwrap_or(0)
+            .max(ri.base_seq)
+            .max(snap_seq);
+
+        let dl_idx = events
             .iter()
-            .rposition(|e| matches!(e, Event::DomainLoaded { .. }))
-        else {
-            return Err(EngineError::Recovery(format!(
-                "实例 {key} 的日志缺少 DomainLoaded 事件（日志损坏）"
-            )));
-        };
-        let (declaration, dl_seq) = match &events[dl_idx] {
-            Event::DomainLoaded {
-                declaration, seq, ..
-            } => (declaration.clone(), *seq),
-            _ => unreachable!(),
+            .rposition(|e| matches!(e, Event::DomainLoaded { .. }));
+
+        // 声明与域重置基线
+        let (declaration, dl_seq, snapshot_is_anchor) = match dl_idx {
+            Some(idx) => match &events[idx] {
+                Event::DomainLoaded {
+                    declaration, seq, ..
+                } => (declaration.clone(), *seq, false),
+                _ => unreachable!(),
+            },
+            // 前缀已被压缩：日志已无 DomainLoaded，快照是唯一的历史载体
+            None => match &snap {
+                Some(s) => (s.declaration.clone(), s.dl_seq, true),
+                None => {
+                    return Err(EngineError::Recovery(format!(
+                        "实例 {key} 的日志无 DomainLoaded 且无可用快照：历史状态不可恢复"
+                    )))
+                }
+            },
         };
         let domain = load_domain(&declaration).map_err(EngineError::Parse)?;
 
-        let last_seq = events.last().map(|e| e.seq()).unwrap_or(0);
-        let snap = self.store.load_snapshot(&key)?;
-        let (mut state, base_seq) = match snap {
-            // 快照晚于最后一次域重置才可用（否则已被重置作废）
-            Some(s) if s.seq >= dl_seq && s.seq <= last_seq => (s.state, s.seq),
+        let (mut state, base_seq) = match (&snap, snapshot_is_anchor) {
+            // 快照锚：状态直接取快照（压缩已丢弃其后之前缀）
+            (Some(s), true) => (s.state.clone(), s.seq),
+            // 快照快速路径：须晚于最后一次域重置且不超日志末尾
+            (Some(s), false) if s.seq >= dl_seq && s.seq <= last_seq => (s.state.clone(), s.seq),
             _ => (CounterState::new(), dl_seq),
         };
         for ev in events.iter().filter(|e| e.seq() > base_seq) {
             apply_event(&mut state, ev)?;
         }
-        // 幂等表：从最后一次 DomainLoaded 之后的全部 Consumed(带 request_id) 事件重建。
-        // 不随快照基线截断——快照只决定 CounterState 的重放起点，幂等表必须完整。
-        let consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)> = events
+
+        // Rule-E 幂等表：
+        // - 日志有 DomainLoaded（未压缩或重置后）：从该重置之后的全部 Consumed 事件重建；
+        // - 快照锚（前缀已压缩）：以快照承载的表为基，补上快照之后的事件。
+        let idem_floor = if snapshot_is_anchor { base_seq } else { dl_seq };
+        let from_log = events
             .iter()
-            .skip(dl_idx + 1)
+            .filter(|e| e.seq() > idem_floor)
             .filter_map(|e| match e {
                 Event::Consumed {
                     token,
@@ -469,8 +519,19 @@ impl EngineActor {
                     ),
                 )),
                 _ => None,
-            })
-            .collect();
+            });
+        let mut consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)> = if snapshot_is_anchor
+        {
+            snap.as_ref()
+                .map(|s| s.consumed_requests.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        for (rid, entry) in from_log {
+            consumed_requests.insert(rid, entry);
+        }
+
         let terminated = termination_holds(&domain, &state);
         let (notify, _) = broadcast::channel(self.config.notify_capacity);
         self.instances.insert(
@@ -579,6 +640,11 @@ impl EngineActor {
                 resp,
                 self.compose_and_load(&name, &fragments, &instance).await,
             ),
+            Command::Compact {
+                key,
+                keep_last,
+                resp,
+            } => respond(resp, self.compact(&key, keep_last).await),
             Command::Shutdown { resp } => {
                 respond(resp, self.snapshot_all());
                 return true;
@@ -1032,17 +1098,56 @@ impl EngineActor {
             .ok_or_else(|| instance_not_found(key))
     }
 
+    /// 日志前缀压缩（D25 子项 1）。位于 actor 临界区：与其它写命令串行，不与之竞争。
+    ///
+    /// 顺序即正确性：先以**当前状态**写全量自足快照（提交点），再截断日志前缀；
+    /// 崩溃落在任一步之间，恢复都只需快照 + 残留日志即可还原。
+    async fn compact(
+        &mut self,
+        key: &InstanceKey,
+        keep_last: u64,
+    ) -> Result<CompactionOutcome, EngineError> {
+        let snap = {
+            let session = self.session(key)?;
+            snapshot_of(session)
+        };
+        let ts = self.clock.now();
+        let res = self.store.compact(key, &snap, keep_last, &ts).await?;
+        if let Some(session) = self.instances.get_mut(key) {
+            // 快照已覆盖到日志末尾 → 重置定期快照计数
+            session.events_since_snapshot = 0;
+        }
+        Ok(CompactionOutcome {
+            domain: key.domain.clone(),
+            instance: key.instance.clone(),
+            snapshot_seq: res.snapshot_seq,
+            base_seq: res.base_seq,
+            retained_events: res.retained,
+            discarded_events: res.discarded,
+        })
+    }
+
     /// 关停前终态快照（全部实例）。
     fn snapshot_all(&self) -> Result<(), EngineError> {
         for (key, s) in &self.instances {
-            let snap = Snapshot {
-                seq: s.last_seq,
-                state: s.state.clone(),
-            };
-            self.store.write_snapshot(key, &snap)?;
+            self.store.write_snapshot(key, &snapshot_of(s))?;
         }
         Ok(())
     }
+}
+
+/// 实例当前状态的**完整自足快照**：状态 + 声明快照 + 域重置基线 + Rule-E 幂等表。
+///
+/// 压缩后快照是被丢弃前缀的唯一载体，故所有快照（定期、终态、压缩）都必须自足，
+/// 否则日志前缀被截断后无法恢复幂等表（D25 子项 1）。
+fn snapshot_of(session: &InstanceSession) -> Snapshot {
+    Snapshot::new(
+        session.last_seq,
+        session.dl_seq,
+        session.declaration.clone(),
+        session.state.clone(),
+        session.consumed_requests.clone(),
+    )
 }
 
 /// 状态变更通知（§6.4）：变更后 Counter 规模随通知发出。
@@ -1055,6 +1160,7 @@ fn notify_state_change(
     token_id: Option<TokenId>,
 ) {
     let _ = session.notify.send(Notification {
+        version: pact_store::EVENT_SCHEMA_VERSION,
         event: kind,
         domain: key.domain.clone(),
         instance: key.instance.clone(),
@@ -1080,14 +1186,11 @@ async fn post_commit(
 ) {
     // 定期快照（尽力而为）
     session.events_since_snapshot += 1;
-    if config.snapshot_every > 0 && session.events_since_snapshot >= config.snapshot_every {
-        let snap = Snapshot {
-            seq: session.last_seq,
-            state: session.state.clone(),
-        };
-        if store.write_snapshot(key, &snap).is_ok() {
-            session.events_since_snapshot = 0;
-        }
+    if config.snapshot_every > 0
+        && session.events_since_snapshot >= config.snapshot_every
+        && store.write_snapshot(key, &snapshot_of(session)).is_ok()
+    {
+        session.events_since_snapshot = 0;
     }
 
     // Rule-T 惰性求值（D14：转调 core）
@@ -1108,6 +1211,7 @@ async fn post_commit(
         {
             session.last_seq = seq;
             let _ = session.notify.send(Notification {
+                version: pact_store::EVENT_SCHEMA_VERSION,
                 event: NotificationKind::Terminated,
                 domain: key.domain.clone(),
                 instance: key.instance.clone(),
@@ -1422,6 +1526,25 @@ impl Engine {
     pub async fn unload_domain(&self, key: InstanceKey) -> Result<(), EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::UnloadDomain { key, resp }).await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 日志前缀压缩（D25 子项 1）：写全量自足快照后，截断日志中已被覆盖的前缀。
+    ///
+    /// `keep_last` = 保留最近的事件条数（0 = 清空已入快照的前缀）。
+    /// 语义不变量：压缩不改变实例状态、seq 续接点与 Rule-E 幂等语义；仅减少磁盘行数。
+    pub async fn compact(
+        &self,
+        key: InstanceKey,
+        keep_last: u64,
+    ) -> Result<CompactionOutcome, EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::Compact {
+            key,
+            keep_last,
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 

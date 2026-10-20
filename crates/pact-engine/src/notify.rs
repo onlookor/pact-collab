@@ -16,6 +16,9 @@ pub enum NotificationKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
+    /// 通知 schema 版本（与事件日志同一版本域；缺省 v1，D25 子项 1）。
+    #[serde(default = "default_version")]
+    pub version: u32,
     /// 事件种类（§6.4 `event` 字段）。
     pub event: NotificationKind,
     pub domain: String,
@@ -27,6 +30,10 @@ pub struct Notification {
     /// 关联 token（Terminated 无）。
     pub token_id: Option<TokenId>,
     pub summary: NotificationSummary,
+}
+
+fn default_version() -> u32 {
+    pact_store::EVENT_SCHEMA_VERSION
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

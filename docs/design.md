@@ -30,9 +30,9 @@
 | D22 | 通用示例与用户手册作为交付资产 | 新增 `examples/`（领域无关通用域 `domains/`：初版四份，2026-10-18 按 D23 增设第五份 `external_materialization` 物化确认示例 + 两份组合片段 `fragments/` + 离线/在线两条上手脚本各带录制轨迹 + `README.md` 场景导航）与 `docs/manual.md`（权威用户手册，12 章）；**不接入 CI**（不新增遍历 `examples/**/*.pact` 的 cargo test）、**不改任何 crate**；脚本运行产物 `examples/online/run-data`、`examples/offline/out` 入 `.gitignore` | 用户决策（FR14）。示例是教学资产而非回归基线，接入 CI 会把示例漂移变成构建失败源，反而抑制示例演进；手册与示例分工为"参考权威 / 可运行路径"，交叉引用不重复维护同一事实。取证过程中发现的三处实现与文档不一致（CLI `reachability` 行把 `seed_types` 打印为"源类型"、MCP `pact_analyze` description 写"五项静态分析"实为六项、compose 语义在 CLI 只打印而 MCP/REST 会装载）**不改代码**，如实登记于 `docs/manual.md` §11 已知偏差与限制 |
 | D23 | 消耗提交契约与 Rule-E 幂等（2026-10-18，用户裁决） | (1) **提交点 = JSONL fsync**：`store.append` 追加日志即视为已提交；其后步骤（索引投影、定期快照、Terminated 事件、通知）为**尽力而为的派生动作——失败不回滚、不失败本次调用**，索引滞后由启动 seq 一致性校验触发 `rebuild` 自愈。(2) **Consumed 事件自足**：携带 token 全量快照（`exhausted_at` = `ts`、`exhausted_by` = `by`）与可选 `request_id`，重放与审计不再反查同一域实例其他行。(3) **Rule-E 可选幂等**：同一域实例内重复 `request_id` 返回首次归档结果（不重复消费；跨重启由日志重建幂等表生效），同一 `request_id` 用于另一 token → `IdempotencyConflict`。(4) **原子域含 gate 读集**：`rule_e` 对同一内存 `CounterState` 求 GateHolds 并随即 apply，单写者 actor 消除 TOCTOU 与并发双消费。(5) **边界**：引擎不执行外部副作用，`consume` 成功与外部动作成功是**两个独立承诺**；"产物未就位"不应表现为消费回滚，而应前移为 gate 准入条件（`exists` 型见证 token，见 §8.5） | 此前 Rule-E 仅有单步 SOS 语义、未声明实现级原子性；本决策把它显式化为可验证契约。原实现 `Consumed` 只记 `token_id`、重放反查 Counter，使单行日志不自足、与 NFR2（日志即完整审计）不符；原写路径"索引失败即返回 Err"会造成日志/内存瞬态分歧直至重启。拒绝"库事务 / 2PC / 分布式共识"方案：单写者 actor + 事件日志已满足线性化与崩溃一致性，引入它们只增复杂度 |
 | D24 | 生产运行层归属（2026-10-19，用户裁决） | 本仓库新增 crate `pact-runtime`（**已实现，阶段 7 完成**）：参与者驱动循环（订阅/轮询 → `my_gates` / `enabled` → 决策 → 行动）+ 多 agent 编排 + 外部副作用执行器（outbox/saga 消费端）。**引擎保持被动（D5）、MCP 维持 stdio-only（D20）均不变**；依赖方向 `runtime → http（类型化 REST client）/ engine（线上视图）/ core（标识符·token 类型）`，`pact-mcp` 仅作可执行文件由编排 spawn、不作 lib 依赖（详见 §1） | 驱动逻辑与 `Consumed` 事件 schema、`pact_*` 工具面强耦合，须与引擎版本锁定；抽为可复用运行时，避免每个消费方重复实现 P1/P2/P3 自驱策略；engine/store/core 零改动 |
-| D25 | 引擎生产化三项（2026-10-19，用户裁决） | (1) 事件日志压缩与 schema 版本化（pact-store）；(2) 运维接口：health/ready、metrics、PID 文件、信号化优雅停机（pact-http + engine）；(3) 域级授权与审计读视图（pact-http 接口层），读审计**可选开启、默认关闭** | 生产部署的可运维性与多租户边界（NFR7）；三者均为存储/接口层增强，不触碰核心语义与 SOS 规则。(3) 修订 D9 默认值表述——D9「审计流扩展位保留」在此落地为配置开关，默认仍不持久化 Rule-R |
+| D25 | 引擎生产化三项（2026-10-19，用户裁决） | (1) 事件日志压缩与 schema 版本化（pact-store）；(2) 运维接口：health/ready、metrics、PID 文件、信号化优雅停机（pact-http + engine）；(3) 域级授权与审计读视图（pact-http 接口层），读审计**可选开启、默认关闭**。**(2) 已实现（2026-10-20，见 §9.5）**：`GET /health`（存活，不依赖引擎）/ `GET /ready`（就绪，探针 = 一次 `list_domains` 往返）/ `GET /metrics`（Prometheus 文本格式：`pact_domains_declared` / `pact_instances_loaded` / `pact_counter_size` / `pact_archive_size` / `pact_terminated` / `pact_uptime_seconds`）；运维端点**不校验令牌**（仅本地/内网）；可选 `pid_file`（缺省不写；启动写入、退出删除；陈旧文件且 PID 存活 → 拒绝启动）；优雅停机 SIGINT/SIGTERM → 停止接受新连接 → 有界（10s）等待在途 → 终态快照 → 清理。**(1) 已实现（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version` + 日志前缀压缩（快照自足锚 + `logmeta` 水位 + 原子重写）、REST/CLI/MCP 压缩入口、可选启动自动压缩。**(3) 未开始** | 生产部署的可运维性与多租户边界（NFR7）；三者均为存储/接口层增强，不触碰核心语义与 SOS 规则。(3) 修订 D9 默认值表述——D9「审计流扩展位保留」在此落地为配置开关，默认仍不持久化 Rule-R |
 | D26 | 分发产物归属（2026-10-19，用户裁决） | 本仓库 `dist/`：Dockerfile、systemd unit、musl 静态二进制打包脚本；不接入 CI 语义测试（同 D22） | 与源码同仓库保证版本一致；registry 推送、k8s 编排模板等外部细节不属本仓库 |
-| D27 | 域双键实例化与形式层裁定（2026-10-20，领域专家裁定 + 用户裁决） | **立项**：把「域」拆为**定义键 domain + 实例键 instance**，同一域声明可并发承载多个 Counter 实例；实现走**路径 β**（`pact-store`/索引显式 `(domain, instance)` 双列 + 引擎**声明注册表**，`declare` 与 `instantiate` 分离）。**论文母本 rev2 → rev3**（用户破例授权），5 处改动：§1.3 增列「**Counter instantiation and partitioning**」条款、§1.4.1 TokenId 作用域措辞、Rule-T 增补 scope note、§4.5 与 §B.2 增补 CPN 作用域、§1.8 及 §4.1–4.3 术语 `domain instance` → `domain declaration`——**零文法变化、零语义变化**（`diff` 已核，9 处增补/替换；G3 就地修订 §1.4.1 Rationale 追加 1 处，**累计 10 处**，见 `docs/design-change.md` 第 20 轮）。**术语登记**：定义键 = 论文 `domain declaration`；实例键 = 论文 `Counter instance`（§1.3 描述性短语，非正式原语）；**中文文档/注释用「域实例」指该实例键**（即论文 `Counter instance`，与论文已废弃的英文 `domain instance` 无关，亦不替代论文术语）。**细节定案（2026-10-20，用户裁决）**：存储布局 = **域子目录** `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `<domain>/<instance>.snapshot.json`、审计流 `<domain>/<instance>.read-audit.jsonl` 同目录）；默认实例名 = **`default`**（不指定实例段 ⇒ 落到 `default` 实例）；声明绑定 = **实例创建时快照声明**（`DomainLoaded` 携声明原文，后续 `declare` 覆盖**不影响已运行实例**，重放自封闭、确定性优先，与 NFR2「日志即完整审计」一致）。**派生细节定案（2026-10-20，用户裁决，阶段 10 实施前置）**：旧日志**不兼容**——双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`，顶层遗留单层文件启动恢复时 **fail-fast**（`StoreError::LegacyLayoutDetected`），须人工迁移；实例键以**路径段**承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` 等价 `default` 实例）；`DomainLoaded` **不新增 `instance` 字段**（实例由文件路径承载）；声明原文另存 `<data_dir>/<domain>/declaration.pact`（`declare` 时写入、`recover` 回填注册表）；**护栏**：`data_dir` 独占 flock（`<data_dir>/pactd.lock`）+ 非空实例（`last_seq > DomainLoaded.seq`）再加载默认拒绝（`DomainBusy`），须 `force`。**已实现（2026-10-20，阶段 10 路径 β，见 §9.5）** | 触发：两个并行项目共用同一域声明时，既有替换语义会销毁对方 Counter 与快照。专家裁定 Q1(a) 概念承认（以 §1.3 实现自由形式落地）、Q2(a) 术语消歧、Q3(a+c) 限定重述、Q4 保留「globally unique」但作用域收窄至该 Counter（实现以 ULID 加强为跨实例唯一）、Q5 确认**无任何论文级不变量依赖「一个域名至多一本 Counter」**、Q6 确认 CPN 编码需加单实例作用域、Q7 不新增正式术语。据 §1.3「Physical implementation of the Counter」，实例划分属**实现自由**，不触 §13 边界判据 (4)。评估与执行序、咨询简报与答复为**过程产物**，阶段 10 交付后已按用户指示移除（其结论已并入本条与 §11） |
+| D27 | 域双键实例化与形式层裁定（2026-10-20，领域专家裁定 + 用户裁决） | **立项**：把「域」拆为**定义键 domain + 实例键 instance**，同一域声明可并发承载多个 Counter 实例；实现走**路径 β**（`pact-store`/索引显式 `(domain, instance)` 双列 + 引擎**声明注册表**，`declare` 与 `instantiate` 分离）。**论文母本 rev2 → rev3**（用户破例授权），5 处改动：§1.3 增列「**Counter instantiation and partitioning**」条款、§1.4.1 TokenId 作用域措辞、Rule-T 增补 scope note、§4.5 与 §B.2 增补 CPN 作用域、§1.8 及 §4.1–4.3 术语 `domain instance` → `domain declaration`——**零文法变化、零语义变化**（`diff` 已核，9 处增补/替换；G3 就地修订 §1.4.1 Rationale 追加 1 处，**累计 10 处**，见 `docs/design-change.md` 第 20 轮）。**术语登记**：定义键 = 论文 `domain declaration`；实例键 = 论文 `Counter instance`（§1.3 描述性短语，非正式原语）；**中文文档/注释用「域实例」指该实例键**（即论文 `Counter instance`，与论文已废弃的英文 `domain instance` 无关，亦不替代论文术语）。**细节定案（2026-10-20，用户裁决）**：存储布局 = **域子目录** `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `<domain>/<instance>.snapshot.json`、审计流 `<domain>/<instance>.read-audit.jsonl` 同目录）；默认实例名 = **`default`**（不指定实例段 ⇒ 落到 `default` 实例）；声明绑定 = **实例创建时快照声明**（`DomainLoaded` 携声明原文，后续 `declare` 覆盖**不影响已运行实例**，重放自封闭、确定性优先，与 NFR2「日志即完整审计」一致）。**派生细节定案（2026-10-20，用户裁决，阶段 10 实施前置）**：旧日志**不兼容**——双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`，顶层遗留单层文件启动恢复时 **fail-fast**（`StoreError::LegacyLayoutDetected`），须人工迁移；实例键以**路径段**承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` 等价 `default` 实例）；`DomainLoaded` **不新增 `instance` 字段**（实例由文件路径承载）；声明原文另存 `<data_dir>/<domain>/declaration.pact`（`declare` 时写入、`recover` 回填注册表）；**护栏**：`data_dir` 独占 flock（`<data_dir>/pactd.lock`）+ 非空实例（`last_seq > DomainLoaded.seq`）再加载默认拒绝（`DomainBusy`），须 `force`。**已实现（2026-10-20，阶段 10 路径 β，见 §11 阶段 10）** | 触发：两个并行项目共用同一域声明时，既有替换语义会销毁对方 Counter 与快照。专家裁定 Q1(a) 概念承认（以 §1.3 实现自由形式落地）、Q2(a) 术语消歧、Q3(a+c) 限定重述、Q4 保留「globally unique」但作用域收窄至该 Counter（实现以 ULID 加强为跨实例唯一）、Q5 确认**无任何论文级不变量依赖「一个域名至多一本 Counter」**、Q6 确认 CPN 编码需加单实例作用域、Q7 不新增正式术语。据 §1.3「Physical implementation of the Counter」，实例划分属**实现自由**，不触 §13 边界判据 (4)。评估与执行序、咨询简报与答复为**过程产物**，阶段 10 交付后已按用户指示移除（其结论已并入本条与 §11） |
 
 ## 1. 总体结构
 
@@ -413,8 +413,10 @@ Rule-E 的请求体只带参与者，并可选一个幂等键：
 ### 6.4 Counter 变更通知事件（Rule-W 唤醒，SSE `data:` / MCP notification）
 
 ```json
-{ "event": "Produced",          // Seeded | Produced | Consumed | Terminated
+{ "version": 1,                 // 事件 schema 版本（D25 子项 1；缺省按 v1）
+  "event": "Produced",          // Seeded | Produced | Consumed | Terminated
   "domain": "software-lifecycle",
+  "instance": "default",
   "seq": 42,
   "ts": "2026-08-25T10:15:31Z",
   "token_id": "01J9ZQ…",        // Terminated 时省略
@@ -442,6 +444,9 @@ pub enum Event {
 }
 ```
 
+线上/落盘形态统一为 `WireEvent{version: u32, #[serde(flatten)] event: Event}`（D25 子项 1）：
+`EVENT_SCHEMA_VERSION = 1`，缺 `version` 视同 v1，更高版本读取 fail-fast（`UnsupportedSchemaVersion`，见 §7.5）。
+
 JSONL：**每域实例**一个 `<domain>/<instance>.events.jsonl`，逐行 JSON 追加，`seq` 在该实例内单调。
 
 ### 7.2 存储布局
@@ -449,8 +454,9 @@ JSONL：**每域实例**一个 `<domain>/<instance>.events.jsonl`，逐行 JSON 
 ```
 <data_dir>/
   <domain>/                        # 每个域声明一个子目录（D27）
-    <instance>.events.jsonl        # 真相源，只追加
-    <instance>.snapshot.json       # 定期快照（seq + CounterState），原子写（tmp+rename）
+    <instance>.events.jsonl        # 真相源，只追加（前缀压缩后为 `seq > base_seq` 的超集/尾部）
+    <instance>.snapshot.json       # 定期 / 压缩时写入的快照（自足锚：version/seq/dl_seq/declaration/state/consumed_requests），原子写（tmp+rename）
+    <instance>.logmeta.json        # 压缩水位（version/base_seq/compacted_at），缺省不存在（D25 子项 1）
     declaration.pact               # 声明原文（启动恢复时回填声明注册表）
   index.tursodb                    # 全部实例共用：events 与 tokens 的查询索引（(domain, instance) 双列）
   pactd.lock                       # data_dir 独占 flock（单写者护栏，D27）
@@ -464,16 +470,18 @@ JSONL：**每域实例**一个 `<domain>/<instance>.events.jsonl`，逐行 JSON 
 #[async_trait]
 pub trait IndexStore: Send {
     async fn open(path: &Path) -> Result<Self, StoreError>;
-    async fn upsert_event(&self, ev: &Event, domain: &str) -> Result<(), StoreError>;
-    async fn upsert_token(&self, t: &Token, domain: &str, status: TokenStatus) -> Result<(), StoreError>;
-    async fn rebuild(&self, events: &[Event]) -> Result<(), StoreError>; // 从日志全量重建
+    async fn upsert_event(&self, key: &InstanceKey, ev: &Event) -> Result<(), StoreError>;
+    async fn upsert_token(&self, key: &InstanceKey, t: &Token, status: &TokenStatus) -> Result<(), StoreError>;
+    async fn last_event_seq(&self, key: &InstanceKey) -> Result<Option<u64>, StoreError>;
+    /// 裁剪实例内 `seq <= base_seq` 的事件行（压缩后的索引同步，D25 子项 1）。
+    async fn prune_events(&self, key: &InstanceKey, base_seq: u64) -> Result<(), StoreError>;
+    async fn rebuild(&self, entries: &[(InstanceKey, Vec<Event>)]) -> Result<(), StoreError>; // 从日志全量重建
 }
-```
 
-索引 schema（turso 兼容 SQLite 方言）：
+索引 schema（turso 兼容 SQLite 方言；events 主键为 `(domain, instance, seq)`，D27）：
 
 ```sql
-CREATE TABLE events(seq INTEGER PRIMARY KEY, domain TEXT, kind TEXT, ts TEXT, payload TEXT);
+CREATE TABLE events(domain TEXT, instance TEXT, seq INTEGER, kind TEXT, ts TEXT, payload TEXT, PRIMARY KEY(domain, instance, seq));
 CREATE TABLE tokens(token_id TEXT PRIMARY KEY, domain TEXT, type TEXT, produced_by TEXT,
                     thing_ref TEXT, depends_on TEXT /*JSON数组*/, produced_at TEXT,
                     status TEXT /*counter|archived*/, exhausted_by TEXT, exhausted_at TEXT);
@@ -490,6 +498,27 @@ CREATE INDEX idx_tokens_domain_type ON tokens(domain, type, status);
 - JSONL 半行写入（崩溃残留）→ 启动时检测并截断至最后一个完整行；
 - 索引文件永远可丢弃重建——真相源唯一；索引滞后（投影失败）由启动 seq 一致性校验触发 `rebuild` 自愈；
 - Consumed 事件自足（携 token 全量快照），重放与审计不依赖同一域实例其他行。
+- **压缩窗口**（§7.5）：快照 → logmeta 水位 → 日志原子重写 → 索引裁剪；崩溃于任一中间点均落到「未截断超集态」或「已截断 + 水位 + 快照」两个一致态之一，恢复侧以 `base_seq > 0` 补 `prune_events` 自愈。
+
+### 7.5 日志压缩与 schema 版本化（D25 子项 1，已实现）
+
+**schema 版本化**：真相源与线上事件统一包裹于 `WireEvent{version, #[serde(flatten)] event}`，顶层 `version` 恒先于事件体出现在 JSON（`{"version":1,"kind":…}`）。`EVENT_SCHEMA_VERSION = 1` 为唯一真源（`pact-store::event`）。`Notification`（§6.4 SSE）同样带顶层 `version`。兼容契约：
+
+| 情形 | 处理 |
+|------|------|
+| 旧日志/旧快照**缺 `version`** | serde `default` 视同 v1（向后兼容） |
+| `version == EVENT_SCHEMA_VERSION` | 正常重放 |
+| `version > EVENT_SCHEMA_VERSION` | **fail-fast `StoreError::UnsupportedSchemaVersion`**（不静默按 v1 重放，防误读新格式） |
+
+**前缀压缩**：谓词 =「已入快照的 `seq ≤ base_seq` 前缀」。顺序（崩溃安全）：① 写**全量自足快照**（提交点）② 写 `<instance>.logmeta.json` 水位（`{version, base_seq, compacted_at}`，先于日志重写）③ tmp+fsync+rename **原子重写**日志（保留 `seq > base_seq` 行原始字节）④ 裁剪索引 `events` 行（`seq <= base_seq`）⑤ 重置追加句柄续接点 `last_seq = snap.seq`。水位**单调不回退**（重复压缩时 `base_seq = max(seq-keep_last, prev_base)`）。
+
+**快照自足锚**：压缩后日志可能不含 `DomainLoaded`，`Snapshot` 因之承载 `version` / `seq` / `dl_seq` / `declaration` / `state` / `consumed_requests`（**Rule-E 幂等表随快照持久化**，否则前缀中 `Consumed` 行被丢弃会破坏跨重启幂等）。恢复分支：日志含 `DomainLoaded` ⇒ 与旧行为一致（快照 + 重放尾部）；不含 ⇒ **快照即锚**（`snapshot_is_anchor`），以 `snap.declaration`/`snap.dl_seq`/`snap.state`/`snap.consumed_requests` 为基补后续事件。日志已截断而快照缺失或不覆盖 `max(base_seq, first_seq-1)` ⇒ **`StoreError::SnapshotRequiredForCompactedLog` fail-fast**（数据安全优先于可用性）。
+
+**seq 不变量（截断后）**：由「首行恒为 1」放宽为**连续性**——首行 `seq` 允许 ≤ `base_seq + 1`（未截断的超集态），其余行逐行 +1；`last_seq = max(日志末尾, base_seq, snap_seq)`。启动索引一致性校验相应放宽为「索引不落后于日志」（`idx_last == log_last || (log_last == 0 && idx_last <= base_seq)`），避免压缩后误触发全量 `rebuild`（会连带清空 tokens 投影）；`base_seq > 0` 且索引未裁剪时由 `recover` 补 `prune_events` 自愈。
+
+**触发**：`POST /domains/{d}[/instances/{i}]/compact {keep_last?}`（缺省 0）→ `CompactionOutcome{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`；CLI `pact compact --domain D [--instance I] [--keep-last N]`；MCP `pact_compact`。**可选启动自动压缩**：`pact.toml` 的 `compact_on_start`（缺省 false）与 `compact_keep_last`（缺省 0），`EngineConfig` 承载，恢复完成后逐实例压缩，单个失败仅告警不阻断启动。
+
+**固有取舍（须记入文档）**：压缩后被丢弃前缀不再可查——审计视图退化为「快照 + 保留尾部事件」，`events` 索引行被裁剪（`tokens` 投影行保留）。压缩是**运维显式动作**，不做自动周期性轮转（v1）。
 
 ## 8. pact-engine：引擎 actor（阶段 3）
 
@@ -514,13 +543,14 @@ pub enum Command {
     Subscribe    { domain, resp },                // 返回 broadcast::Receiver<Notification>
     Analyze      { text, resp },                  // 六项静态分析聚合报告
     ComposeAndLoad { name, fragments, resp },     // 组合 + emit 回写 + 加载
+    Compact      { key, keep_last, resp },        // 日志前缀压缩（D25 子项 1）
     Shutdown     { resp },                        // 全部域终态快照后退出
 }
 ```
 
-启动恢复（actor 首要动作，失败则 fail-fast 排空后续命令）：逐域实例取**最后一次** DomainLoaded 解析声明；快照仅在 `snapshot.seq ≥ 该 DomainLoaded.seq` 时有效（防替换后旧快照复活）；重放尾部事件重建 CounterState 与 terminated 标记。Terminated 事件只在 false→true 转移时追加一次。
+启动恢复（actor 首要动作，失败则 fail-fast 排空后续命令）：逐域实例取**最后一次** DomainLoaded 解析声明；快照仅在 `snapshot.seq ≥ 该 DomainLoaded.seq` 时有效（防替换后旧快照复活）；重放尾部事件重建 CounterState 与 terminated 标记。**压缩后日志可能无 DomainLoaded**：此时以快照为锚（`snapshot_is_anchor`，声明/状态/`dl_seq`/幂等表均取自快照），日志只补尾部；快照缺失或不覆盖水位 ⇒ 启动 fail-fast（§7.5）。Terminated 事件只在 false→true 转移时追加一次。
 
-Rule-E 处理顺序（D23）：幂等命中检查（同一域实例 `request_id`）→ `rule_e`（对同一内存 `CounterState` 求 GateHolds）→ `store.append(Consumed)`（**提交点**）→ `state.apply` → 记入幂等表 → `post_commit`（快照/Terminated/通知，尽力而为）。幂等表为 `request_id → (token_id, ArchiveEntry)`，由日志中最后一次 DomainLoaded 之后的全部 Consumed 事件重建，跨重启生效；命中且 token 相同则返回首次结果，命中但 token 不同则 `IdempotencyConflict`。
+Rule-E 处理顺序（D23）：幂等命中检查（同一域实例 `request_id`）→ `rule_e`（对同一内存 `CounterState` 求 GateHolds）→ `store.append(Consumed)`（**提交点**）→ `state.apply` → 记入幂等表 → `post_commit`（快照/Terminated/通知，尽力而为）。幂等表为 `request_id → (token_id, ArchiveEntry)`，日志锚时由最后一次 DomainLoaded 之后的全部 Consumed 事件重建；**快照锚时以快照的 `consumed_requests` 为基**再补尾部 `Consumed`，故压缩不破坏跨重启幂等（§7.5）。命中且 token 相同则返回首次结果，命中但 token 不同则 `IdempotencyConflict`。
 
 ### 8.2 通知（Rule-W 唤醒，D4）
 
@@ -577,6 +607,7 @@ MCP server（rmcp），v1 传输仅 stdio（D20；Streamable HTTP 随 v2 联网�
 | `pact_my_gates` | 参与者的全部 gate 子句（含条件），agent 自省 |
 | `pact_enabled` | Rule-W 轮询：当前可满足的 Rule-P 组合 |
 | `pact_status` | Counter 概要 + terminated |
+| `pact_compact` | 日志前缀压缩（D25 子项 1；`keep_last` 保留尾部条数） |
 | `pact_subscribe` | 注册 Counter 变更通知（Rule-W 唤醒） |
 
 工具的输入输出 schema 由类型派生（serde + schemars），错误以 §6.3 结构化 JSON 返回，agent 可编程处理（如 gate 被拒后转入等待）。
@@ -600,12 +631,13 @@ POST   /domains/{d}/tokens/{id}/consume  {participant[, request_id]}   Rule-E
 GET    /domains/{d}/gates/{participant}
 GET    /domains/{d}/enabled?participant=
 GET    /domains/{d}/status
+POST   /domains/{d}/compact           {keep_last?}   日志前缀压缩（D25 子项 1）
 GET    /domains/{d}/events            SSE 订阅（Rule-W 唤醒）
 ```
 
 被拒动作返回 4xx + §6.3 结构化错误体（错误码 = RuleError 变体名）。
 
-**实例路由（D27，阶段 10，已实现）**：上表 `/domains/{d}/…` 语义 = `default` 实例。实例级为 `/domains/{d}/instances/{i}/…` 镜像组（seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / events 全套同形），另加实例管理端点：
+**实例路由（D27，阶段 10，已实现）**：上表 `/domains/{d}/…` 语义 = `default` 实例。实例级为 `/domains/{d}/instances/{i}/…` 镜像组（seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events 全套同形），另加实例管理端点：
 
 ```
 POST   /domains                       {name, declaration[, instance][, force]}   declare + instantiate（默认 default）
@@ -624,7 +656,7 @@ GET    /domains                       域清单（Vec<DomainListing{name, instan
 单二进制 `pact`（D20：域操作一律 `--domain` / `--participant` / `--token` / `--type` flag，不用位置参数简写）。全局 flag：`--unix <sock>`（缺省 ./pact.sock）/ `--tcp <addr>`（优先于 --unix）/ `--bearer <token>` / `--json`（§6 线上格式输出）。
 
 - 注入点：`pact domain validate <file.pact>`；`pact domain load <file.pact> [--name N] [--instance I] [--force]`；`pact seed --domain D --participant P --type T [--thing-ref R]`。
-- 领域操作：`pact produce --domain D --participant P --type T [--predecessors id1,id2] [--thing-ref R]`；`pact read --domain D --participant P --token ID`；`pact consume --domain D --participant P --token ID [--request-id R]`；`pact counter ls --domain D [--type T]`；`pact archive ls --domain D [--type T]`；`pact gates show --domain D --participant P`；`pact enabled --domain D --participant P`；`pact status --domain D`。
+- 领域操作：`pact produce --domain D --participant P --type T [--predecessors id1,id2] [--thing-ref R]`；`pact read --domain D --participant P --token ID`；`pact consume --domain D --participant P --token ID [--request-id R]`；`pact counter ls --domain D [--type T]`；`pact archive ls --domain D [--type T]`；`pact gates show --domain D --participant P`；`pact enabled --domain D --participant P`；`pact status --domain D`；`pact compact --domain D [--instance I] [--keep-last N]`（日志前缀压缩，D25 子项 1）。
 - 域管理：`pact domain list|info --domain D|unload --domain D`；**实例（D27）**：`pact domain instantiate --domain D --instance I`、`pact domain instances --domain D`（打印该域实例清单）；域操作命令均接受可选 `--instance I`（缺省 = `default`），`--force` 仅用于非空实例的显式重置。`pact domain list` 打印 `name [instances…]`。
 - 离线能力（不经 daemon）：`pact analyze <file.pact>`、`pact compose f1.pact f2.pact ...`、`pact replay <domain>.events.jsonl`。
 - daemon 控制：`pact daemon start --config pact.toml`（前台运行，与裸 `pactd` bin 等价）。
@@ -637,6 +669,8 @@ GET    /domains                       域清单（Vec<DomainListing{name, instan
 ```toml
 data_dir = "./data"
 listen_unix = "./pact.sock"        # 默认；listen_tcp 可选
+compact_on_start = false           # 可选：恢复后自动压缩全部实例日志（D25 子项 1）
+compact_keep_last = 0              # 可选：自动压缩保留的尾部事件条数
 [mcp] enabled = true
 [auth]
 # 可选：参与者令牌表；缺省 = 信任声明模式
@@ -645,6 +679,22 @@ architect = "…"   # Authorization: Bearer
 ```
 
 接口层在命令进入引擎前完成参与者身份校验；核心与引擎不感知认证方式（联网版只换此层）。
+
+### 9.5 运维接口（D25 子项 2，已实现）
+
+daemon 在域端点之外暴露三个**免令牌**运维端点（仅本地/内网，探活与抓取惯例）：
+
+| 端点 | 语义 | 响应 |
+|------|------|------|
+| `GET /health` | 存活（liveness）：进程在服务即 200，不依赖引擎 | `{"status":"ok"}` |
+| `GET /ready` | 就绪（readiness）：探针 = 一次 `list_domains` 往返；引擎可应答（恢复完成且未停机）→ 200，否则 503 | `{"status":"ready","domains":n,"instances":n}` / `{"status":"not_ready","error":…}` |
+| `GET /metrics` | 运行指标，Prometheus 文本暴露格式（`text/plain; version=0.0.4`） | 见下 |
+
+指标集（gauge）：`pact_domains_declared`、`pact_instances_loaded`、`pact_counter_size{domain,instance}`、`pact_archive_size{domain,instance}`、`pact_terminated{domain,instance}`（1/0）、`pact_uptime_seconds`。仅上报**已加载（内存）**实例——磁盘存在但未加载者由 `status` 报 `InstanceNotFound`，跳过；引擎不可应答时返回 `503`。
+
+**PID 文件（可选）**：配置 `pid_file` 缺省不写；启动写入自身 PID、退出（正常与信号停机）删除；启动时若发现陈旧文件且其 PID 仍存活 → 拒绝启动（`AlreadyExists`），避免两个 pactd 争同一 pid 文件。存活判定 Linux 下以 `/proc/<pid>` 存在为准（PID 复用可能假阳性 → 保守拒绝），其他平台交由 `pactd.lock` flock 兜底。
+
+**优雅停机**：SIGINT 或 SIGTERM 均走同一路径——广播停机 → 各监听循环停止接受新连接 → **有界（10s）**等待在途连接归零 → `engine.shutdown()`（终态快照）→ 清理 PID 文件与套接字。SSE 长连接会占满宽限窗口，故必须设有界超时（超时后强制进入终态快照，不阻塞退出）。
 
 ## 10. 测试策略（FR13，四层）
 
@@ -667,7 +717,7 @@ architect = "…"   # Authorization: Bearer
 | 6（可选） | pact-cpn：CPN 编码生成（正片段直出，not 条件走互补库所编码）；**按实例独立编码**（论文 §4.5/§B.2 单实例作用域：每实例各自编码，库所/迁移不跨实例共享，跨实例协同不入 `N(D)`；源域为域声明、实例划分属运行期，见 G1/D27） | CPN Tools 可加载验证；单实例作用域符合 §4.5/§B.2 | 未开始 |
 | 重构（2026-09-09） | 论文 rev2 对齐：良构约束六项化（新增 LHS Uniqueness / Non-Empty LHS / PosNat 解析期与声明期强制）、A.5 重构为 precondition_wf 三元报告（D21）、DomainError 自有 String | rev2 专项测试（`{A+A}→B` / `{ }→B` / count 0 / 前导零拒绝、自环接受、EmptyPrecondLhs / ZeroCountLiteral / SeedProduceOverlap 用例）+ 三接口 e2e 断言更新全绿 | **已完成**：workspace 103 项测试全绿（净增 6 项）；fmt/clippy 清零 |
 | 7 | pact-runtime：参与者驱动运行时（D24，设备生产化） | 可复用自驱循环：给定参与者名 + 门，实现 P1/P2/P3 策略并驱动至 Terminated；多 agent 编排可拉起 N 个真实 MCP/HTTP 客户端；外部副作用执行器消费 `Consumed` 并追加补偿事实 | **已完成（2026-10-19）**：新增 crate `pact-runtime`（lib + bin `pact-runtime`）——传输层抽象（`ParticipantClient` trait / `RestClient` 包装 `pact_http::client` / `McpClient` rmcp stdio 子进程）+ 驱动循环 `drive()`（P1 生产优先/P2 汇消费/P3 等待；订阅推送 + 轮询兜底；`pristine` 守卫 + 500ms 终止宽限，与 `unattended_e2e` 逐条同构）+ 编排 `Orchestrator`（每 agent `tokio::spawn`，REST/MCP 两具体 client 装箱统一、不引入 dyn）+ 执行器 `SideEffectExecutor`（archive 游标增量、失败以 Rule-S 追加补偿事实）+ TOML 配置驱动 bin。集成 1 项（单 `#[tokio::test]` 内 in-process daemon 上顺序跑 REST 编排 SE 生命周期 / ReAct 循环 / 副作用执行器）+ 单元 4 项；workspace **110 项**测试全绿（基线 105 + 本轮 5），fmt/clippy 清零。修复两处（见 design-change 第 17 轮）：①执行器与编排并发启动下域未就绪 → 执行器增域发现轮询；②驱动 P1 需 `read` 产出见证前驱 → 测试域 `worker` 补 `reads task` 门 |
-| 8 | 引擎生产化三项（D25） | 事件日志压缩与 schema 版本化；health/ready + metrics + PID 文件 + 信号化优雅停机；域级 ACL + 可选审计读视图（默认关闭）。**验收项与 D27 实例化耦合**：(1) 的压缩部分与 (3) 全部须按双键重述，`:compact` 路由须随实例段重设计 | 未开始（与阶段 10 一并排期） |
+| 8 | 引擎生产化三项（D25） | 事件日志压缩与 schema 版本化；health/ready + metrics + PID 文件 + 信号化优雅停机；域级 ACL + 可选审计读视图（默认关闭）。**验收项与 D27 实例化耦合**：(1) 的压缩部分与 (3) 全部须按双键重述，`:compact` 路由须随实例段重设计 | **子项 (2) 运维接口已完成（2026-10-20，见 §9.5）**：`/health` `/ready` `/metrics`（Prometheus 文本）+ 可选 `pid_file`（陈旧检测）+ SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → 终态快照）；workspace **131 项**测试全绿（基线 123 + 本轮 8）。**子项 (1) 日志压缩与 schema 版本化已完成（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version`（+ `Notification` 顶层 `version`）+ 旧日志/快照缺省按 v1 兼容、更高版本 fail-fast；前缀压缩（全量自足快照 → `logmeta` 水位 → 原子重写 → 裁剪索引）、快照承载 `declaration`/`dl_seq`/`consumed_requests`（幂等表随快照存活）、恢复 `snapshot_is_anchor` 分支与 `SnapshotRequiredForCompactedLog` 护栏；REST `POST /domains/{d}[/instances/{i}]/compact`、CLI `pact compact`、MCP `pact_compact`、`pact.toml` 可选 `compact_on_start`/`compact_keep_last`；workspace **145 项**测试全绿（基线 131 + 本轮 14）。**子项 (3) 域级 ACL 与审计读视图 未开始** |
 | 9 | 分发产物 `dist/`（D26） | Dockerfile、systemd unit、musl 静态二进制打包脚本，可构建可运行 | 未开始 |
 | 10 | 域双键实例化（D27，路径 β） | 定义键/实例键落地：存储 `(domain, instance)` 双列 + 域子目录布局 + 引擎声明注册表（`declare` / `instantiate` 分离，实例创建时快照声明）+ 接口全链（REST / CLI / MCP / `pact-runtime`）+ 默认实例 `default` + 旧日志 fail-fast + 通用护栏（`data_dir` flock 独占锁、非空实例 load 默认拒绝）；阶段 8 的耦合项随之一并完成 | **已完成（2026-10-20，路径 β）**：`pact-store` `InstanceKey{domain,instance}` + 域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、声明原文 `declaration.pact`）+ 索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键，`open()` 自愈重建）；`pact-engine` 声明注册表（`declarations` / `instances` 两表，`declare` / `instantiate` 私有方法 + 公开命令 `LoadDomain` / `Instantiate`，`InstanceSession.is_occupied = last_seq > dl_seq`）——错误码 `InstanceNotFound` / `DomainNotDeclared` / `InstanceExists` / `DomainBusy`；接口全链：REST 默认族 + 实例镜像族（`/domains/{d}/instances/{i}/…`）+ `InstantiateReq` + `DomainListing`，CLI `--instance`/`--force`/`instantiate`/`instances`，MCP 16 工具（新增 `pact_domain_instantiate`），`pact-runtime` 实例透传（`ParticipantClient::instance` + `bound_ready`）；护栏 `flock`（`fs4`，`<data_dir>/pactd.lock`）+ `DomainBusy`；键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` **零改动**（形式语义不变）。workspace **123 项**测试全绿（基线 110 + β 专项），fmt/clippy 清零 |
 

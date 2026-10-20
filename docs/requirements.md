@@ -108,7 +108,13 @@
 ### FR17 引擎生产化
 
 - **事件日志压缩与 schema 版本化**：`pact-store` 提供快照之后的事件日志截断/轮转与保留策略；事件与线上格式补 `version` 字段与兼容契约（旧日志重放语义明确）。
-- **运维接口**：daemon 提供 health/ready 端点、运行指标（metrics）、PID 文件与信号化优雅停机。
+  - **截断机制**：**前缀删除 + 旁路水位清单**——快照为提交点，`<instance>.logmeta.json` 记 `base_seq` 水位（先于日志重写），日志原子重写（tmp+fsync+rename）仅保留 `seq > base_seq` 行；水位单调不回退。
+  - **快照自足与幂等存活**：压缩后日志可能不含 `DomainLoaded`，故快照须承载 `version` / `seq` / `dl_seq` / `declaration` / `state` / `consumed_requests`（**Rule-E 幂等表随快照持久化**，否则前缀内 `Consumed` 行被丢弃会破坏跨重启幂等）；恢复以快照为锚补尾部事件。
+  - **数据安全优先**：日志已截断而快照缺失或不覆盖水位 ⇒ **fail-fast**（`SnapshotRequiredForCompactedLog`），不静默丢数据。
+  - **版本兼容契约**：`EVENT_SCHEMA_VERSION = 1`；缺 `version` 的旧日志/旧快照视同 v1（向后兼容）；`version > 当前` ⇒ **fail-fast `UnsupportedSchemaVersion`**（不静默按 v1 重放）。
+  - **触发方式**：运维显式接口（REST `POST .../compact`、CLI `pact compact`、MCP `pact_compact`）+ 可选启动自动压缩（`pact.toml` 的 `compact_on_start` / `compact_keep_last`；缺省关闭）。
+  - **固有取舍（须文档化）**：压缩后被丢弃前缀不再可查——审计视图退化为「快照 + 保留尾部事件」，`events` 索引行被裁剪（`tokens` 投影行保留）；NFR2 的「日志即完整审计」在压缩后由「快照 + 保留尾部」共同承担。v1 不做自动周期性轮转。
+- **运维接口**：daemon 提供 `GET /health`（存活）、`GET /ready`（就绪：引擎可应答）、`GET /metrics`（Prometheus 文本格式运行指标，含 uptime 与域实例计数）；可选 `pid_file`（缺省不写，含陈旧检测）；信号化优雅停机（SIGINT/SIGTERM → 停止接受新连接 → 有界等待在途 → 终态快照 → 清理）。运维端点**不校验令牌**（仅供本地/内网探活与抓取）。
 - **域级授权与审计读视图**：接口层按域 ACL（阻止任意客户端 `load` / `unload` 任意域）；读审计（Rule-R 记录）为**可选开启**扩展，默认关闭（修订决策 D9 的默认值表述，见 D25）。
 
 ### FR18 部署与分发产物

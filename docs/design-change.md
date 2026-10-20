@@ -1,5 +1,29 @@
 # 设计变更记录
 
+## 2026-10-20（第 24 轮，D25 子项 1：日志压缩与 schema 版本化实施）
+
+- **四项设计取舍（用户裁决，均选推荐项）**：压缩触发 = **显式运维接口 + 可选启动自动**；截断机制 = **前缀删除 + 旁路 base_seq 清单**；幂等表 = **纳入快照**；version 形态 = **每事件顶层 `version` 字段**。
+- **schema 版本化（pact-store）**：新增 `WireEvent{version, #[serde(flatten)] event}` 与 `EVENT_SCHEMA_VERSION = 1`（唯一真源）。日志与线上格式统一经 `to_wire_json` 输出（实测行首为 `{"version":1,…}`）；读取经 `into_event()`，`version > 当前` ⇒ `StoreError::UnsupportedSchemaVersion` fail-fast；缺 `version` 由 serde `default` 视为 v1（旧日志/旧快照零迁移）。`Notification`（SSE）同步加顶层 `version`。
+- **前缀压缩（pact-store）**：`Store::compact(key, snap, keep_last, compacted_at)` 五步序——① `write_snapshot`（**提交点**）② `base_seq = max(snap.seq - keep_last, prev_base)` 写 `<instance>.logmeta.json`（先于日志重写，水位**单调不回退**）③ `rewrite_retaining` 原子重写日志（保留 `seq > base_seq` 行原始字节，丢弃尾部半行，tmp+fsync+rename）④ `IndexStore::prune_events` 裁剪 `events` 行 ⑤ 移除并重建追加句柄，`last_seq = snap.seq`。返回 `CompactionResult{snapshot_seq, base_seq, retained, discarded}`。
+- **快照自足锚（pact-store）**：`Snapshot` 扩为 `{version, seq, dl_seq, declaration, state, consumed_requests}`（`Snapshot::new(...)` 统一构造）。`consumed_requests` = Rule-E 幂等表（`request_id → (TokenId, ArchiveEntry)`）——压缩丢弃 `Consumed` 行后跨重启幂等仍生效。
+- **恢复分支（pact-store + pact-engine）**：`read_and_sanitize(path, base_seq)` 的 seq 校验由「首行恒为 1」放宽为**连续性**（首行允许 ≤ `base_seq+1` 的未截断超集态，其余逐行 +1）。`Store::recover` 读 logmeta → 载快照 → 若日志无 `DomainLoaded` 则要求快照覆盖 `max(base_seq, first_seq-1)`，否则 `SnapshotRequiredForCompactedLog` fail-fast；`last_seq = max(日志末尾, base_seq, snap_seq)`；`base_seq > 0` 时补 `prune_events` 自愈崩溃窗口。索引一致性校验放宽为「索引不落后于日志」（`idx_last == log_last || (log_last == 0 && idx_last <= base_seq)`），避免误触发全量 `rebuild` 连带清空 tokens 投影。
+- **引擎（pact-engine）**：`recover_instance` 新增 `snapshot_is_anchor` 分支（日志无 `DomainLoaded` ⇒ 以 `snap.declaration`/`snap.dl_seq`/`snap.state`/`snap.consumed_requests` 为基补尾部；无快照 ⇒ `EngineError::Recovery`）；幂等表基线 `idem_floor = base_seq`（快照锚）或 `dl_seq`（日志锚）。所有快照构造点统一走 `snapshot_of(&InstanceSession)`，保证恒自足。新增 `Command::Compact`、`Engine::compact(key, keep_last)`、`EngineConfig{compact_on_start, compact_keep_last}`；`Engine::spawn` 保持默认配置兼容，新增 `spawn_with_config`。恢复末尾按配置逐实例自动压缩（单个失败仅 `eprintln!` 告警，不阻断启动）。
+- **接口面**：REST `POST /domains/{d}/compact` 与 `/domains/{d}/instances/{i}/compact`（`CompactReq{keep_last?}` → `CompactionOutcome{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`）；CLI `pact compact --domain D [--instance I] [--keep-last N]`（离线 `replay` 改经 `WireEvent` 校验版本）；MCP `pact_compact`（工具数 16 → 17）；`pact.toml` 新增 `compact_on_start`（缺省 false）与 `compact_keep_last`（缺省 0），`daemon.rs` 经 `spawn_with_config` 传递。
+- **取舍与边界**：压缩后被丢弃前缀不再可查（审计视图 = 快照 + 保留尾部事件；`events` 索引行被裁剪、`tokens` 投影行保留）；v1 不做自动周期性轮转，压缩为运维显式动作。`SeqGap` 的既有语义（中部缺行 fail-fast）不变。
+- **测试**：新增 14 项——store 单测 6（version 兼容/未来版本致命、截断后 base_seq 校验、logmeta 往返与缺失、compact 截断/keep_last/无快照 fail-fast）+ 既有 store 快照测试改造 + engine 集成 3（压缩保持状态与幂等、keep_last 保留尾部 + 线上 version、启动自动压缩）+ http e2e 2（压缩截断 + 幂等跨重启 + 404）+ CLI/MCP e2e 断言扩展。全仓 **145 项**全绿（基线 131 + 14）；fmt/clippy 清零。
+- **形式层不变**：`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` **零改动**；`docs/pact*` 母本未动。
+
+## 2026-10-20（第 23 轮，D25 子项 2：运维接口实施）
+
+- **范围**：仅 D25 子项 (2)。(1) 日志压缩/schema 版本化、(3) 域级 ACL/审计读视图未动（均须按域实例双键重述）。
+- **新增 §9.5 运维接口**：`GET /health`（存活，不依赖引擎）、`GET /ready`（就绪，探针 = 一次 `list_domains` 往返，不可应答 → 503）、`GET /metrics`（Prometheus 文本格式，`text/plain; version=0.0.4`）。指标：`pact_domains_declared`、`pact_instances_loaded`、`pact_counter_size{domain,instance}`、`pact_archive_size{domain,instance}`、`pact_terminated{domain,instance}`、`pact_uptime_seconds`；仅统计**已加载**实例（`InstanceNotFound` 跳过）。
+- **认证口径**：三端点**免令牌**（用户裁决）。理由：探活/抓取惯例；部署默认 unix socket，TCP 建议 `127.0.0.1`。域操作端点认证不变。
+- **PID 文件**：`Config.pid_file: Option<PathBuf>`（缺省不写，向后兼容）；启动写入自身 PID、退出（含信号路径）drop 删除；启动时陈旧文件且 PID 存活 → `AlreadyExists` 拒绝。Linux 以 `/proc/<pid>` 判定存活（PID 复用假阳性 → 保守拒绝），非 Linux 交由 `pactd.lock` flock 兜底。
+- **优雅停机**：`pact-http::server` 引入 `watch` 停机广播 + `ConnTracker`（`AtomicUsize` + `Notify`）在途计数。SIGINT/SIGTERM 同路径 → 停止 accept → 有界（`DRAIN_TIMEOUT` = 10s）等待在途归零 → `engine.shutdown()` 终态快照 → 清理 PID/套接字。**有界是必须的**：SSE 长连接会占满窗口。监听循环签名增加 `watch::Receiver<bool>` 与 `ConnTracker`（5 处测试调用点同步）。
+- **接口形状**：`ServerState` 增加 `started_at: Instant`（uptime 基准）；`text_response` 显式设 `Content-Type`。
+- **测试**：新增 8 项——daemon 单元 3（PID 写入/删除、陈旧检测、未配置不写）+ daemon_e2e 3（免令牌、指标含已加载实例、停机停止 accept 且 drain 归零）+ 进程级 2（SIGTERM 优雅退出并清理 PID/套接字、陈旧 PID 拒绝启动）。全仓 **131 项**全绿（基线 123 + 8）；fmt/clippy 清零。
+- **形式层不变**：`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` / `pact-store` / `pact-engine` **零改动**；`docs/pact*` 母本未动。
+
 ## 2026-10-20（第 22 轮，过程产物移除与阶段 8 排期重挂）
 
 - **触发**：用户「移除这两个文件，然后继续开发」。阶段 10 交付后，模型 C 评估与咨询的**过程产物**已并入正式文档，不再需要留存。

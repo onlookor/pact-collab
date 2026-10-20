@@ -52,6 +52,8 @@ pub trait IndexStore: Send + Sync {
     ) -> Result<(), StoreError>;
     /// 实例内最大事件 seq（None = 该实例无事件）。启动一致性校验用。
     async fn last_event_seq(&self, key: &InstanceKey) -> Result<Option<u64>, StoreError>;
+    /// 裁剪该实例中 `seq <= base_seq` 的事件行（日志前缀压缩后的索引同步）。
+    async fn prune_events(&self, key: &InstanceKey, base_seq: u64) -> Result<(), StoreError>;
     /// 从全部实例日志全量重建（清空后重放）。非事务性——索引可随时重建，无需原子。
     async fn rebuild(&self, entries: &[(InstanceKey, Vec<Event>)]) -> Result<(), StoreError>;
 }
@@ -121,7 +123,7 @@ impl IndexStore for TursoIndexStore {
     }
 
     async fn upsert_event(&self, key: &InstanceKey, ev: &Event) -> Result<(), StoreError> {
-        let payload = serde_json::to_string(ev)?;
+        let payload = crate::event::to_wire_json(ev)?;
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO events(domain, instance, seq, kind, ts, payload)
@@ -199,6 +201,21 @@ impl IndexStore for TursoIndexStore {
             Value::Integer(n) => Ok(Some(n.max(0) as u64)),
             v => Err(StoreError::Index(format!("MAX(seq) 返回非整数：{v:?}"))),
         }
+    }
+
+    async fn prune_events(&self, key: &InstanceKey, base_seq: u64) -> Result<(), StoreError> {
+        self.conn
+            .execute(
+                "DELETE FROM events WHERE domain = ?1 AND instance = ?2 AND seq <= ?3",
+                [
+                    Value::Text(key.domain.clone()),
+                    Value::Text(key.instance.clone()),
+                    Value::Integer(base_seq as i64),
+                ],
+            )
+            .await
+            .map_err(to_index_err)?;
+        Ok(())
     }
 
     async fn rebuild(&self, entries: &[(InstanceKey, Vec<Event>)]) -> Result<(), StoreError> {

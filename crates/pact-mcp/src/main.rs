@@ -1,4 +1,4 @@
-//! PACT MCP server（阶段 4/10，§9.1）：rmcp stdio，16 个 `pact_` 工具，
+//! PACT MCP server（阶段 4/10，§9.1）：rmcp stdio，17 个 `pact_` 工具，
 //! 经 [`pact_http::client`] 接入 daemon；错误以 §6.3 结构化 JSON 返回。
 //! 域双键（D27）：域级工具均接受可选 `instance`（缺省 `default`）。
 
@@ -169,6 +169,17 @@ struct ParticipantIn {
     #[serde(default)]
     instance: Option<String>,
     participant: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CompactIn {
+    domain: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
+    /// 保留最近的事件条数（缺省 0 = 丢弃全部已入快照的前缀）。
+    #[serde(default)]
+    keep_last: u64,
 }
 
 // ============ MCP server ============
@@ -424,6 +435,20 @@ impl PactMcp {
             &self
                 .client
                 .status(&in_.domain, in_.instance.as_deref())
+                .await
+                .map_err(to_err)?,
+        )
+    }
+
+    #[tool(
+        name = "pact_compact",
+        description = "日志前缀压缩：写全量快照后截断已覆盖的事件前缀（keep_last 保留尾部条数）"
+    )]
+    async fn compact(&self, Parameters(in_): Parameters<CompactIn>) -> Result<String, String> {
+        to_ok(
+            &self
+                .client
+                .compact(&in_.domain, in_.instance.as_deref(), in_.keep_last)
                 .await
                 .map_err(to_err)?,
         )

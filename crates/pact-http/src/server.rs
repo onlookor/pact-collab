@@ -3,16 +3,17 @@
 //! 被拒动作返回 4xx + §6.3 结构化错误体；错误码 = RuleError / Problem 变体名。
 
 use crate::dto::{
-    conflicts_detail, problem_detail, rule_error_detail, ComposeReq, ConsumeReq, DomainInfo,
-    DomainsResp, EnabledOption, EnabledResp, EntryResp, ErrorBody, ErrorDetail, GatesResp,
-    InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp, ValidateReq,
-    ValidateResp,
+    conflicts_detail, problem_detail, rule_error_detail, CompactReq, ComposeReq, ConsumeReq,
+    DomainInfo, DomainsResp, EnabledOption, EnabledResp, EntryResp, ErrorBody, ErrorDetail,
+    GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp,
+    ValidateReq, ValidateResp,
 };
+use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures::StreamExt;
@@ -24,7 +25,9 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::path::Path as FsPath;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use tokio::sync::{watch, Notify};
 use tokio_stream::wrappers::BroadcastStream;
 
 // ============ 状态与错误 ============
@@ -33,6 +36,8 @@ pub struct ServerState {
     engine: Engine,
     /// 参与者 → 令牌；空表 = 信任声明模式（NFR5）。
     auth_tokens: BTreeMap<String, String>,
+    /// 启动时刻（`/metrics` 的 uptime 基准）。
+    started_at: std::time::Instant,
 }
 
 impl ServerState {
@@ -40,6 +45,7 @@ impl ServerState {
         Arc::new(Self {
             engine,
             auth_tokens,
+            started_at: std::time::Instant::now(),
         })
     }
 
@@ -265,6 +271,10 @@ struct ParticipantQuery {
 
 pub fn router(state: Arc<ServerState>) -> Router {
     Router::new()
+        // 运维端点（D25 子项 2）：探活/就绪/指标，不校验令牌（仅本地/内网暴露）
+        .route("/health", get(health))
+        .route("/ready", get(ready))
+        .route("/metrics", get(metrics))
         .route("/domains", post(load_domain).get(list_domains))
         .route("/validate", post(validate_declaration))
         .route("/domains/{d}", any(domain_entry))
@@ -281,6 +291,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/domains/{d}/enabled", get(enabled))
         .route("/domains/{d}/status", get(status))
         .route("/domains/{d}/events", get(events))
+        // 日志前缀压缩（D25 子项 1；default 实例与实例级镜像）
+        .route("/domains/{d}/compact", post(compact_default))
         // 实例级镜像组（D27）
         .route("/domains/{d}/instances/{i}/seeds", post(seed_instance))
         .route("/domains/{d}/instances/{i}/tokens", post(produce_instance))
@@ -301,8 +313,125 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/domains/{d}/instances/{i}/enabled", get(enabled_instance))
         .route("/domains/{d}/instances/{i}/status", get(status_instance))
         .route("/domains/{d}/instances/{i}/events", get(events_instance))
+        .route("/domains/{d}/instances/{i}/compact", post(compact_instance))
         .fallback(not_found)
         .with_state(state)
+}
+
+// ============ 运维端点（D25 子项 2：health / ready / metrics，不校验令牌） ============
+
+/// 存活探针（liveness）：进程在服务即 200，不依赖引擎状态。
+async fn health() -> impl IntoResponse {
+    (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+}
+
+/// 就绪探针（readiness）：引擎可应答（启动恢复完成且未停机）→ 200，否则 503。
+/// 探针 = 一次 `list_domains` 往返；恢复失败时引擎以 `Recovery` 统一应答。
+async fn ready(State(st): State<Arc<ServerState>>) -> Response {
+    match st.engine.list_domains().await {
+        Ok(listings) => {
+            let instances: usize = listings.iter().map(|l| l.instances.len()).sum();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "ready",
+                    "domains": listings.len(),
+                    "instances": instances,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "status": "not_ready", "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// 运行指标（Prometheus 文本暴露格式）。
+/// 标签值取自域名/实例名（谓词 `[A-Za-z0-9_-]`，无需转义）。
+/// 仅上报已加载（内存）实例：磁盘存在但未加载者由 `status` 报 `InstanceNotFound`，跳过。
+async fn metrics(State(st): State<Arc<ServerState>>) -> Response {
+    let listings = match st.engine.list_domains().await {
+        Ok(l) => l,
+        Err(e) => {
+            return text_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("# 引擎不可用：{e}\n"),
+            )
+        }
+    };
+
+    let mut loaded: Vec<(InstanceKey, StatusView)> = Vec::new();
+    for l in &listings {
+        for name in &l.instances {
+            let key = InstanceKey::new(l.name.clone(), name.clone());
+            match st.engine.status(key.clone()).await {
+                Ok(v) => loaded.push((key, v)),
+                Err(EngineError::InstanceNotFound { .. }) => {}
+                Err(e) => {
+                    return text_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        &format!("# 引擎查询失败：{e}\n"),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut out = String::new();
+    out.push_str("# HELP pact_domains_declared 已登记的域声明数\n");
+    out.push_str("# TYPE pact_domains_declared gauge\n");
+    out.push_str(&format!("pact_domains_declared {}\n", listings.len()));
+    out.push_str("# HELP pact_instances_loaded 已加载的域实例数\n");
+    out.push_str("# TYPE pact_instances_loaded gauge\n");
+    out.push_str(&format!("pact_instances_loaded {}\n", loaded.len()));
+    out.push_str("# HELP pact_counter_size 域实例 Counter 当前 token 数\n");
+    out.push_str("# TYPE pact_counter_size gauge\n");
+    for (k, v) in &loaded {
+        out.push_str(&format!(
+            "pact_counter_size{{domain=\"{}\",instance=\"{}\"}} {}\n",
+            k.domain, k.instance, v.counter_size
+        ));
+    }
+    out.push_str("# HELP pact_archive_size 域实例 Archive 条目数\n");
+    out.push_str("# TYPE pact_archive_size gauge\n");
+    for (k, v) in &loaded {
+        out.push_str(&format!(
+            "pact_archive_size{{domain=\"{}\",instance=\"{}\"}} {}\n",
+            k.domain, k.instance, v.archive_size
+        ));
+    }
+    out.push_str("# HELP pact_terminated 域实例是否满足 Rule-T 终止条件（1/0）\n");
+    out.push_str("# TYPE pact_terminated gauge\n");
+    for (k, v) in &loaded {
+        out.push_str(&format!(
+            "pact_terminated{{domain=\"{}\",instance=\"{}\"}} {}\n",
+            k.domain,
+            k.instance,
+            u8::from(v.terminated)
+        ));
+    }
+    out.push_str("# HELP pact_uptime_seconds 进程运行时长\n");
+    out.push_str("# TYPE pact_uptime_seconds gauge\n");
+    out.push_str(&format!(
+        "pact_uptime_seconds {:.3}\n",
+        st.started_at.elapsed().as_secs_f64()
+    ));
+
+    text_response(StatusCode::OK, &out)
+}
+
+/// 文本响应（Prometheus 暴露格式用，`text/plain; version=0.0.4`）。
+fn text_response(status: StatusCode, body: &str) -> Response {
+    let mut resp = Response::new(Body::from(body.to_owned()));
+    *resp.status_mut() = status;
+    resp.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
+    );
+    resp
 }
 
 /// 默认实例键（`/domains/{d}` 路径族语义，FR19 兼容）。
@@ -432,6 +561,30 @@ async fn instantiate(
 ) -> Result<(StatusCode, Json<pact_engine::views::DomainSummary>), ApiError> {
     let summary = st.engine.instantiate(&d, &req.instance).await?;
     Ok((StatusCode::CREATED, Json(summary)))
+}
+
+/// `POST /domains/{d}/instances/{i}/compact`：日志前缀压缩（D25 子项 1）。
+/// 写全量自足快照后截断日志中已被覆盖的前缀；不改变实例状态与 seq 续接点。
+async fn compact_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    JsonReq(req): JsonReq<CompactReq>,
+) -> Result<Json<pact_engine::views::CompactionOutcome>, ApiError> {
+    let out = st
+        .engine
+        .compact(InstanceKey::new(d, i), req.keep_last)
+        .await?;
+    Ok(Json(out))
+}
+
+/// `POST /domains/{d}/compact`：对默认实例压缩（D27 兼容路径）。
+async fn compact_default(
+    State(st): State<Arc<ServerState>>,
+    Path(d): Path<String>,
+    JsonReq(req): JsonReq<CompactReq>,
+) -> Result<Json<pact_engine::views::CompactionOutcome>, ApiError> {
+    let out = st.engine.compact(default_key(&d), req.keep_last).await?;
+    Ok(Json(out))
 }
 
 async fn list_domains(State(st): State<Arc<ServerState>>) -> Result<Json<DomainsResp>, ApiError> {
@@ -845,34 +998,111 @@ fn thing_ref(s: Option<String>) -> ThingRef {
 
 // ============ 监听 ============
 
+/// 在途连接计数器（优雅停机用）：停机时停止接受新连接，等待在途请求完成（有界）。
+#[derive(Clone, Default)]
+pub struct ConnTracker {
+    active: Arc<AtomicUsize>,
+    notify: Arc<Notify>,
+}
+
+impl ConnTracker {
+    /// 进入连接作用域；返回的 guard 析构时计数归还并唤醒等待者。
+    pub fn guard(&self) -> ConnGuard {
+        self.active.fetch_add(1, Ordering::SeqCst);
+        ConnGuard {
+            tracker: self.clone(),
+        }
+    }
+
+    /// 当前在途连接数。
+    pub fn active(&self) -> usize {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    /// 等待在途连接归零。
+    pub async fn wait_idle(&self) {
+        loop {
+            if self.active() == 0 {
+                return;
+            }
+            self.notify.notified().await;
+        }
+    }
+}
+
+/// 连接存活作用域 guard（drop 即归还计数）。
+pub struct ConnGuard {
+    tracker: ConnTracker,
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        // notify_one 会留存一个许可，避免 wait_idle 在「检查 → 挂起」之间错过唤醒
+        self.tracker.active.fetch_sub(1, Ordering::SeqCst);
+        self.tracker.notify.notify_one();
+    }
+}
+
 /// unix socket 监听循环（默认；单机安全）。启动前移除旧套接字文件。
-pub async fn serve_unix(app: Router, path: &FsPath) -> std::io::Result<()> {
+/// `shutdown` 置位后停止接受新连接并返回（在途连接由 `tracker` 跟踪）。
+pub async fn serve_unix(
+    app: Router,
+    path: &FsPath,
+    mut shutdown: watch::Receiver<bool>,
+    tracker: ConnTracker,
+) -> std::io::Result<()> {
     let _ = std::fs::remove_file(path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let listener = tokio::net::UnixListener::bind(path)?;
     loop {
-        let (stream, _) = listener.accept().await?;
-        spawn_connection(app.clone(), hyper_util::rt::TokioIo::new(stream));
+        tokio::select! {
+            r = listener.accept() => {
+                let (stream, _) = r?;
+                spawn_connection(app.clone(), hyper_util::rt::TokioIo::new(stream), tracker.guard());
+            }
+            _ = wait_shutdown(&mut shutdown) => break,
+        }
     }
+    Ok(())
 }
 
 /// TCP 监听循环（可选，建议 127.0.0.1）。
-pub async fn serve_tcp(app: Router, addr: &str) -> std::io::Result<()> {
+pub async fn serve_tcp(
+    app: Router,
+    addr: &str,
+    mut shutdown: watch::Receiver<bool>,
+    tracker: ConnTracker,
+) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     loop {
-        let (stream, _) = listener.accept().await?;
-        spawn_connection(app.clone(), hyper_util::rt::TokioIo::new(stream));
+        tokio::select! {
+            r = listener.accept() => {
+                let (stream, _) = r?;
+                spawn_connection(app.clone(), hyper_util::rt::TokioIo::new(stream), tracker.guard());
+            }
+            _ = wait_shutdown(&mut shutdown) => break,
+        }
     }
+    Ok(())
 }
 
-/// 单连接服务（hyper-util auto：HTTP/1.1）。
-fn spawn_connection<I>(app: Router, io: I)
+/// 等待停机信号（已置位立即返回；发送端 drop 亦视为停机）。
+async fn wait_shutdown(rx: &mut watch::Receiver<bool>) {
+    if *rx.borrow() {
+        return;
+    }
+    let _ = rx.changed().await;
+}
+
+/// 单连接服务（hyper-util auto：HTTP/1.1）。`guard` 随连接结束释放。
+fn spawn_connection<I>(app: Router, io: I, guard: ConnGuard)
 where
     I: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
 {
     tokio::spawn(async move {
+        let _guard = guard;
         let svc = hyper_util::service::TowerToHyperService::new(app.into_service());
         let builder =
             hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());

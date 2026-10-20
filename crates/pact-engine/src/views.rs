@@ -56,6 +56,24 @@ pub struct DomainListing {
     pub instances: Vec<String>,
 }
 
+/// 日志前缀压缩结果（D25 子项 1；`POST …/compact` 响应）。
+///
+/// 语义：以快照 `snapshot_seq` 为提交点，日志中 `seq <= base_seq` 的行被丢弃；
+/// 保留 `retained` 行、丢弃 `discarded` 行。压缩后实例状态由快照承载。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionOutcome {
+    pub domain: String,
+    pub instance: String,
+    /// 快照已覆盖到的最后事件 seq（压缩前日志末尾 seq）。
+    pub snapshot_seq: u64,
+    /// 压缩后日志保留水位（可从日志丢弃的事件上界）。
+    pub base_seq: u64,
+    /// 日志中保留的事件行数。
+    pub retained_events: u64,
+    /// 本次丢弃的事件行数。
+    pub discarded_events: u64,
+}
+
 /// 六项静态分析聚合报告（论文 Appendix A.1–A.6）。
 /// A.5 置于首位：它是其余分析的前提（Appendix D），须先修正违规再解读其余结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

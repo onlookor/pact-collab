@@ -2,7 +2,7 @@
 //! daemon）+ rmcp client 走完整 PACT 生命周期（§9.1 工具集）。
 
 use pact_engine::{Engine, LogicalClock, SequentialIdGen};
-use pact_http::server::{router, serve_unix, ServerState};
+use pact_http::server::{router, serve_unix, ConnTracker, ServerState};
 use pact_store::Store;
 use rmcp::model::{CallToolRequestParams, ContentBlock};
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::watch;
 
 const DECL: &str = r#"
 types { requirement; design; implementation }
@@ -43,7 +44,7 @@ async fn spawn_daemon(dir: &Path) -> PathBuf {
     let sock = dir.join("pact.sock");
     let s = sock.clone();
     tokio::spawn(async move {
-        let _ = serve_unix(app, &s).await;
+        let _ = serve_unix(app, &s, watch::channel(false).1, ConnTracker::default()).await;
     });
     for _ in 0..100 {
         if tokio::net::UnixStream::connect(&sock).await.is_ok() {
@@ -96,9 +97,9 @@ async fn mcp_full_lifecycle_over_stdio() {
     .expect("启动 pact-mcp 子进程失败");
     let client = ().serve(transport).await.expect("MCP 握手失败");
 
-    // —— 工具清单（§9.1 + D27：16 个） ——
+    // —— 工具清单（§9.1 + D27 + D25：17 个） ——
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 16, "应注册 16 个工具: {tools:?}");
+    assert_eq!(tools.len(), 17, "应注册 17 个工具: {tools:?}");
 
     // —— 域生命周期 ——
     let v = tool_ok(
@@ -253,6 +254,20 @@ async fn mcp_full_lifecycle_over_stdio() {
     let status = tool_ok(&client, "pact_status", json!({ "domain": "proj" })).await;
     assert_eq!(status["counter_size"], 1);
     assert_eq!(status["archive_size"], 1);
+
+    // —— 日志压缩（D25 子项 1）：截断已入快照的前缀，状态经快照保持 ——
+    let compacted = tool_ok(
+        &client,
+        "pact_compact",
+        json!({ "domain": "proj", "keep_last": 0 }),
+    )
+    .await;
+    assert_eq!(compacted["instance"], "default");
+    assert_eq!(compacted["base_seq"], 4);
+    assert_eq!(compacted["discarded_events"], 4);
+    let after = tool_ok(&client, "pact_status", json!({ "domain": "proj" })).await;
+    assert_eq!(after["counter_size"], 1);
+    assert_eq!(after["archive_size"], 1);
 
     client.cancel().await.unwrap();
 }

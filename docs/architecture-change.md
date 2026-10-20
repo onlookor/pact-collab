@@ -1,5 +1,21 @@
 # 架构变更记录
 
+## 2026-10-20（第 12 轮，D25 子项 1：日志压缩与 schema 版本化落地）
+
+- **组件内新增（不改变分层与依赖方向）**：`pact-store` 新增压缩能力——`WireEvent{version, #[serde(flatten)] event}`（事件与线上格式统一带顶层 `version`）、`logmeta` 水位旁路清单（`<instance>.logmeta.json`）、`rewrite_retaining`（tmp+fsync+rename 原子前缀重写）、`IndexStore::prune_events`、`Store::compact`；`Snapshot` 扩为**自足锚**（`version`/`seq`/`dl_seq`/`declaration`/`state`/`consumed_requests`）。`pact-engine` 增 `Command::Compact` + 公开 `Engine::compact` + `EngineConfig::compact_on_start/compact_keep_last` + `recover_instance` 的 `snapshot_is_anchor` 分支；`Notification` 增顶层 `version`。`pact-http` / `pact-cli` / `pact-mcp` 仅**增入口**（`POST .../compact`、`pact compact`、`pact_compact`）。`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` 零改动。
+- **§1 架构总览图更新**：存储层框补 `.logmeta.json（压缩水位）`，`.snapshot.json` 标注为「自足锚」。
+- **§2.3 启动恢复流程更新**：补入 logmeta 水位读取、快照锚/重放双分支、`SnapshotRequiredForCompactedLog` 护栏、`base_seq > 0` 时索引补 `prune_events` 自愈、`compact_on_start` 自动压缩、事件 schema 版本兼容规则。
+- **新增 §2.4 日志压缩数据流**：五步序（写自足快照为提交点 → 写 logmeta 水位 → 原子重写日志 → 裁剪索引 → 重置追加句柄），水位单调不回退；崩溃于任一中间点落到两个一致态之一（未截断超集态 / 已截断+水位+快照）。
+- **§5 质量属性更新**：审计完整性行补「压缩后审计视图 = 自足快照 + 保留尾部事件，被丢弃前缀不再可查」；可恢复性行补「快照锚恢复 + 水位护栏 + 版本 fail-fast」；可运维性行由「子项 2 已实现」扩为「**子项 1+2 已实现**」。
+- **无结构性变更**：crate 划分、依赖方向（单向、无回指）、单机单进程部署拓扑、单一状态变更通道（D6/D19）、引擎被动性（D5）、纯函数语义层均不变。本轮变化限于**存储层文件族 + 恢复流程分支 + 接口面新增一个运维端点**，属既有分层内的落地细化。
+- **验证**：`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo test --workspace` **145 项全绿**（基线 131 + 本轮 14）。
+
+## 2026-10-20（第 11 轮，D25 子项 2：运维接口落地）
+
+- **§5 可运维性行**（由「未实现」转**子项 2 已实现**）：daemon 增加三个**免令牌**运维端点 `/health`、`/ready`、`/metrics`（Prometheus 文本），可选 `pid_file`（陈旧检测），SIGINT/SIGTERM 优雅停机（停止 accept → 有界 10s drain → 终态快照）。明确**未实现**：日志压缩/保留与 schema 版本、域级 ACL、读审计扩展。
+- **组件内新增**（不改变分层与依赖方向）：`pact-http::server` 增加 `ConnTracker`/`ConnGuard`（在途连接计数，供有界 drain）与 `watch` 停机广播；`serve_unix` / `serve_tcp` 签名增加停机接收器与计数器，**仅 `pact-http` 内部与测试调用点**受影响。`pact-engine` / `pact-store` / `pact-core` 零改动，依赖方向不变。
+- **无结构性变更**：crate 划分、部署拓扑（单机单进程）、引擎被动性（D5）、单一状态变更通道（D6/D19）均不变。
+
 ## 2026-10-20（第 10 轮，术语精化：「域实例」）
 
 - **触发**：用户要求把指 D27 实例键的「实例」统一写「域实例」（避免与工程实例混淆，为将来类型-实例分离留余地）；见 `docs/design-change.md` 第 21 轮。

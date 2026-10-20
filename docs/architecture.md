@@ -37,8 +37,9 @@
         │ pact-core      │  │ pact-store                  │
         │ pact-parser    │  │  <domain>/<instance>        │
         │ pact-analysis  │  │   .events.jsonl 真相源       │
-        │ pact-compose   │  │   .snapshot.json            │
-        └────────────────┘  │  declaration.pact           │
+        │ pact-compose   │  │   .snapshot.json（自足锚）    │
+        └────────────────┘  │   .logmeta.json（压缩水位）   │
+                            │  declaration.pact           │
                             │  index.tursodb              │
                             │   (domain,instance) 双列     │
                             │   (turso, IndexStore 隔离)   │
@@ -80,11 +81,32 @@ agent ──MCP pact_produce──► pact-mcp ──REST POST /tokens──► 
 ```
 daemon 启动（pact daemon start / pactd）→ 先取 data_dir 独占 flock（<data_dir>/pactd.lock，第二实例拒绝启动）
   顶层遗留单层文件（<domain>.events.jsonl / .snapshot.json）→ fail-fast（LegacyLayoutDetected）须人工迁移
-  逐域实例（<domain>/<instance>.events.jsonl）：截断尾部半行（崩溃残留）→ 载入最近快照（seq ≥ 最后一次 DomainLoaded 才有效）
-       → 重放 events.jsonl 尾部（seq > snapshot.seq）
-       → 校验/重建 index.tursodb → 重建实例内存态 → 恢复声明注册表（读 <domain>/declaration.pact）→ 恢复订阅总线
+  逐域实例（<domain>/<instance>.events.jsonl）：读 <instance>.logmeta.json 水位 base_seq → 截断尾部半行（崩溃残留）
+       → 载入最近快照（seq ≥ 最后一次 DomainLoaded 才有效）→ 分两支：
+           日志含 DomainLoaded ⇒ 重放 events.jsonl 尾部（seq > snapshot.seq）
+           日志无 DomainLoaded（已压缩）⇒ **快照即锚**：以快照的 declaration/dl_seq/state/consumed_requests 为基补尾部事件；
+               无快照或不覆盖 max(base_seq, 首行seq-1) ⇒ fail-fast（SnapshotRequiredForCompactedLog）
+       → 校验/重建 index.tursodb（含 base_seq > 0 时补 prune_events 自愈）→ 重建实例内存态
+       → 恢复声明注册表（读 <domain>/declaration.pact）→ 恢复订阅总线
+       → compact_on_start 为真时逐实例自动压缩（单个失败仅告警，不阻断启动）
 中部损坏行（完整行非法 JSON）→ fail-fast，命令以恢复失败统一应答（需人工介入）。
+事件 schema 版本：缺 version 视为 v1；version > EVENT_SCHEMA_VERSION ⇒ fail-fast（UnsupportedSchemaVersion）。
 ```
+
+### 2.4 日志压缩（D25 子项 1）
+
+```
+运维入口（REST POST .../compact | CLI pact compact | MCP pact_compact | 启动自动）
+   engine: 取当前实例内存态 → Snapshot{version,seq,dl_seq,declaration,state,consumed_requests}
+         → store.compact：① 写全量自足快照（**提交点**）
+                          ② 写 <instance>.logmeta.json 水位 base_seq = max(seq-keep_last, prev_base)（单调不回退）
+                          ③ 原子重写 events.jsonl（保留 seq > base_seq 行，tmp+fsync+rename）
+                          ④ 裁剪索引 events 行（seq <= base_seq）
+                          ⑤ 重置追加句柄续接点 last_seq = snapshot.seq
+  ←── CompactionOutcome{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events} ──
+```
+
+压缩谓词 = 「已入快照的前缀」；被丢弃前缀不再可查（审计视图 = 快照 + 保留尾部事件），`tokens` 投影行保留。水位先于日志重写落盘，故崩溃于任一中间点均落到两个一致态之一：未截断超集态（重放全量）或已截断 + 水位 + 快照（快照锚恢复）。
 
 ## 3. 进程与部署视图
 
@@ -119,11 +141,11 @@ daemon 启动（pact daemon start / pactd）→ 先取 data_dir 独占 flock（<
 | 属性 | 架构手段 |
 |------|----------|
 | 语义保真 | 语义只存在于纯函数 core（含良构校验、Rule-W/Rule-T 判定，D14）；黄金轨迹测试锚定论文全部示例 |
-| 审计完整性 | JSONL 真相源即完整审计记录；DomainLoaded 事件存档声明原文；每条事件自足（Consumed 携 token 全量快照），单行即可审计与重放 |
-| 可恢复性 | 快照 + 重放；索引（turso，经 IndexStore trait 隔离，D13）永远可重建、滞后由启动一致性校验触发重建自愈 |
+| 审计完整性 | JSONL 真相源即完整审计记录；DomainLoaded 事件存档声明原文；每条事件自足（Consumed 携 token 全量快照），单行即可审计与重放。**日志压缩后**（D25 子项 1）审计视图 = 自足快照（含声明/幂等表）+ 保留的尾部事件，被丢弃前缀不再可查 |
+| 可恢复性 | 快照 + 重放；索引（turso，经 IndexStore trait 隔离，D13）永远可重建、滞后由启动一致性校验触发重建自愈。压缩后日志无 `DomainLoaded` 时以**快照为锚**恢复（`snapshot_is_anchor`），快照缺失/不覆盖水位则 fail-fast；事件 schema 版本缺省按 v1、更高版本 fail-fast |
 | 可测试性 | Clock/IdGen 注入；core 纯环境属性测试；四层测试组织（单元/属性/集成/端到端+回归） |
 | 安全边界 | 单机默认 unix socket；参与者令牌可选；核心不感知认证 |
-| 可运维性（NFR7，D25，未实现） | daemon 暴露 health/ready 与 metrics、PID 文件、信号化优雅停机；事件日志有压缩/保留策略与 schema 版本；域级 ACL 阻止任意客户端装卸域；读审计为可选开启扩展 |
+| 可运维性（NFR7，D25，**子项 1+2 已实现**） | **子项 2（2026-10-20）**：daemon 暴露**免令牌** `/health`（存活）、`/ready`（就绪：引擎可应答）、`/metrics`（Prometheus 文本格式），可选 `pid_file`（启动写入/退出删除/陈旧检测），SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → `engine.shutdown()` 终态快照）。**子项 1（2026-10-20）**：事件日志前缀压缩（REST `/compact`、CLI `pact compact`、MCP `pact_compact`、可选启动自动压缩）+ schema 版本化（`WireEvent.version`，更高版本 fail-fast），详见 §2.3/§2.4。**未实现**：域级 ACL 阻止任意客户端装卸域；读审计为可选开启扩展 |
 | 多实例承载（FR19，D27，**已实现**） | 同一域声明可并发承载多个 **Counter 实例**（实例键 `instance`）；实例为接口层一等键，各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / 幂等表。**存储布局（已定案 + 已实现）**：域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、审计流 `‹instance›.read-audit.jsonl`、声明原文 `declaration.pact` 同目录）；索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键）。顶层遗留单层文件（`‹domain›.events.jsonl`）**不识别、fail-fast**（`LegacyLayoutDetected`）。同一 `data_dir` 上多实例以 flock（`‹data_dir›/pactd.lock`）保证单写者，禁止交错写同一日志；非空实例再加载默认拒绝（`DomainBusy`，须 `force`）。实例键以路径段承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` ≡ `default`），键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越 |
 | 层边界（D24–D26） | 范式机制限于 `crates/`；领域内容在独立仓库；生产驱动逻辑收于 `pact-runtime` crate（已实现，经 REST 接入 daemon，不内嵌引擎）；分发产物在同仓库 `dist/`（详见 §6） |
 

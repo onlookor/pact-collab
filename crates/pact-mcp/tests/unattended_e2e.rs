@@ -21,7 +21,7 @@
 use pact_engine::views::StatusView;
 use pact_engine::{Engine, LogicalClock, SequentialIdGen};
 use pact_http::client::Client;
-use pact_http::server::{router, serve_unix, ServerState};
+use pact_http::server::{router, serve_unix, ConnTracker, ServerState};
 use pact_store::Store;
 use rmcp::model::{CallToolRequestParams, ContentBlock, CustomNotification};
 use rmcp::service::NotificationContext;
@@ -32,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 /// 轮询兜底间隔（Rule-W：推送之外的兜底唤醒）。
 const POLL: Duration = Duration::from_millis(20);
@@ -483,7 +483,7 @@ async fn spawn_daemon(dir: &Path) -> PathBuf {
     let sock = dir.join("pact.sock");
     let s = sock.clone();
     tokio::spawn(async move {
-        let _ = serve_unix(app, &s).await;
+        let _ = serve_unix(app, &s, watch::channel(false).1, ConnTracker::default()).await;
     });
     for _ in 0..100 {
         if tokio::net::UnixStream::connect(&sock).await.is_ok() {

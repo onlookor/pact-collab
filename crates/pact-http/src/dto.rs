@@ -29,6 +29,16 @@ pub struct InstantiateReq {
     pub instance: String,
 }
 
+/// `POST /domains/{d}[/instances/{i}]/compact`：日志前缀压缩（D25 子项 1）。
+///
+/// 请求体可省略字段：`{}` 等价 `keep_last = 0`（丢弃全部已入快照的前缀）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompactReq {
+    /// 保留最近的事件条数（缺省 0）。
+    #[serde(default)]
+    pub keep_last: u64,
+}
+
 /// `POST /domains/{d}:compose`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComposeReq {
