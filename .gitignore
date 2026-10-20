@@ -8,3 +8,6 @@ pact.sock
 
 # 论文手稿族：不入公开仓库（仅本地保留）
 /docs/pact*
+
+# IDE/工具目录（Trae 会话产物）
+/.trae/
