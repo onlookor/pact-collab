@@ -6,7 +6,7 @@ This examples directory is tied to no specific skill or methodology — it demon
 
 Artifacts adapted specifically to the two skills (requirements-engineering / software-engineering) live in another repository; see [`docs/skill-adaptation.md`](../docs/skill-adaptation.md). This directory is the **generic** set.
 
-Conventions: every `pact ...` below means `./target/debug/pact` (or the same-named binary installed on your system); `§x.y` refers to the paradigm specification `docs/pactv1_rev2.md` (the paper manuscript family is not part of the public repository and is kept locally only — see the `/docs/pact*` rule in `.gitignore`).
+Conventions: every `pact ...` below means `./target/debug/pact` (or the same-named binary installed on your system); `§x.y` refers to the paradigm specification `docs/pactv1_rev3.md` (the paper manuscript family is not part of the public repository and is kept locally only — see the `/docs/pact*` rule in `.gitignore`).
 
 ---
 
@@ -326,4 +326,4 @@ The paper also mentions an **optional** fifth injection point, an Archival Polic
 | [`docs/design.md`](../docs/design.md) | Design decisions (incl. D21, type-level SeedProduceOverlap detection; D22, examples and manual as deliverable assets) |
 | [`docs/architecture.md`](../docs/architecture.md) | Architecture: crate dependencies, data flow, deployment view, networked evolution |
 | [`docs/skill-adaptation.md`](../docs/skill-adaptation.md) | Artifacts adapted to the two skills (another repository); complements this directory |
-| `docs/pactv1_rev2.md` | The paradigm specification master (paper manuscript family, not in the public repository); all §x.y references here point to it |
+| `docs/pactv1_rev3.md` | The paradigm specification master (paper manuscript family, not in the public repository); all §x.y references here point to it |

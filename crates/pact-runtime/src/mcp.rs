@@ -9,7 +9,9 @@ use crate::error::RuntimeError;
 use async_trait::async_trait;
 use pact_core::{ArchiveEntry, Token};
 use pact_engine::notify::Notification;
-use pact_engine::views::{ArchiveView, CounterView, DomainSummary, GateClause, StatusView};
+use pact_engine::views::{
+    ArchiveView, CounterView, DomainListing, DomainSummary, GateClause, StatusView,
+};
 use pact_http::dto::{
     DomainsResp, EnabledOption, EnabledResp, EntryResp, ErrorBody, GatesResp, TokenResp,
 };
@@ -49,10 +51,12 @@ pub struct McpClient {
     svc: RunningService<RoleClient, EventNotifier>,
     wake: Mutex<Option<mpsc::UnboundedReceiver<Notification>>>,
     domain: String,
+    /// 实例键；`None` = `default` 实例（D27）。
+    instance: Option<String>,
 }
 
 impl McpClient {
-    /// 拉起 `bin` 子进程并完成 MCP 握手。
+    /// 拉起 `bin` 子进程并完成 MCP 握手（作用于 `default` 实例）。
     pub async fn spawn(
         bin: impl AsRef<Path>,
         endpoint: &Endpoint,
@@ -79,7 +83,14 @@ impl McpClient {
             svc,
             wake: Mutex::new(Some(rx)),
             domain: domain.into(),
+            instance: None,
         })
+    }
+
+    /// 绑定实例键（缺省 `default` 实例，D27）。
+    pub fn with_instance(mut self, instance: impl Into<String>) -> Self {
+        self.instance = Some(instance.into());
+        self
     }
 
     /// 调用工具并把 §6 线上格式 JSON 解析为 `T`；工具报错时按 §6.3 结构化体映射为
@@ -124,7 +135,11 @@ impl ParticipantClient for McpClient {
         &self.domain
     }
 
-    async fn list_domains(&self) -> Result<Vec<String>, RuntimeError> {
+    fn instance(&self) -> Option<&str> {
+        self.instance.as_deref()
+    }
+
+    async fn list_domains(&self) -> Result<Vec<DomainListing>, RuntimeError> {
         let r: DomainsResp = self.call("pact_list_domains", json!({})).await?;
         Ok(r.domains)
     }
@@ -133,7 +148,11 @@ impl ParticipantClient for McpClient {
         let _: DomainSummary = self
             .call(
                 "pact_domain_load",
-                json!({ "name": self.domain, "declaration": declaration }),
+                json!({
+                    "name": self.domain,
+                    "declaration": declaration,
+                    "instance": self.instance,
+                }),
             )
             .await?;
         Ok(())
@@ -150,6 +169,7 @@ impl ParticipantClient for McpClient {
                 "pact_seed",
                 json!({
                     "domain": self.domain,
+                    "instance": self.instance,
                     "participant": participant,
                     "type": ty,
                     "thing_ref": thing_ref,
@@ -170,6 +190,7 @@ impl ParticipantClient for McpClient {
                 "pact_produce",
                 json!({
                     "domain": self.domain,
+                    "instance": self.instance,
                     "participant": participant,
                     "type": ty,
                     "predecessors": predecessors,
@@ -183,7 +204,12 @@ impl ParticipantClient for McpClient {
         let r: TokenResp = self
             .call(
                 "pact_read",
-                json!({ "domain": self.domain, "participant": participant, "token_id": token_id }),
+                json!({
+                    "domain": self.domain,
+                    "instance": self.instance,
+                    "participant": participant,
+                    "token_id": token_id,
+                }),
             )
             .await?;
         Ok(r.token)
@@ -200,6 +226,7 @@ impl ParticipantClient for McpClient {
                 "pact_consume",
                 json!({
                     "domain": self.domain,
+                    "instance": self.instance,
                     "participant": participant,
                     "token_id": token_id,
                     "request_id": request_id,
@@ -213,7 +240,11 @@ impl ParticipantClient for McpClient {
         let r: GatesResp = self
             .call(
                 "pact_my_gates",
-                json!({ "domain": self.domain, "participant": participant }),
+                json!({
+                    "domain": self.domain,
+                    "instance": self.instance,
+                    "participant": participant,
+                }),
             )
             .await?;
         Ok(r.gates)
@@ -223,32 +254,48 @@ impl ParticipantClient for McpClient {
         let r: EnabledResp = self
             .call(
                 "pact_enabled",
-                json!({ "domain": self.domain, "participant": participant }),
+                json!({
+                    "domain": self.domain,
+                    "instance": self.instance,
+                    "participant": participant,
+                }),
             )
             .await?;
         Ok(r.options)
     }
 
     async fn counter(&self) -> Result<CounterView, RuntimeError> {
-        self.call("pact_counter_query", json!({ "domain": self.domain }))
-            .await
+        self.call(
+            "pact_counter_query",
+            json!({ "domain": self.domain, "instance": self.instance }),
+        )
+        .await
     }
 
     async fn archive(&self) -> Result<Vec<ArchiveEntry>, RuntimeError> {
         let r: ArchiveView = self
-            .call("pact_archive_query", json!({ "domain": self.domain }))
+            .call(
+                "pact_archive_query",
+                json!({ "domain": self.domain, "instance": self.instance }),
+            )
             .await?;
         Ok(r.entries)
     }
 
     async fn status(&self) -> Result<StatusView, RuntimeError> {
-        self.call("pact_status", json!({ "domain": self.domain }))
-            .await
+        self.call(
+            "pact_status",
+            json!({ "domain": self.domain, "instance": self.instance }),
+        )
+        .await
     }
 
     async fn subscribe(&self) -> Result<WakeStream, RuntimeError> {
         let _: Value = self
-            .call("pact_subscribe", json!({ "domain": self.domain }))
+            .call(
+                "pact_subscribe",
+                json!({ "domain": self.domain, "instance": self.instance }),
+            )
             .await?;
         let rx =
             self.wake.lock().await.take().ok_or_else(|| {

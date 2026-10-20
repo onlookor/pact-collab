@@ -34,6 +34,8 @@ tokio-stream = { workspace = true }
 futures = { workspace = true }
 toml = { workspace = true }
 clap = { workspace = true }
+# data_dir 独占锁（D27：单权威为进程级保证）
+fs4 = "0.13"
 
 [dev-dependencies]
 tempfile = { workspace = true }

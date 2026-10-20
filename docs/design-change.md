@@ -1,5 +1,67 @@
 # 设计变更记录
 
+## 2026-10-20（第 21 轮，术语精化：「域实例」）
+
+- **触发**：用户指出上一轮 G2 把「域」改为「实例」的措辞会与工程上的「实例」混淆，且不排除将来细化出更多类型-实例分离（如分布式 counter），要求统一改为「域实例」。
+- **术语定案**：中文文档/注释中，指 D27 实例键的概念一律写「**域实例**」——即论文 `Counter instance`（§1.3 描述性短语），**与论文已废弃的英文 `domain instance` 无关**，亦不替代论文术语；映射登记于 `design.md` D27「术语登记」。论文母本 `docs/pactv1_rev3.md` 未触碰。
+- **改点（正文措辞，零语义）**：`design.md` D23（2 处）、§1 crate 注释、§6.3（411）、§7.1（445）、§8.1（521/523）、§8.2（527）、§8.3（531）；`requirements.md` FR9/FR10/FR12/FR15/NFR2；`manual.md` Rule-T 行；`architecture.md` §2.3 启动恢复步骤。**有意保留**：论文条款名「单实例作用域」及 G1 CPN 行的论文锚定表述（保持与论文一致，不用中文「域实例」）。
+- **代码侧（无行为变化）**：注释口径「每实例/同一实例/逐实例/不锁定实例」→「每域实例/同一域实例/逐域实例/不锁定域实例」——`pact-store/src/{log,event,store}.rs`、`pact-engine/src/{engine,lib,notify}.rs`、`pact-http/src/dto.rs`；另修 `pact-core/src/domain.rs` 中误用「域实例」指 **Domain 声明**的文档注释 → 「域声明」，消除与中文「域实例（= 实例键）」的撞义。
+- **形式层语义不变**：`pact-parser`/`pact-analysis`/`pact-compose` 零改动；`pact-core` 仅 `domain.rs` 一处文档注释措辞（无类型/无行为变化）。
+- **验证**（2026-10-20 收尾重跑）：`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零告警、`cargo test --workspace` **123 passed / 0 failed**。
+
+## 2026-10-20（第 20 轮，多实例约束覆盖核对后的文档补齐 G1/G2/G3）
+
+- **触发**：见 `docs/requirements-change.md` 第 12 轮。核对基准 = rev3 与多实例直接相关的条款（§1.3 两半、§1.4.1 唯一性、Rule-T scope note、§4.5/§B.2 CPN scope、§1.8 及 §4.1–4.3 术语）；结论：C1/C2/C3/C6 全覆盖，C4/C5 未登记（G1）、幂等作用域措辞滞后（G2）、母本 §1.4.1 Rationale 与 Definition 措辞不一致（G3）。
+- **G1（补登记）**：`design.md` 决策 **D12** 行与 §11 **阶段 6** 行补入论文 §4.5/§B.2 的 **单实例作用域**约束——每个 Counter 实例独立编码、库所与迁移不跨实例共享、跨实例协同不入 `N(D)`；作为 `pact-cpn`（阶段 6，未开始）的实现前置条件。
+- **G2（措辞收窄）**：把「以域名为会话键」的残留文本统一收窄为「以实例为会话键」（D27/FR19）。改动点：决策 **D23**（「同域其他行」「同域内重复 `request_id`」）、§6.3 幂等段（411 行）、Consumed 自足段（489 行）、§8.1 启动恢复（518 行「逐域取最后一次 DomainLoaded」）与 Rule-E 处理顺序（520 行「同域 `request_id`」）、§8.2 通知（524 行「每域一个 broadcast」）、§8.3 Rule-T（528 行「不锁定域」）、§1 crate 注释（48 行「多域会话」→「多域/多实例会话」），以及 **§7.1/§7.2 存储布局**修正为 D27 布局（`<domain>/<instance>.events.jsonl` + `<instance>.snapshot.json` + `declaration.pact` + `pactd.lock`；`seq` 明确为**每实例**单调）。
+- **G3（母本就地修订，不新增版本）**：经用户**特批**，就地修订 `docs/pactv1_rev3.md` §1.4.1 的 **Rationale**——原文 "tokens carry globally unique IDs" 与同节 Definition（"`TokenId` is unique within its Counter; implementations may strengthen this to cross-instance uniqueness…"，121 行）不一致，改为与 Definition 一致（保留「实现可加强为跨实例唯一」的 Q4 口径）。**不产生修订版本**：仍为 rev3（文件就地修改，不新建 rev4、不改任何 rev3 指针）；rev2→rev3 **差异块由 9 增至 10**（新增该 1 处纯措辞一致性修订，零语义）。
+- **代码侧（无行为变化）**：仅修正 6 处**文档性注释**口径（`pact-store/src/log.rs`、`pact-store/src/event.rs` ×2、`pact-engine/src/notify.rs`、`pact-engine/src/engine.rs` 配置项注释、`pact-http/src/dto.rs`）——「每域」/「同域」→「每实例」/「同一实例」。无代码语义改动。
+- **形式层不变**：`pact-core`/`pact-parser`/`pact-analysis`/`pact-compose` 零改动；本轮仅文本与注释。
+- **验证**（2026-10-20 收尾重跑；沙箱宿主链接器方案）：`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零告警、`cargo test --workspace` **123 passed / 0 failed**（与阶段 10 基线一致）。
+
+## 2026-10-20（第 19 轮，阶段 10 实施：域双键实例化落地，路径 β）
+
+- **触发**：用户「按计划实施」——实施阶段 10（`docs/design.md` §11 行 10，D27 路径 β）。**范围仅 D27 双键本体**：存储双列 + 域子目录、引擎声明注册表 + 实例会话、接口全链、通用护栏；**阶段 8 仍暂停**（schema 版本化、日志压缩、health/metrics/PID、ACL/审计读视图本轮不做）。
+- **D27 行更新**：把「派生待定」节替换为「派生细节定案 + 已实现（见 §9.5 / §11 行 10）」——旧日志 fail-fast、实例键路径段承载、`DomainLoaded` 不新增 `instance`、声明原文另存 `declaration.pact`、护栏 flock + `DomainBusy`。
+- **实现决策（本轮推导 R1–R10）**：
+  - R1 新增 `InstanceKey{domain, instance}`（定义于 `pact-store`，engine 复用；`Display = "domain/instance"`）；
+  - R3 `DEFAULT_INSTANCE = "default"` 常量置于 `pact-engine`；
+  - R4 `pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` **零改动**（形式语义不变）；
+  - R5「实例非空」判据 = `last_seq > dl_seq`（`DomainLoaded.seq`）；
+  - R6 `POST /domains` = declare + instantiate `default`；R7 `GET /domains` 响应由 `Vec<String>` 改 `Vec<DomainListing{name, instances}>`；
+  - R8 recover 顶层遗留旧文件 → `LegacyLayoutDetected` fail-fast；R9 flock 独占锁落在 `pact-http::daemon` 启动路径（新依赖 `fs4`）；
+  - R10 引擎内部 `declare()` / `instantiate()` 私有方法 + 公开命令 `LoadDomain` 与新增 `Instantiate`。
+- **逐层落地**：
+  - **pact-store**：`key.rs`（`InstanceKey` + `validate`）、`error.rs`（`InvalidInstanceName` / `LegacyLayoutDetected` / 共享谓词 `valid_key_name`）、`log.rs`（`domain_dir` + 三参 `events_path`/`snapshot_path` + `declaration_path`）、`store.rs`（重写：`logs: Mutex<BTreeMap<InstanceKey, (EventLog, u64)>>`、`RecoveredInstance{key, events, truncated}`、先探测旧布局再两层扫描、`write_declaration`/`load_declaration`、`last_seq(&InstanceKey)`、`list_instances`/`list_domains`）、`index.rs`（`events(domain, instance, …, PRIMARY KEY(domain,instance,seq))`、`tokens(token_id PK, domain, instance, …)`；`open()` 自愈：无 instance 列则 DROP 重建）。
+  - **pact-engine**：`declarations: BTreeMap<String, DeclarationEntry>` + `instances: BTreeMap<InstanceKey, InstanceSession>`；`InstanceSession{declaration, domain, state, last_seq, dl_seq, events_since_snapshot, terminated, consumed_requests, notify}` + `is_occupied()`；`EngineError` 删 `DomainNotFound`、增 `InstanceNotFound`/`DomainNotDeclared`/`InstanceExists`/`DomainBusy`；facade 11 动作方法收 `key: InstanceKey`、新增 `instantiate`/`list_domains`、`load_domain` 增 `instance`/`force` 并先做 `validate_domain_name` + `validate_instance_name`（防路径穿越）；`views.rs` 增 `DomainSummary.instance` 与 `DomainListing`；`notify.rs` `Notification.instance`（非 Option）。
+  - **pact-http**：路由增 `POST /domains/{d}/instances` 与 `/domains/{d}/instances/{i}` 任何段 + 实例级镜像组；所有 handler 抽 `*_inner(&ServerState, key, …)` + default/instance 双薄 wrapper（auth 统一在 `*_inner`，实例路由同受令牌约束）；`dto.rs` 增 `LoadDomainReq.instance/force`、`InstantiateReq`、`DomainsResp → Vec<DomainListing>`、`DomainInfo.instance`；`client.rs` `base_path(domain, instance)`（None/`default` ⇒ 默认族）+ 22 方法加 `instance` + `instantiate`；`daemon.rs` 增 `acquire_data_dir_lock`（`<data_dir>/pactd.lock`）；`From<EngineError>` 增 `InvalidDomainName`/`InvalidInstanceName` → 400（原落 500）。
+  - **pact-cli**：`DomainCmd::Load` 加 `instance`/`force`；新增 `Instantiate`/`Instances`；`Info`/`Unload`/Seed/Produce/Read/Consume/`CounterCmd::Ls`/`ArchiveCmd::Ls`/`GatesCmd::Show|Enabled|Status` 加 `--instance`；`list` 打印 `name [instances…]`。
+  - **pact-mcp**：15 → **16** 工具，新增 `pact_domain_instantiate`；`LoadIn.instance/force`；各 In 加 `#[serde(default)] instance: Option<String>`；`ComposeIn` **移除** `instance`（compose 只作用 default，消除 clippy dead_code）。
+  - **pact-runtime**：`ParticipantClient` 增 `fn instance()`；`RestClient`/`McpClient` 增 `instance` + `with_instance`；新增自由函数 `bound_ready(listings, domain, instance)`；`drive()`/`executor` 域发现改用 `bound_ready` + `list_domains`；`Orchestrator` 增 `instance` + `with_instance`；bin `FileConfig` 增 `#[serde(default)] instance`。
+- **测试（FR13 四层）**：改造既有锚点（`engine_integration.rs` 全文重写、`daemon_e2e.rs`、`cli_e2e.rs`、`mcp_e2e.rs` 工具数 15→16、`unattended_e2e.rs`、`runtime_e2e.rs`）+ 新增 β 专项：engine 集成 3（`same_declaration_supports_multiple_instances` / `replacing_declaration_does_not_disturb_running_instance` / `declaration_backfill_supports_new_instances_after_restart`）；daemon e2e 2（`instance_routes_are_isolated` / `invalid_key_names_rejected_without_touching_fs`）；cli e2e 1（`instance_commands_and_default_fallback`）；runtime e2e 1（`instance_binding`，两实例并发自驱）；daemon 单元 1（`data_dir_lock_is_exclusive`）。
+- **两处安全修复（详见「安全审视」）**：① flock 护栏因 `fs4::fs_std::FileExt::try_lock_exclusive` 返回 `Result<bool>` 而被 `Ok(false)` 静默放行 → 改为检查 bool；② 非法域名/实例名原落 HTTP 500 → 加 `From<EngineError>` 映射到 400 `InvalidDomainName`/`InvalidInstanceName`。
+- **验证输出摘录**（沙箱，宿主机工具链包装 `/tmp/hostlink`）：
+  ```
+  cargo fmt --all --check                               → 无输出（FMT_OK）
+  cargo clippy --workspace --all-targets -- -D warnings → 零警告
+  cargo test --workspace                                → TOTAL_PASSED=123（基线 110 + β 专项，全绿）
+  ```
+- **文档**：`requirements.md`（FR19 细化 + 实现状态）、`design.md`（D27 行、§9.2 实例路由 + 错误码小节、§9.3 CLI 实例命令、§11 阶段 10 状态 → 已完成）、`architecture.md`（§1 图：引擎声明注册表 + 实例会话表 / 存储域子目录布局；§2.3 启动恢复；§5 多实例行 → 已实现 + 存储布局定案）、`manual.md`（§7.1 存储布局、§8.1 CLI 表、§8.2 REST 表、§8.3 MCP 16 工具、§9.4 错误码、§10 故障排查、§11 限制 9/10）、四份 change 文档。
+- **规范母本未触碰**：`docs/pact*`（rev1/rev2/rev3）全程未改；本轮为实现落地，不新增范式语义（不触发边界判据 4）。
+- **沙箱构建偏差**：沙箱 rootfs 无链接器/C 编译器，构建测试经宿主机 `/run/host` 工具链包装（`/tmp/hostlink`，`ld`→`ld.bfd`）完成，**未安装任何包、未改 /usr**（同第 15/17 轮做法）。
+
+## 2026-10-20（第 18 轮，域双键实例化的形式层裁定与论文 rev3 切换）
+
+- **触发**：用户提问「两个同一个域的项目并行如何处置？」→ 指示「暂停实施阶段 8，评估模型 C 的全面影响，包括论文（可能需要领域专家）」。评估产出根目录 `model-c-impact.md`（五层 × 三档判定 + 阶段 8 交叉标注 + 专家问题清单）。
+- **触发事实（评估核出）**：域名今天**既是定义标识又是会话键**——`LoadDomain` 为替换语义（同名额重置会话、清快照、seq 续接），两个并行项目共用同一域名时第二次 load 会**销毁**第一本的 Counter 与快照；域名直接作文件名与 REST 路由键；`{d}:analyze`/`{d}:compose` 已占用 `:suffix` 命名空间；全仓无 `data_dir` 锁。
+- **领域专家裁定**（咨询简报 `model-c-expert-brief.md`，答复全文带回）：Q1 **(a)** 概念承认——以 §1.3「实现自由」形式落地；Q2 **(a)** 术语消歧——指「声明/组合结果」的 `domain instance` 统一改称 `domain declaration`；Q3 **(a)+(c)** 限定重述——§1.3 集中说明 + Rule-T 增 scope note；Q4 保留「globally unique」但**作用域收窄至该 Counter**，实现以 ULID 加强为跨实例唯一；Q5 确认**无任何论文级不变量或定理依赖「一个域名至多一本 Counter」**；Q6 确认 CPN 编码需加单实例作用域说明；Q7 **不新增正式术语**（工程侧用描述性短语 `Counter instance`）。总括口径：不涉 SOS 规则/GateHolds/GateExpr/良构约束/静态分析算法的语义修改；实例划分属实现自由**不越界**；母本修订须用户显式确认。
+- **用户裁决**：破例授权改论文为 rev3；**立项模型 C**；实现走**路径 β**（`pact-store`/索引显式 `(domain, instance)` 双列 + 引擎**声明注册表**，`declare` 与 `instantiate` 分离）。
+- **论文 rev3 落地**（新增 `docs/pactv1_rev3.md`，`pactv1_rev2.md` 留作历史）：5 类改动共 **9 个 diff 块**——§1.3 增列「Counter instantiation and partitioning」条款；§1.4.1 定义段重写（TokenId 作用域）；Rule-T 后增「Scope note」；§4.5 与 §B.2 各增 CPN 单实例作用域说明；§1.8 定理行及 §4.1/§4.2/§4.3 四处 `domain instance` → `domain declaration`。**`diff -u` 核对结论：仅此 9 处增补/替换，零文法变化、零语义变化、零行丢失**（§x.y 编号不变，全部既有引用仍有效）。
+- **母本引用同步**：`design.md` / `requirements.md` / `manual.md` / `skill-adaptation.md` / `examples/README.md` / `examples/README.zh-CN.md` 的 `docs/pactv1_rev2.md` 指针全部改为 rev3（历史变更文档中的 rev2 记述保留不动）。
+- **文档落地**：`design.md` 新增 **D27**（域双键实例化与形式层裁定：术语登记 + 三项待定细节）＋ §11 新增**阶段 10**、阶段 8 验收注明与实例化耦合；`requirements.md` 新增 **FR19 域双键实例化**、FR10 多域会话行补实例维度、NFR7 补多实例边界（同 `data_dir` 须 flock 保证单写者）。
+- **零代码改动**：本轮全程未改任何 crate；`pact-core` 纯度白名单不变；**阶段 8 实施保持暂停**（其三项中 (1) 压缩与 (3) ACL/审计与实例化强耦合，(2) 的 `:compact` 路由与既有 `:suffix` 分发冲突，须随双键一并重设计）。
+- **待裁决（D27 细节 3 项，用户）**：存储布局（单层文件名 vs 域子目录）、默认实例名取值、实例与声明版本的绑定（创建时快照声明 vs 引用最新）。
+
 ## 2026-10-19（第 17 轮，阶段 7 `pact-runtime` 落地）
 
 - **触发**：用户批准实施阶段 7（`docs/design.md` §11 行 7；D24），按 `spec.md`/`tasks.md`（**临时规划产物**，实现并更新 `docs/` 后删除）执行；硬约束为 pact-core / pact-store / pact-engine / 三接口 **零改动**。

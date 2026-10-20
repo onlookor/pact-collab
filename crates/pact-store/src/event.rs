@@ -26,7 +26,7 @@ pub enum Event {
         token: Token,
     },
     /// 消费：token 移出 Counter 入 Archive，携带 token 全量快照，使单行日志自足
-    /// （审计与重放均不依赖同域其他行；`exhausted_at` = `ts`，`exhausted_by` = `by`）。
+    /// （审计与重放均不依赖同一域实例其他行；`exhausted_at` = `ts`，`exhausted_by` = `by`）。
     /// `request_id` 为可选幂等键（客户端重试去重；见引擎提交契约）。
     Consumed {
         seq: u64,
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn apply_event_consumed_is_self_contained() {
-        // 空 Counter 上重放 Consumed：token 全量随事件而来，无需反查同域其他行
+        // 空 Counter 上重放 Consumed：token 全量随事件而来，无需反查同一域实例其他行
         let mut state = CounterState::new();
         let ev = Event::Consumed {
             seq: 2,

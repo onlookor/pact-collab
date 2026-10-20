@@ -4,7 +4,7 @@ use crate::error::RuntimeError;
 use async_trait::async_trait;
 use pact_core::{ArchiveEntry, Token};
 use pact_engine::notify::Notification;
-use pact_engine::views::{CounterView, GateClause, StatusView};
+use pact_engine::views::{CounterView, DomainListing, GateClause, StatusView};
 use pact_http::dto::EnabledOption;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -70,16 +70,29 @@ impl WakeStream {
     }
 }
 
+/// 绑定「域 + 实例」是否已在 daemon 就绪（非引导参与者的发现判据，D27）。
+///
+/// `instance = None` 视为 [`pact_engine::DEFAULT_INSTANCE`]。
+pub fn bound_ready(listings: &[DomainListing], domain: &str, instance: Option<&str>) -> bool {
+    let target = instance.unwrap_or(pact_engine::DEFAULT_INSTANCE);
+    listings
+        .iter()
+        .any(|l| l.name == domain && l.instances.iter().any(|i| i == target))
+}
+
 /// 参与者面向 daemon 的操作面（驱动循环 / 执行器所需最小集合）。
 ///
-/// 所有方法对**绑定域**操作（构造时指定）；`load_domain` 亦作用于该域。
+/// 所有方法对**绑定域 + 绑定实例**操作（构造时指定）；`load_domain` 作用于该实例。
 #[async_trait]
 pub trait ParticipantClient: Send + Sync {
-    /// 绑定的域名。
+    /// 绑定的域名（定义键）。
     fn domain(&self) -> &str;
 
-    /// 列出 daemon 上已加载的域。
-    async fn list_domains(&self) -> Result<Vec<String>, RuntimeError>;
+    /// 绑定的实例名（实例键）；`None` = `default` 实例。
+    fn instance(&self) -> Option<&str>;
+
+    /// 列出 daemon 上已加载的域及各自实例（发现判据，D27）。
+    async fn list_domains(&self) -> Result<Vec<DomainListing>, RuntimeError>;
 
     /// 加载/覆盖绑定域的声明（引导参与者使用）。
     async fn load_domain(&self, declaration: &str) -> Result<(), RuntimeError>;

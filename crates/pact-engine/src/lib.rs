@@ -2,10 +2,10 @@
 //!
 //! 职责边界（引擎只编排不判定，D14）：
 //! - 命令串行化：mpsc 通道 + actor 任务，检查与应用在同一临界区内原子完成；
-//! - 多域会话（D7）：一个引擎实例承载多个命名域；
+//! - 多域会话（D7）+ 域双键（D27）：一个引擎实例承载多个定义键与其实例；
 //! - 依赖注入：Clock（D8）与 IdGen（D10）由构造方注入，
 //!   pact-core 保持纯函数语义；
-//! - 通知总线（D4）：每域 broadcast 通道，Rule-W 唤醒；
+//! - 通知总线（D4）：每域实例 broadcast 通道，Rule-W 唤醒；
 //! - 持久化编排：调用 pact-store 完成事件落盘、快照与恢复。
 //!
 //! 模块：
@@ -21,7 +21,10 @@ pub mod notify;
 pub mod views;
 
 pub use clock::{iso8601_utc, Clock, LogicalClock, SystemClock};
-pub use engine::{Command, Engine, EngineConfig, EngineError};
+pub use engine::{Command, Engine, EngineConfig, EngineError, DEFAULT_INSTANCE};
 pub use idgen::{IdGen, SequentialIdGen, UlidGen};
 pub use notify::{Notification, NotificationKind, NotificationSummary};
-pub use views::{AnalysisReport, ArchiveView, CounterView, DomainSummary, GateClause, StatusView};
+pub use pact_store::InstanceKey;
+pub use views::{
+    AnalysisReport, ArchiveView, CounterView, DomainListing, DomainSummary, GateClause, StatusView,
+};

@@ -1,6 +1,35 @@
 # 技能适配变更记录
-
 本文件只追加，不改写已登记批次。当前有效内容见 `docs/skill-adaptation.md`。
+
+## 2026-10-20（第 9 轮，术语精化：中文「域实例」与既有「禁用 domain instance」口径的关系）
+
+- **触发**：用户要求中文文档把指 D27 实例键的「实例」统一写「**域实例**」（详见 `docs/design-change.md` 第 21 轮、`docs/requirements-change.md` 第 13 轮）。
+- **与既有口径的关系（消歧）**：第 6/7 轮曾记「工程侧不使用 `domain instance` 指运行实例」——该禁令针对**英文** `domain instance`（论文 rev3 已把它改指定义键 `domain declaration`）。本次新增的是**中文**术语「域实例」，经 `docs/design.md` D27 明确映射为论文 `Counter instance`（§1.3），二者不矛盾；**英文 `domain instance` 仍禁用**。
+- **对技能适配产物：无影响**：`docs/skill-adaptation.md` 正文不改；`~/projects/skills/` 下 4 件 `.pact` 不改动；rev3 文法与六项良构约束不变。
+
+## 2026-10-20（第 8 轮，G3 母本就地修订（不新增版本）对技能适配的影响）
+
+- **触发**：用户特批就地修订 `docs/pactv1_rev3.md` §1.4.1 的 **Rationale**（措辞一致性，零语义变化；详见 `docs/design-change.md` 第 20 轮 G3）。**不产生修订版本**：仍为 rev3，文件就地修改，不新建 rev4、不改任何 rev3 指针。
+- **对技能适配产物：无影响。** `~/projects/skills/` 下 4 件 `.pact` 不改动；§1.4.1 的 TokenId 唯一性作用域本就在 rev3 已按「该 Counter」表述（Definition，121 行），本次仅将同节 Rationale 的 "globally unique" 措辞对齐；§1.3 / Rule-T scope note / §4.5 / §B.2 等**其余 rev3 条款未再改动**；rev3 指针不变。
+- **`docs/skill-adaptation.md` 正文不改**（§1–§10 维持）；技能适配的产物清单 / 验收清单 / 三档粒度差异矩阵 / E1–E7 表达边界均维持。
+
+## 2026-10-20（第 7 轮，阶段 10 域双键实例化落地：技能适配产物零影响）
+
+- **触发**：用户「按计划实施」——阶段 10（D27 路径 β）在**引擎侧**落地（详见 `docs/design-change.md` 第 19 轮、`docs/requirements-change.md` 第 11 轮）。
+- **对技能适配产物：无影响。** `~/projects/skills/` 下 4 件 `.pact`（`re_fragment.pact` + `se_tier{1,2,3}_*.pact`）**不改动**——实例是**部署期**概念（同一域声明并发多本 Counter），不在 `.pact` 声明文法内、也不在 §1–§8 的产物清单/验收清单/三档粒度差异矩阵/E1–E7 表达边界内；rev3 文法与六项良构约束未变，`pact analyze` / `compose` 的判定与产物不变。
+- **术语登记复用**（承第 6 轮）：定义键 = 论文 `domain declaration`；实例键 = `Counter instance`（§1.3 描述性短语）。工程侧**不使用** `domain instance` 指运行实例。
+- **引擎接口形态变化（供技能侧脚本注意，但不涉及 `.pact` 产物）**：REST 默认族 `/domains/{d}/…` 语义 ≡ `default` 实例；实例级走 `/domains/{d}/instances/{i}/…`；CLI 域操作命令新增可选 `--instance`（缺省 `default`）、`domain instantiate` / `domain instances`、`--force`；MCP 16 工具（新增 `pact_domain_instantiate`）。既有不带实例的调用与脚本**语义不变**（落到 `default`）。
+- **存储布局变化**：`<data_dir>/<domain>/<instance>.events.jsonl`（域子目录）；顶层遗留单层文件启动 fail-fast（须人工迁移）。技能适配验收（§9）若在沙箱内以旧布局数据复跑，须先迁移。
+- **`docs/skill-adaptation.md` 正文不改**（§1–§10 全部维持）；`docs/pact*` 母本未触碰；引擎本轮变更均为实现落地，不新增范式语义。
+
+## 2026-10-20（第 6 轮，母本 rev2 → rev3 与术语登记）
+
+- **触发**：领域专家就「一 Domain 声明 ↔ 多并发 Counter 实例」裁定后（要点见 `docs/design-change.md` 第 18 轮），用户破例授权改论文为 rev3；`docs/pactv1_rev3.md` 成为新母本。
+- **rev3 改动性质**：仅 5 类**术语与作用域增补**——§1.3 增列「Counter instantiation and partitioning」条款、§1.4.1 TokenId 作用域重写、Rule-T 增 scope note、§4.5 与 §B.2 增 CPN 单实例作用域、§1.8 及 §4.1–4.3 四处 `domain instance` → `domain declaration`。**§3.1 文法、六项良构约束、Appendix A 算法与 §1.8 组合四条件零变化**（`diff -u` 已核，共 9 个 diff 块）。
+- **对技能适配产物的影响：无。** `~/projects/skills/` 下 4 件 `.pact` 无需改动——rev3 不含任何文法或约束变更，`pact analyze` / `compose` 的判定与产物不变；§1–§8 的产物清单、验收清单、三档粒度差异矩阵、E1–E7 表达边界全部维持。
+- **术语登记（工程侧口径，供本文件族引用）**：定义键 = 论文 `domain declaration`；实例键 = `Counter instance`（论文 §1.3 描述性短语，非正式原语）。工程侧**不使用** `domain instance` 指运行实例，以免与改称后的 `domain declaration` 混淆；技能适配产物既不涉及实例维度，也不需要在 `.pact` 中表达实例——实例是**部署期**概念（同一域声明并发多本 Counter），不在声明文法内。
+- **本文件族改动**：`skill-adaptation.md` 头部加「母本版本说明」，声明正文中的 "rev2" 一词与 rev3 指同一文法、不逐处改写；`docs/pactv1_rev2.md` 指针改为 rev3。
+- **引擎代码零改动**；阶段 8 实施维持暂停。
 
 ## 2026-10-19（第 5 轮，开发环境描述更正）
 

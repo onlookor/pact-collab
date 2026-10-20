@@ -238,7 +238,12 @@ fn lifecycle_through_real_daemon() {
     assert!(human.contains("terminated="), "人类输出: {human}");
 
     // —— 离线 replay 对照：daemon 产出的事件日志重放后状态一致 ——
-    let log = dir.path().join("data").join("proj.events.jsonl");
+    // 域双键（D27）：日志落在域子目录下的 default 实例文件
+    let log = dir
+        .path()
+        .join("data")
+        .join("proj")
+        .join("default.events.jsonl");
     assert!(log.exists(), "事件日志应存在");
     let replay = ok_json(
         &Command::new(env!("CARGO_BIN_EXE_pact"))
@@ -358,4 +363,144 @@ fn offline_commands_without_daemon() {
     assert!(!out.status.success());
     let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
     assert_eq!(err["error"]["code"], "Io");
+}
+
+/// D27：实例级命令与默认回退（CLI 侧）。
+#[test]
+fn instance_commands_and_default_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut daemon, sock) = start_daemon(dir.path());
+
+    let decl_file = dir.path().join("proj.pact");
+    std::fs::write(&decl_file, DECL).unwrap();
+    // 旧用法（无 --instance）落地 default 实例
+    let summary = ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "domain",
+            "load",
+            decl_file.to_str().unwrap(),
+            "--name",
+            "proj",
+        ],
+    ));
+    assert_eq!(summary["instance"], "default");
+
+    // 域清单含实例维度
+    let list = ok_json(&pact(&sock, true, &["domain", "list"]));
+    assert_eq!(list["domains"][0]["name"], "proj");
+    assert_eq!(
+        list["domains"][0]["instances"],
+        serde_json::json!(["default"])
+    );
+
+    // 新增实例 x + instances 子命令
+    let inst = ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "domain",
+            "instantiate",
+            "--domain",
+            "proj",
+            "--instance",
+            "x",
+        ],
+    ));
+    assert_eq!(inst["instance"], "x");
+    let instances = ok_json(&pact(
+        &sock,
+        true,
+        &["domain", "instances", "--domain", "proj"],
+    ));
+    assert_eq!(instances, serde_json::json!(["default", "x"]));
+
+    // 默认回退：不带 --instance 的 seed 落到 default
+    ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "seed",
+            "--domain",
+            "proj",
+            "--participant",
+            "external",
+            "--type",
+            "requirement",
+        ],
+    ));
+    // 实例级 seed：x 两份
+    for _ in 0..2 {
+        ok_json(&pact(
+            &sock,
+            true,
+            &[
+                "seed",
+                "--domain",
+                "proj",
+                "--instance",
+                "x",
+                "--participant",
+                "external",
+                "--type",
+                "requirement",
+            ],
+        ));
+    }
+
+    // Counter 隔离
+    let c_def = ok_json(&pact(&sock, true, &["counter", "ls", "--domain", "proj"]));
+    assert_eq!(c_def["size"], 1);
+    let c_x = ok_json(&pact(
+        &sock,
+        true,
+        &["counter", "ls", "--domain", "proj", "--instance", "x"],
+    ));
+    assert_eq!(c_x["size"], 2);
+
+    // 非空实例再 load 无 --force → DomainBusy（409）
+    let out = pact(
+        &sock,
+        true,
+        &[
+            "domain",
+            "load",
+            decl_file.to_str().unwrap(),
+            "--name",
+            "proj",
+            "--instance",
+            "x",
+        ],
+    );
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "DomainBusy");
+
+    // --force 重置该实例
+    ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "domain",
+            "load",
+            decl_file.to_str().unwrap(),
+            "--name",
+            "proj",
+            "--instance",
+            "x",
+            "--force",
+        ],
+    ));
+    let c_x = ok_json(&pact(
+        &sock,
+        true,
+        &["counter", "ls", "--domain", "proj", "--instance", "x"],
+    ));
+    assert_eq!(c_x["size"], 0, "force 重置 x");
+    let c_def = ok_json(&pact(&sock, true, &["counter", "ls", "--domain", "proj"]));
+    assert_eq!(c_def["size"], 1, "default 不受影响");
+
+    daemon.kill().unwrap();
+    let _ = daemon.wait();
 }

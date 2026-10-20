@@ -5,8 +5,8 @@
 
 use crate::dto::{
     ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody,
-    ErrorDetail, GatesResp, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp,
-    ValidateReq, ValidateResp,
+    ErrorDetail, GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq,
+    TokenResp, ValidateReq, ValidateResp,
 };
 use bytes::Bytes;
 use http::uri::Uri;
@@ -17,6 +17,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use pact_engine::notify::Notification;
 use pact_engine::views::{AnalysisReport, ArchiveView, CounterView, DomainSummary, StatusView};
+use pact_engine::DEFAULT_INSTANCE;
 use serde::de::DeserializeOwned;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -26,6 +27,15 @@ use std::task::{Context, Poll};
 use tower_service::Service;
 
 type Hyper<C> = hyper_util::client::legacy::Client<C, Full<Bytes>>;
+
+/// 域/实例 → 路径基：`None` 或 `default` ⇒ 默认实例路径族；
+/// 其余 ⇒ 实例级镜像组（D27）。
+fn base_path(domain: &str, instance: Option<&str>) -> String {
+    match instance {
+        None | Some(DEFAULT_INSTANCE) => format!("/domains/{domain}"),
+        Some(i) => format!("/domains/{domain}/instances/{i}"),
+    }
+}
 
 /// daemon 错误（§6.3 结构化体）。
 #[derive(Debug)]
@@ -126,10 +136,13 @@ impl Client {
 
     // —— 域生命周期 ——
 
+    /// `POST /domains`：声明 + 实例化（`None` ⇒ 默认实例）。
     pub async fn load_domain(
         &self,
         name: &str,
         declaration: &str,
+        instance: Option<&str>,
+        force: bool,
     ) -> Result<DomainSummary, ClientError> {
         let req = self.json_request(
             Method::POST,
@@ -137,6 +150,24 @@ impl Client {
             Some(&LoadDomainReq {
                 name: name.to_owned(),
                 declaration: declaration.to_owned(),
+                instance: instance.map(str::to_owned),
+                force: Some(force),
+            }),
+        )?;
+        decode(self.dispatch(req).await?).await
+    }
+
+    /// `POST /domains/{d}/instances`：在已登记声明上创建额外实例。
+    pub async fn instantiate(
+        &self,
+        domain: &str,
+        instance: &str,
+    ) -> Result<DomainSummary, ClientError> {
+        let req = self.json_request(
+            Method::POST,
+            &format!("/domains/{domain}/instances"),
+            Some(&InstantiateReq {
+                instance: instance.to_owned(),
             }),
         )?;
         decode(self.dispatch(req).await?).await
@@ -159,23 +190,33 @@ impl Client {
         decode(self.dispatch(req).await?).await
     }
 
-    pub async fn domain_info(&self, domain: &str) -> Result<DomainInfo, ClientError> {
-        let req = self.json_request::<()>(Method::GET, &format!("/domains/{domain}"), None)?;
+    pub async fn domain_info(
+        &self,
+        domain: &str,
+        instance: Option<&str>,
+    ) -> Result<DomainInfo, ClientError> {
+        let req = self.json_request::<()>(Method::GET, &base_path(domain, instance), None)?;
         decode(self.dispatch(req).await?).await
     }
 
-    /// `DELETE /domains/{d}`（204）。
-    pub async fn unload_domain(&self, domain: &str) -> Result<(), ClientError> {
-        let req = self.json_request::<()>(Method::DELETE, &format!("/domains/{domain}"), None)?;
+    /// `DELETE /domains/{d}[/instances/{i}]`（204）。
+    pub async fn unload_domain(
+        &self,
+        domain: &str,
+        instance: Option<&str>,
+    ) -> Result<(), ClientError> {
+        let req = self.json_request::<()>(Method::DELETE, &base_path(domain, instance), None)?;
         expect_empty(self.dispatch(req).await?).await
     }
 
+    /// `POST /domains/{d}:analyze`（定义级，无实例维度）。
     pub async fn analyze_domain(&self, domain: &str) -> Result<AnalysisReport, ClientError> {
         let req =
             self.json_request::<()>(Method::POST, &format!("/domains/{domain}:analyze"), None)?;
         decode(self.dispatch(req).await?).await
     }
 
+    /// `POST /domains/{d}:compose`（作用于默认实例）。
     pub async fn compose(
         &self,
         name: &str,
@@ -194,13 +235,14 @@ impl Client {
     pub async fn seed(
         &self,
         domain: &str,
+        instance: Option<&str>,
         participant: &str,
         ty: &str,
         thing_ref: Option<&str>,
     ) -> Result<TokenResp, ClientError> {
         let req = self.json_request(
             Method::POST,
-            &format!("/domains/{domain}/seeds"),
+            &format!("{}/seeds", base_path(domain, instance)),
             Some(&SeedReq {
                 participant: participant.to_owned(),
                 ty: ty.to_owned(),
@@ -213,6 +255,7 @@ impl Client {
     pub async fn produce(
         &self,
         domain: &str,
+        instance: Option<&str>,
         participant: &str,
         ty: &str,
         predecessors: Vec<String>,
@@ -220,7 +263,7 @@ impl Client {
     ) -> Result<TokenResp, ClientError> {
         let req = self.json_request(
             Method::POST,
-            &format!("/domains/{domain}/tokens"),
+            &format!("{}/tokens", base_path(domain, instance)),
             Some(&ProduceReq {
                 participant: participant.to_owned(),
                 ty: ty.to_owned(),
@@ -234,12 +277,13 @@ impl Client {
     pub async fn read_token(
         &self,
         domain: &str,
+        instance: Option<&str>,
         participant: &str,
         token_id: &str,
     ) -> Result<TokenResp, ClientError> {
         let req = self.json_request(
             Method::POST,
-            &format!("/domains/{domain}/tokens/{token_id}/read"),
+            &format!("{}/tokens/{token_id}/read", base_path(domain, instance)),
             Some(&ParticipantReq {
                 participant: participant.to_owned(),
             }),
@@ -250,13 +294,14 @@ impl Client {
     pub async fn consume(
         &self,
         domain: &str,
+        instance: Option<&str>,
         participant: &str,
         token_id: &str,
         request_id: Option<&str>,
     ) -> Result<EntryResp, ClientError> {
         let req = self.json_request(
             Method::POST,
-            &format!("/domains/{domain}/tokens/{token_id}/consume"),
+            &format!("{}/tokens/{token_id}/consume", base_path(domain, instance)),
             Some(&ConsumeReq {
                 participant: participant.to_owned(),
                 request_id: request_id.map(str::to_owned),
@@ -270,11 +315,13 @@ impl Client {
     pub async fn counter(
         &self,
         domain: &str,
+        instance: Option<&str>,
         ty: Option<&str>,
     ) -> Result<CounterView, ClientError> {
+        let base = base_path(domain, instance);
         let path = match ty {
-            Some(t) => format!("/domains/{domain}/counter?type={t}"),
-            None => format!("/domains/{domain}/counter"),
+            Some(t) => format!("{base}/counter?type={t}"),
+            None => format!("{base}/counter"),
         };
         let req = self.json_request::<()>(Method::GET, &path, None)?;
         decode(self.dispatch(req).await?).await
@@ -283,20 +330,27 @@ impl Client {
     pub async fn archive(
         &self,
         domain: &str,
+        instance: Option<&str>,
         ty: Option<&str>,
     ) -> Result<ArchiveView, ClientError> {
+        let base = base_path(domain, instance);
         let path = match ty {
-            Some(t) => format!("/domains/{domain}/archive?type={t}"),
-            None => format!("/domains/{domain}/archive"),
+            Some(t) => format!("{base}/archive?type={t}"),
+            None => format!("{base}/archive"),
         };
         let req = self.json_request::<()>(Method::GET, &path, None)?;
         decode(self.dispatch(req).await?).await
     }
 
-    pub async fn gates(&self, domain: &str, participant: &str) -> Result<GatesResp, ClientError> {
+    pub async fn gates(
+        &self,
+        domain: &str,
+        instance: Option<&str>,
+        participant: &str,
+    ) -> Result<GatesResp, ClientError> {
         let req = self.json_request::<()>(
             Method::GET,
-            &format!("/domains/{domain}/gates/{participant}"),
+            &format!("{}/gates/{participant}", base_path(domain, instance)),
             None,
         )?;
         decode(self.dispatch(req).await?).await
@@ -305,26 +359,44 @@ impl Client {
     pub async fn enabled(
         &self,
         domain: &str,
+        instance: Option<&str>,
         participant: &str,
     ) -> Result<EnabledResp, ClientError> {
         let req = self.json_request::<()>(
             Method::GET,
-            &format!("/domains/{domain}/enabled?participant={participant}"),
+            &format!(
+                "{}/enabled?participant={participant}",
+                base_path(domain, instance)
+            ),
             None,
         )?;
         decode(self.dispatch(req).await?).await
     }
 
-    pub async fn status(&self, domain: &str) -> Result<StatusView, ClientError> {
-        let req =
-            self.json_request::<()>(Method::GET, &format!("/domains/{domain}/status"), None)?;
+    pub async fn status(
+        &self,
+        domain: &str,
+        instance: Option<&str>,
+    ) -> Result<StatusView, ClientError> {
+        let req = self.json_request::<()>(
+            Method::GET,
+            &format!("{}/status", base_path(domain, instance)),
+            None,
+        )?;
         decode(self.dispatch(req).await?).await
     }
 
-    /// §6.4 SSE：订阅 Counter 变更通知流。
-    pub async fn events(&self, domain: &str) -> Result<EventStream, ClientError> {
-        let req =
-            self.json_request::<()>(Method::GET, &format!("/domains/{domain}/events"), None)?;
+    /// §6.4 SSE：订阅实例的 Counter 变更通知流。
+    pub async fn events(
+        &self,
+        domain: &str,
+        instance: Option<&str>,
+    ) -> Result<EventStream, ClientError> {
+        let req = self.json_request::<()>(
+            Method::GET,
+            &format!("{}/events", base_path(domain, instance)),
+            None,
+        )?;
         let resp = self.dispatch(req).await?;
         let (parts, body) = resp.into_parts();
         if !parts.status.is_success() {

@@ -1,4 +1,4 @@
-//! 快照（设计 §7.2）：`<domain>.snapshot.json` = { seq, state }，
+//! 快照（设计 §7.2）：`<domain>/<instance>.snapshot.json` = { seq, state }，
 //! 原子写（tmp + fsync + rename）。快照丢失/损坏不影响正确性——
 //! 重放兜底（设计 §7.4），故读取失败按"无快照"处理。
 

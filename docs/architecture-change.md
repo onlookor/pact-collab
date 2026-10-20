@@ -1,5 +1,29 @@
 # 架构变更记录
 
+## 2026-10-20（第 10 轮，术语精化：「域实例」）
+
+- **触发**：用户要求把指 D27 实例键的「实例」统一写「域实例」（避免与工程实例混淆，为将来类型-实例分离留余地）；见 `docs/design-change.md` 第 21 轮。
+- **改动**：`architecture.md` §2.3 启动恢复步骤「逐实例（<domain>/<instance>.events.jsonl）」→「**逐域实例**（…）」。§5 多实例承载行的「Counter 实例」「实例键」等为论文/机制术语，保留不改。
+- **形式层与实现零变化**：仅中文措辞；`docs/pact*` 母本未触碰。
+
+## 2026-10-20（第 9 轮，阶段 10 实施：域双键实例化落地）
+
+- **§5 多实例承载行更新**（由第 8 轮的「未实现」转**已实现**）：补入**存储布局定案**——域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、声明原文 `declaration.pact` 同目录）；索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键）；顶层遗留单层文件 fail-fast（`LegacyLayoutDetected`）；同一 `data_dir` 以 flock（`‹data_dir›/pactd.lock`）保证单写者；非空实例再加载默认拒绝（`DomainBusy`，须 `force`）；实例键以路径段承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` ≡ `default`），键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。
+- **§1 架构总览图更新**：引擎层框由「域会话表（`domain → {Domain, CounterState, 订阅者}`）」改为「**声明注册表（`domain → 声明`）+ 实例会话表（`(domain,instance) → {声明, 状态, 订阅者}`）**」；存储层框由「`<domain>.events.jsonl` / `<domain>.snapshot.json` / `index.tursodb`」改为「`<domain>/<instance>.events.jsonl` / `<domain>/<instance>.snapshot.json` / `<domain>/declaration.pact` / `index.tursodb (domain,instance) 双列`」。
+- **§2.3 启动恢复流程更新**：补入「先取 data_dir 独占 flock（`pactd.lock`，第二实例拒绝启动）」「顶层遗留单层文件 → fail-fast（`LegacyLayoutDetected`）须人工迁移」「逐**实例**恢复」「重放后恢复**声明注册表**（读 `<domain>/declaration.pact`）」。
+- **无结构性变更**：crate 划分、依赖方向（单向、无回指）、单机进程/部署拓扑、单一状态变更通道（D6/D19）、引擎被动性（D5）、纯函数语义层均不变；`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` 零改动。本轮变化限于**存储布局细节、引擎状态表形态与接口路由形状**，属既有分层内的落地细化。
+- **质量属性关联**：审计完整性行维持（`DomainLoaded` 存档声明原文）；可恢复性行维持（索引用 `(domain,instance)` 双列，可重建自愈）。
+- **验证**：`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo test --workspace` **123 项全绿**（基线 110 + β 专项）。
+
+## 2026-10-20（第 8 轮，D27 域双键实例化立项：形式层裁定与论文 rev3）
+
+- **本轮无结构性变更**：crate 划分、单机进程/部署拓扑、单一状态变更通道（D6/D19）、数据流、纯函数语义层均不变；引擎被动性（D5）不变。**零代码改动**。
+- **§5 质量属性表新增一行**「多实例承载（FR19，D27，未实现）」：同一域声明可并发承载多个 Counter 实例；实例为接口层一等键，各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / Rule-E 幂等表；同一 `data_dir` 上多实例须以 flock 保证单写者；存储布局（单层文件名 vs 域子目录）待裁决。
+- **背景**：域名今天既是定义标识又是会话键，`LoadDomain` 的替换语义（design.md §8.1）在两个并行项目共用同一域声明时会**销毁**对方 Counter 与快照——这是 D27 立项的直接动因。评估见根目录 `model-c-impact.md`（五层 × 三档判定）。
+- **形式层依据**：领域专家裁定该拆分**不构成形式冲突**，属论文 §1.3「Physical implementation of the Counter」既有的实现自由（Q1 (a)）；论文据此修订为 **rev3**（9 处增补/术语替换，零文法、零语义变化，`diff -u` 已核），母本引用全仓同步至 rev3。裁定要点见 `docs/design-change.md` 第 18 轮。
+- **架构影响待评估**：存储布局（单文件 vs 子目录）、引擎会话表形态（声明注册表 + 实例会话）、事件日志与索引的实例维度、REST 路由形态——均待 3 项细节裁决后在「阶段 10 域双键实例化」实施时评估并回填本文件 §4（数据流 / 启动恢复）与 §5。
+- **可运维性行（NFR7/D25）**仍标"未实现"（属阶段 8），且其验收与实例化耦合（见 `model-c-impact.md` §6）。
+
 ## 2026-10-19（第 7 轮，阶段 7：L3 生产运行层落地）
 
 - **§6 落地核对**：标题去"未实现"、增注"L3 运行层已实现"；新增「落地形态（阶段 7 已完成）」条——`crates/pact-runtime/` 交付传输抽象（`ParticipantClient` / `RestClient` / `McpClient`）、驱动循环 `drive()`、编排 `Orchestrator`、副作用执行器 `SideEffectExecutor`、TOML 配置驱动 bin；部署图标注由"（目标）"改为已交付（L3 lib + bin）。

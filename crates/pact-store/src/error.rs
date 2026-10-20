@@ -30,6 +30,11 @@ pub enum StoreError {
     },
     /// 域名非法（含路径分隔符等，防路径穿越）。
     InvalidDomainName { name: String },
+    /// 实例名非法（与域名同谓词，防路径穿越）。
+    InvalidInstanceName { name: String },
+    /// 检测到旧单层布局（`<data_dir>/<domain>.events.jsonl` 等）残留。
+    /// 双键布局下不再识别，须人工迁移（fail-fast，不静默丢数据）。
+    LegacyLayoutDetected { path: PathBuf },
 }
 
 impl std::fmt::Display for StoreError {
@@ -57,6 +62,15 @@ impl std::fmt::Display for StoreError {
             StoreError::InvalidDomainName { name } => {
                 write!(f, "非法域名：{name:?}（仅允许字母、数字、'-'、'_'）")
             }
+            StoreError::InvalidInstanceName { name } => {
+                write!(f, "非法实例名：{name:?}（仅允许字母、数字、'-'、'_'）")
+            }
+            StoreError::LegacyLayoutDetected { path } => write!(
+                f,
+                "检测到旧单层布局残留 {}：双键布局（<domain>/<instance>.events.jsonl）\
+                 不再识别旧文件，请人工迁移后再启动",
+                path.display()
+            ),
         }
     }
 }
@@ -89,18 +103,32 @@ impl From<serde_json::Error> for StoreError {
     }
 }
 
-/// 域名校验：防路径穿越 / 保留名（store 域名直接映射为文件名）。
+/// 键名公共谓词：非空、仅 [A-Za-z0-9_-]、长度 ≤ 128（天然禁 `..` 与分隔符注入）。
+fn valid_key_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// 域名校验：防路径穿越 / 保留名（store 域名直接映射为目录名）。
 /// 规则：非空，仅 [A-Za-z0-9_-]，长度 ≤ 128。
 pub fn validate_domain_name(name: &str) -> Result<(), StoreError> {
-    let ok = !name.is_empty()
-        && name.len() <= 128
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    if ok {
+    if valid_key_name(name) {
         Ok(())
     } else {
         Err(StoreError::InvalidDomainName {
+            name: name.to_owned(),
+        })
+    }
+}
+
+/// 实例名校验（与域名同谓词；store 实例名直接映射为文件名）。
+pub fn validate_instance_name(name: &str) -> Result<(), StoreError> {
+    if valid_key_name(name) {
+        Ok(())
+    } else {
+        Err(StoreError::InvalidInstanceName {
             name: name.to_owned(),
         })
     }

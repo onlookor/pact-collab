@@ -36,14 +36,24 @@ pub struct GateClause {
     pub condition: Option<GateExpr>,
 }
 
-/// 域加载结果概要。
+/// 域加载结果概要（定义键 + 实例键）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainSummary {
     pub name: String,
+    /// 实例键（默认 `default`）。
+    pub instance: String,
     pub types: usize,
     pub gates: usize,
     pub seed_authority: usize,
     pub last_seq: u64,
+}
+
+/// 定义键及其实例清单（`GET /domains` 线上格式，D27）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainListing {
+    pub name: String,
+    /// 该声明下已存在的实例名（排序去重）。
+    pub instances: Vec<String>,
 }
 
 /// 六项静态分析聚合报告（论文 Appendix A.1–A.6）。

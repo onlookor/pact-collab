@@ -7,7 +7,7 @@
 
 | 记号 | 指向 |
 |------|------|
-| `§x.y` | 范式规范 `docs/pactv1_rev2.md`（论文母本，本手册不复述其推导） |
+| `§x.y` | 范式规范 `docs/pactv1_rev3.md`（论文母本，本手册不复述其推导） |
 | `设计 §x.y` | `docs/design.md`（实现决策与线上格式） |
 | `架构 §x.y` | `docs/architecture.md`（进程与数据流视图） |
 | `示例 §x` | `examples/README.md`（五份通用域 + 两条可复现轨迹） |
@@ -44,7 +44,7 @@ PACT 把你的协作流程写成一份 **域声明**（`.pact` 文件），然�
 | Rule-R 读取 | 取回 token 全量数据 | `pact read` | 非破坏；只对 Counter 上的 token 成立 |
 | Rule-E 消费 | token 移出 Counter 进 Archive | `pact consume` | 显式、无级联、**不可逆** |
 | Rule-W 自驱 | 问「我现在能生产什么」 | `pact enabled` / `pact_subscribe` | 引擎被动，不替你决定 |
-| Rule-T 终止 | `Counter = ∅` 且无人可 Rule-P | `pact status` 的 `terminated` | 信息性判定，**不锁定域** |
+| Rule-T 终止 | `Counter = ∅` 且无人可 Rule-P | `pact status` 的 `terminated` | 信息性判定，**不锁定域实例** |
 
 三条最容易踩的性质：
 
@@ -481,13 +481,18 @@ error [ComposeConflict]: 片段组合冲突（1 处）
 
 ```
 <data_dir>/
-  <domain>.events.jsonl      # 真相源，只追加
-  <domain>.snapshot.json     # 定期快照（seq + CounterState），原子写（tmp + rename）
-  index.tursodb              # 全部域共用的查询索引（派生物）
+  <domain>/                        # 每个域声明一个子目录
+    <instance>.events.jsonl        # 实例级真相源，只追加
+    <instance>.snapshot.json       # 定期快照（seq + CounterState），原子写（tmp + rename）
+    declaration.pact               # 声明原文（启动恢复时回填声明注册表）
+  index.tursodb                    # 全部实例共用的查询索引（派生物，(domain, instance) 双列）
   index.tursodb-wal
+  pactd.lock                       # data_dir 独占 flock（单写者护栏）
 ```
 
 **JSONL 是真相源，SQLite 索引与快照都是派生物。** 索引丢了会重建；JSONL 中部损坏则 fail-fast。
+
+**实例布局（D27）**：实例名作为**路径段**承载，默认实例名为 `default`——`<domain>/default.events.jsonl` 即域的默认实例。顶层遗留的单层文件（`<domain>.events.jsonl` / `<domain>.snapshot.json`）**不再被识别**：启动恢复时直接 fail-fast（`LegacyLayoutDetected`），须人工迁移，不静默丢数据。同一 `data_dir` 上 daemon 以 `<data_dir>/pactd.lock` 独占 flock 保证单写者，第二个实例启动即被拒。
 
 ### 7.2 事件类型（设计 §7.1）
 
@@ -533,22 +538,26 @@ pact replay <data_dir>/se_lifecycle.events.jsonl
 |------|------|------|
 | `daemon start [--config PATH]` | — | 前台启动 daemon，缺省配置 `pact.toml` |
 | `domain validate <FILE>` | 在线 | 解析 + 良构 + 装载预演，不留状态 |
-| `domain load <FILE> [--name N]` | 在线 | 装载/替换命名域，缺省名 = 文件 stem |
-| `domain list` | 在线 | 已装载域清单 |
-| `domain info --domain D` | 在线 | 域信息 + 状态摘要 |
-| `domain unload --domain D` | 在线 | 卸载（内存态；事件日志保留） |
-| `seed --domain D --participant P --type T [--thing-ref R]` | 在线 | Rule-S |
-| `produce --domain D --participant P --type T [--predecessors a,b] [--thing-ref R]` | 在线 | Rule-P |
-| `read --domain D --participant P --token ID` | 在线 | Rule-R |
-| `consume --domain D --participant P --token ID` | 在线 | Rule-E |
-| `counter ls --domain D [--type T]` | 在线 | Counter 查询 |
-| `archive ls --domain D [--type T]` | 在线 | Archive 查询 |
-| `gates show --domain D --participant P` | 在线 | 我的 gate 子句（含条件） |
-| `enabled --domain D --participant P` | 在线 | Rule-W：当前可执行的生产 |
-| `status --domain D` | 在线 | Counter 概要 + `terminated` |
+| `domain load <FILE> [--name N] [--instance I] [--force]` | 在线 | 装载/替换命名域（默认实例 `default`），缺省名 = 文件 stem |
+| `domain list` | 在线 | 已装载域清单（打印 `name [instances…]`） |
+| `domain info --domain D [--instance I]` | 在线 | 域信息 + 状态摘要 |
+| `domain unload --domain D [--instance I]` | 在线 | 卸载（内存态；事件日志保留） |
+| `domain instantiate --domain D --instance I` | 在线 | 在同一域声明下**新建实例**（D27） |
+| `domain instances --domain D` | 在线 | 打印该域的实例清单 |
+| `seed --domain D --participant P --type T [--thing-ref R] [--instance I]` | 在线 | Rule-S |
+| `produce --domain D --participant P --type T [--predecessors a,b] [--thing-ref R] [--instance I]` | 在线 | Rule-P |
+| `read --domain D --participant P --token ID [--instance I]` | 在线 | Rule-R |
+| `consume --domain D --participant P --token ID [--instance I]` | 在线 | Rule-E |
+| `counter ls --domain D [--type T] [--instance I]` | 在线 | Counter 查询 |
+| `archive ls --domain D [--type T] [--instance I]` | 在线 | Archive 查询 |
+| `gates show --domain D --participant P [--instance I]` | 在线 | 我的 gate 子句（含条件） |
+| `enabled --domain D --participant P [--instance I]` | 在线 | Rule-W：当前可执行的生产 |
+| `status --domain D [--instance I]` | 在线 | Counter 概要 + `terminated` |
 | `analyze <FILE>` | **离线** | 六项静态分析 |
 | `compose <FILES…>` | **离线** | 片段组合（≥2 个），打印合并文本 |
 | `replay <FILE>` | **离线** | 重放 `<domain>.events.jsonl` |
+
+**实例 flag（D27）**：所有域操作命令的 `--instance I` 可选，**缺省 = 默认实例 `default`**——既有不带该 flag 的调用与脚本语义不变。`--force` 仅用于对**非空实例**（`last_seq > DomainLoaded.seq`）的再加载：默认拒绝（`DomainBusy`），加 `--force` 才重置其 Counter。
 
 输出与退出码：成功 → `0`；失败 → `1`，人类模式把 `error [<code>]: <message>` 写 **stderr**，
 `--json` 模式把 §6.3 错误体写 **stdout**。
@@ -560,12 +569,13 @@ pact replay <data_dir>/se_lifecycle.events.jsonl
 | 方法与路径 | 请求体 | 成功响应 |
 |-----------|--------|----------|
 | `POST /validate` | `{declaration}` | `200` `{ok, types[], participants[], gates, seed_authority}` |
-| `POST /domains` | `{name, declaration}` | `201` `DomainSummary{name, types, gates, seed_authority, last_seq}` |
-| `GET /domains` | — | `200` `{domains: [...]}` |
-| `GET /domains/{d}` | — | `200` `{name, counter_size, archive_size, terminated}` |
+| `POST /domains` | `{name, declaration[, instance][, force]}` | `201` `DomainSummary{name, instance, types, gates, seed_authority, last_seq}`（declare + instantiate，缺省实例 `default`） |
+| `GET /domains` | — | `200` `{domains: [{name, instances[]}]}` |
+| `POST /domains/{d}/instances` | `{instance}` | `201` `DomainSummary`（在同一域声明下新建实例，D27） |
+| `GET /domains/{d}` | — | `200` `{name, counter_size, archive_size, terminated}`（`default` 实例） |
 | `DELETE /domains/{d}` | — | `204` |
 | `POST /domains/{d}:analyze` | — | `200` `AnalysisReport`（六项，A.5 首位） |
-| `POST /domains/{d}:compose` | `{fragments: [...]}` | `201` `DomainSummary`（**会装载**） |
+| `POST /domains/{d}:compose` | `{fragments: [...]}` | `201` `DomainSummary`（**会装载**到 `default` 实例） |
 | `POST /domains/{d}/seeds` | `{participant, type, thing_ref?}` | `201` `{token}` |
 | `POST /domains/{d}/tokens` | `{participant, type, predecessors[], thing_ref?}` | `201` `{token}` |
 | `POST /domains/{d}/tokens/{id}/read` | `{participant}` | `200` `{token}` |
@@ -576,6 +586,8 @@ pact replay <data_dir>/se_lifecycle.events.jsonl
 | `GET /domains/{d}/enabled?participant=` | — | `200` `{options: [{type, witness_predecessors[]}]}` |
 | `GET /domains/{d}/status` | — | `200` `{counter_size, archive_size, terminated}` |
 | `GET /domains/{d}/events` | — | SSE 流（含 keep-alive），每条 `data:` 是 §6.4 通知 |
+
+**实例路由（D27）**：上表 `/domains/{d}/…` 的语义 = **`default` 实例**。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / events 全套同形。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。
 
 实现注记：`{d}:analyze` / `{d}:compose` 因路由库不支持同段「参数 + 字面量」，
 在 `/domains/{d}` 统一入口内按段内冒号后缀分发，**对外 URL 不变**。
@@ -593,10 +605,11 @@ pact-mcp --unix <sock> [--bearer <token>]     # 或 --tcp <addr>（优先）
 | 工具 | 语义 |
 |------|------|
 | `pact_domain_validate` | 校验声明文本良构，返回结构概要（不加载） |
-| `pact_domain_load` | 加载/替换命名域（幂等按 name） |
-| `pact_list_domains` | 已加载域清单 |
+| `pact_domain_load` | 加载/替换命名域（幂等按 name；可选 `instance` / `force`） |
+| `pact_domain_instantiate` | 在同一域声明下**新建实例**（D27，可选 `instance`） |
+| `pact_list_domains` | 已加载域清单（每域含 `instances[]`） |
 | `pact_analyze` | 六项静态分析聚合报告（A.5 前置） |
-| `pact_compose` | 组合多片段**并加载为命名域**（有副作用，见 §6.3） |
+| `pact_compose` | 组合多片段**并加载为命名域**（有副作用，见 §6.3；作用于 `default` 实例） |
 | `pact_seed` | Rule-S |
 | `pact_produce` | Rule-P（显式传前驱 token id 列表） |
 | `pact_read` | Rule-R（返回 token 全量数据，不改 Counter） |
@@ -606,6 +619,8 @@ pact-mcp --unix <sock> [--bearer <token>]     # 或 --tcp <addr>（优先）
 | `pact_enabled` | Rule-W 轮询：当前可满足的 Rule-P 组合 |
 | `pact_status` | Counter 概要 + `terminated` 判定 |
 | `pact_subscribe` | 注册 Counter 变更通知；事件经 `notifications/pact/event` 推送 |
+
+共 **16** 个工具。除 `pact_domain_validate` / `pact_analyze` / `pact_compose` / `pact_list_domains` 外，全部工具接受可选 `instance` 参数（缺省 = `default` 实例，D27）。
 
 ---
 
@@ -656,17 +671,23 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | code | HTTP | 触发 |
 |------|------|------|
 | `IdempotencyConflict` | 409 | 同一 `request_id` 已用于另一 token 的消费（复用幂等键，D23） |
+| `InstanceNotFound` | 404 | 实例未加载（`domain/instance` 不存在或未 `instantiate`，D27） |
+| `DomainNotDeclared` | 404 | 目标域无声明登记（实例化前须先 declare/load） |
+| `InstanceExists` | 409 | 实例已存在（重复 `instantiate`） |
+| `DomainBusy` | 409 | 对**非空实例**（`last_seq > DomainLoaded.seq`）再加载；须显式 `force` 才重置 |
+| `InvalidDomainName` | 400 | 域名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
+| `InvalidInstanceName` | 400 | 实例名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
 | `Unauthorized` | 401 | 令牌模式下列表无此参与者，或 Bearer 缺失/不匹配 |
-| `DomainNotFound` | 404 | 域未装载 |
 | `NotFound` | 404 | 路径不存在 |
 | `MethodNotAllowed` | 405 | 方法与路径不匹配（如 `GET /domains/{d}:analyze`） |
 | `BadRequest` | 400 | JSON 请求体解析失败 |
-| `Store` | 500 | 存储写入失败 |
+| `Store` | 500 | 存储写入失败；**含顶层遗留单层文件的启动 fail-fast**（`LegacyLayoutDetected`，须人工迁移） |
 | `Recovery` | 500 | 启动恢复失败 |
 | `EngineStopped` | 503 | 引擎已停止 |
 | `Transport` | —（仅 CLI/MCP） | 连不上 daemon：`client error (Connect)` |
 | `Io` | —（仅 CLI） | 读取 `.pact` / `.jsonl` 文件失败，`detail.path` 是路径 |
 | `Usage` | —（仅 CLI） | 命令用法错误，如 `compose` 少于两个片段 |
+| daemon 启动拒绝 | —（进程退出） | `data_dir` 已被另一 daemon 独占（`pactd.lock` flock 失败，D27） |
 
 ---
 
@@ -685,6 +706,9 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | 停不掉 daemon | 没有 `daemon stop` | `kill <pid>`（§2.3） |
 | 索引文件损坏/丢失 | `index.tursodb` 是派生物 | 删掉重启，会按 JSONL 重建 |
 | `analyze` 说 `unreachable` 但域能跑 | 片段单独分析时缺少 `SeedAuthority` | 组合后再分析（示例 §1.2） |
+| 启动报 `Store` / `LegacyLayoutDetected` | `data_dir` 顶层有旧版单层文件（`<domain>.events.jsonl`） | 手工迁移到 `<domain>/default.events.jsonl` 后重启（§7.1，不自动迁移） |
+| `DomainBusy` | 对非空实例再 `load`（会重置 Counter） | 确认要替换则加 `--force`（CLI）/ `force: true`（REST）；否则换实例名 |
+| daemon 启动即退出（锁冲突） | 同一 `data_dir` 已有另一 daemon | 停掉旧实例，或换 `data_dir`（`pactd.lock` 独占，§7.1） |
 
 ---
 
@@ -703,6 +727,8 @@ PreconditionMismatch { ty: TypeName("deployment"),
 6. **Archival Policy 未内置**（§3.2），需要时用一个持 `consumes` gate 的参与者表达。
 7. **无 `daemon stop`**，无进程管理（PID 文件、systemd unit 均未提供）。
 8. **v1 传输范围**：MCP 仅 stdio，无 Streamable HTTP；daemon 单机单进程，无联网协作（D20，架构 §4）。
+9. **旧日志不自动迁移**（D27）：双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`；顶层遗留单层文件启动即 `LegacyLayoutDetected` fail-fast，须人工迁移（§7.1），不静默丢数据。
+10. **跨实例不协同**（D27）：同一域声明的多个 Counter 实例彼此隔离（各自 Counter/Archive/订阅）；跨实例协同不在范式保障范围内（论文 rev3 §1.3 实现自由条款，见 §1.3）。
 
 ---
 
@@ -727,9 +753,9 @@ PreconditionMismatch { ty: TypeName("deployment"),
 
 | 文档 | 内容 |
 |------|------|
-| [`docs/pactv1_rev2.md`](pactv1_rev2.md) | 范式规范母本：六原语、六规则、§2 适用性、§3 文法、Appendix A 分析算法 |
+| [`docs/pactv1_rev3.md`](pactv1_rev3.md) | 范式规范母本：六原语、六规则、§2 适用性、§3 文法、Appendix A 分析算法 |
 | [`docs/requirements.md`](requirements.md) | 需求与范围（含明确的范围外项） |
-| [`docs/design.md`](design.md) | 实现设计：D1–D23 决策记录、§6 线上格式、§9 三接口 |
+| [`docs/design.md`](design.md) | 实现设计：D1–D27 决策记录、§6 线上格式、§9 三接口 |
 | [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复 |
 | [`docs/skill-adaptation.md`](skill-adaptation.md) | 领域适配层示例（RE / SE 技能），与本手册正交 |
 | [`examples/README.md`](../examples/README.md) | 五份通用域 + 两条可复现轨迹的逐例讲解 |

@@ -5,7 +5,8 @@
 use crate::dto::{
     conflicts_detail, problem_detail, rule_error_detail, ComposeReq, ConsumeReq, DomainInfo,
     DomainsResp, EnabledOption, EnabledResp, EntryResp, ErrorBody, ErrorDetail, GatesResp,
-    LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp, ValidateReq, ValidateResp,
+    InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp, ValidateReq,
+    ValidateResp,
 };
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, Request, State};
@@ -17,7 +18,8 @@ use axum::{Json, Router};
 use futures::StreamExt;
 use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
 use pact_engine::views::StatusView;
-use pact_engine::{Engine, EngineError};
+use pact_engine::{Engine, EngineError, InstanceKey, DEFAULT_INSTANCE};
+use pact_store::StoreError;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
@@ -103,12 +105,38 @@ impl ApiError {
 impl From<EngineError> for ApiError {
     fn from(e: EngineError) -> Self {
         match &e {
-            EngineError::DomainNotFound { name } => ApiError {
+            EngineError::InstanceNotFound { domain, instance } => ApiError {
                 status: StatusCode::NOT_FOUND,
                 detail: ErrorDetail {
-                    code: "DomainNotFound".to_owned(),
+                    code: "InstanceNotFound".to_owned(),
+                    detail: serde_json::json!({ "domain": domain, "instance": instance }),
+                    message: format!("实例未加载：{domain}/{instance}"),
+                },
+            },
+            EngineError::DomainNotDeclared { name } => ApiError {
+                status: StatusCode::NOT_FOUND,
+                detail: ErrorDetail {
+                    code: "DomainNotDeclared".to_owned(),
                     detail: serde_json::json!({ "name": name }),
-                    message: format!("域未加载：{name}"),
+                    message: format!("域声明未登记：{name}"),
+                },
+            },
+            EngineError::InstanceExists { domain, instance } => ApiError {
+                status: StatusCode::CONFLICT,
+                detail: ErrorDetail {
+                    code: "InstanceExists".to_owned(),
+                    detail: serde_json::json!({ "domain": domain, "instance": instance }),
+                    message: format!("实例已存在：{domain}/{instance}"),
+                },
+            },
+            EngineError::DomainBusy { domain, instance } => ApiError {
+                status: StatusCode::CONFLICT,
+                detail: ErrorDetail {
+                    code: "DomainBusy".to_owned(),
+                    detail: serde_json::json!({ "domain": domain, "instance": instance }),
+                    message: format!(
+                        "实例 {domain}/{instance} 非空：加载将重置其 Counter，如确认替换请显式 force"
+                    ),
                 },
             },
             EngineError::Parse(p) => ApiError {
@@ -122,6 +150,26 @@ impl From<EngineError> for ApiError {
             EngineError::Compose(cs) => ApiError {
                 status: StatusCode::CONFLICT,
                 detail: conflicts_detail(cs),
+            },
+            EngineError::Store(StoreError::InvalidDomainName { name }) => ApiError {
+                status: StatusCode::BAD_REQUEST,
+                detail: ErrorDetail {
+                    code: "InvalidDomainName".to_owned(),
+                    detail: serde_json::json!({ "name": name }),
+                    message: format!(
+                        "非法域名：{name:?}（仅允许字母、数字、'-'、'_'，长度 ≤ 128）"
+                    ),
+                },
+            },
+            EngineError::Store(StoreError::InvalidInstanceName { name }) => ApiError {
+                status: StatusCode::BAD_REQUEST,
+                detail: ErrorDetail {
+                    code: "InvalidInstanceName".to_owned(),
+                    detail: serde_json::json!({ "name": name }),
+                    message: format!(
+                        "非法实例名：{name:?}（仅允许字母、数字、'-'、'_'，长度 ≤ 128）"
+                    ),
+                },
             },
             EngineError::Store(s) => ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -220,6 +268,9 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/domains", post(load_domain).get(list_domains))
         .route("/validate", post(validate_declaration))
         .route("/domains/{d}", any(domain_entry))
+        .route("/domains/{d}/instances", post(instantiate))
+        .route("/domains/{d}/instances/{i}", any(instance_entry))
+        // default 实例端点（等价 `/domains/{d}/instances/default/...`）
         .route("/domains/{d}/seeds", post(seed))
         .route("/domains/{d}/tokens", post(produce))
         .route("/domains/{d}/counter", get(counter))
@@ -230,12 +281,38 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/domains/{d}/enabled", get(enabled))
         .route("/domains/{d}/status", get(status))
         .route("/domains/{d}/events", get(events))
+        // 实例级镜像组（D27）
+        .route("/domains/{d}/instances/{i}/seeds", post(seed_instance))
+        .route("/domains/{d}/instances/{i}/tokens", post(produce_instance))
+        .route("/domains/{d}/instances/{i}/counter", get(counter_instance))
+        .route("/domains/{d}/instances/{i}/archive", get(archive_instance))
+        .route(
+            "/domains/{d}/instances/{i}/tokens/{id}/read",
+            post(read_token_instance),
+        )
+        .route(
+            "/domains/{d}/instances/{i}/tokens/{id}/consume",
+            post(consume_token_instance),
+        )
+        .route(
+            "/domains/{d}/instances/{i}/gates/{participant}",
+            get(gates_instance),
+        )
+        .route("/domains/{d}/instances/{i}/enabled", get(enabled_instance))
+        .route("/domains/{d}/instances/{i}/status", get(status_instance))
+        .route("/domains/{d}/instances/{i}/events", get(events_instance))
         .fallback(not_found)
         .with_state(state)
 }
 
+/// 默认实例键（`/domains/{d}` 路径族语义，FR19 兼容）。
+fn default_key(domain: &str) -> InstanceKey {
+    InstanceKey::new(domain, DEFAULT_INSTANCE)
+}
+
 /// `/domains/{d}` 统一入口：matchit 不支持同段“参数+字面量”，
 /// 故 `:analyze` / `:compose`（§9.1）在此按段内冒号分发。
+/// 其余语义作用于**默认实例**。
 async fn domain_entry(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
@@ -290,6 +367,31 @@ async fn domain_entry(
     }
 }
 
+/// `/domains/{d}/instances/{i}`：GET 状态 / DELETE 卸载。
+async fn instance_entry(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    req: Request,
+) -> axum::response::Response {
+    let method = req.method().clone();
+    match method {
+        Method::GET => match instance_info(State(st), Path((d, i))).await {
+            Ok(body) => body.into_response(),
+            Err(e) => e.into_response(),
+        },
+        Method::DELETE => match unload_instance(State(st), Path((d, i))).await {
+            Ok(code) => code.into_response(),
+            Err(e) => e.into_response(),
+        },
+        _ => ApiError::new(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "MethodNotAllowed",
+            format!("方法 {method} 不适用于实例端点（仅 GET/DELETE）"),
+        )
+        .into_response(),
+    }
+}
+
 async fn not_found(req: Request) -> axum::response::Response {
     not_found_path(req.uri().path())
 }
@@ -309,7 +411,26 @@ async fn load_domain(
     State(st): State<Arc<ServerState>>,
     JsonReq(req): JsonReq<LoadDomainReq>,
 ) -> Result<(StatusCode, Json<pact_engine::views::DomainSummary>), ApiError> {
-    let summary = st.engine.load_domain(&req.name, &req.declaration).await?;
+    let instance = req.instance.unwrap_or_else(|| DEFAULT_INSTANCE.to_owned());
+    let summary = st
+        .engine
+        .load_domain(
+            &req.name,
+            &req.declaration,
+            &instance,
+            req.force.unwrap_or(false),
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(summary)))
+}
+
+/// `POST /domains/{d}/instances`：在已登记声明上创建额外实例。
+async fn instantiate(
+    State(st): State<Arc<ServerState>>,
+    Path(d): Path<String>,
+    JsonReq(req): JsonReq<InstantiateReq>,
+) -> Result<(StatusCode, Json<pact_engine::views::DomainSummary>), ApiError> {
+    let summary = st.engine.instantiate(&d, &req.instance).await?;
     Ok((StatusCode::CREATED, Json(summary)))
 }
 
@@ -345,9 +466,24 @@ async fn domain_info(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
 ) -> Result<Json<DomainInfo>, ApiError> {
-    let s = st.engine.status(&d).await?;
+    domain_info_inner(&st, default_key(&d)).await
+}
+
+async fn instance_info(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+) -> Result<Json<DomainInfo>, ApiError> {
+    domain_info_inner(&st, InstanceKey::new(d, i)).await
+}
+
+async fn domain_info_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+) -> Result<Json<DomainInfo>, ApiError> {
+    let s = st.engine.status(key.clone()).await?;
     Ok(Json(DomainInfo {
-        name: d,
+        name: key.domain,
+        instance: key.instance,
         counter_size: s.counter_size,
         archive_size: s.archive_size,
         terminated: s.terminated,
@@ -358,7 +494,18 @@ async fn unload_domain(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    st.engine.unload_domain(&d).await?;
+    unload_inner(&st, default_key(&d)).await
+}
+
+async fn unload_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    unload_inner(&st, InstanceKey::new(d, i)).await
+}
+
+async fn unload_inner(st: &Arc<ServerState>, key: InstanceKey) -> Result<StatusCode, ApiError> {
+    st.engine.unload_domain(key).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -374,7 +521,10 @@ async fn compose_domain(
     Path(d): Path<String>,
     JsonReq(req): JsonReq<ComposeReq>,
 ) -> Result<(StatusCode, Json<pact_engine::views::DomainSummary>), ApiError> {
-    let summary = st.engine.compose_and_load(&d, req.fragments).await?;
+    let summary = st
+        .engine
+        .compose_and_load(&d, req.fragments, DEFAULT_INSTANCE)
+        .await?;
     Ok((StatusCode::CREATED, Json(summary)))
 }
 
@@ -384,11 +534,29 @@ async fn seed(
     headers: HeaderMap,
     JsonReq(req): JsonReq<SeedReq>,
 ) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
+    seed_inner(&st, default_key(&d), headers, req).await
+}
+
+async fn seed_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
+    JsonReq(req): JsonReq<SeedReq>,
+) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
+    seed_inner(&st, InstanceKey::new(d, i), headers, req).await
+}
+
+async fn seed_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    headers: HeaderMap,
+    req: SeedReq,
+) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
     st.authorize(&req.participant, &headers)?;
     let token = st
         .engine
         .seed(
-            &d,
+            key,
             ParticipantName(req.participant),
             TypeName(req.ty),
             thing_ref(req.thing_ref),
@@ -403,12 +571,30 @@ async fn produce(
     headers: HeaderMap,
     JsonReq(req): JsonReq<ProduceReq>,
 ) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
+    produce_inner(&st, default_key(&d), headers, req).await
+}
+
+async fn produce_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
+    JsonReq(req): JsonReq<ProduceReq>,
+) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
+    produce_inner(&st, InstanceKey::new(d, i), headers, req).await
+}
+
+async fn produce_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    headers: HeaderMap,
+    req: ProduceReq,
+) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
     st.authorize(&req.participant, &headers)?;
     let predecessors = req.predecessors.into_iter().map(TokenId).collect();
     let token = st
         .engine
         .produce(
-            &d,
+            key,
             ParticipantName(req.participant),
             TypeName(req.ty),
             predecessors,
@@ -423,7 +609,23 @@ async fn counter(
     Path(d): Path<String>,
     Query(q): Query<TypeQuery>,
 ) -> Result<Json<pact_engine::views::CounterView>, ApiError> {
-    Ok(Json(st.engine.counter(&d, q.ty.map(TypeName)).await?))
+    counter_inner(&st, default_key(&d), q).await
+}
+
+async fn counter_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    Query(q): Query<TypeQuery>,
+) -> Result<Json<pact_engine::views::CounterView>, ApiError> {
+    counter_inner(&st, InstanceKey::new(d, i), q).await
+}
+
+async fn counter_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    q: TypeQuery,
+) -> Result<Json<pact_engine::views::CounterView>, ApiError> {
+    Ok(Json(st.engine.counter(key, q.ty.map(TypeName)).await?))
 }
 
 async fn archive(
@@ -431,7 +633,23 @@ async fn archive(
     Path(d): Path<String>,
     Query(q): Query<TypeQuery>,
 ) -> Result<Json<pact_engine::views::ArchiveView>, ApiError> {
-    Ok(Json(st.engine.archive(&d, q.ty.map(TypeName)).await?))
+    archive_inner(&st, default_key(&d), q).await
+}
+
+async fn archive_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    Query(q): Query<TypeQuery>,
+) -> Result<Json<pact_engine::views::ArchiveView>, ApiError> {
+    archive_inner(&st, InstanceKey::new(d, i), q).await
+}
+
+async fn archive_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    q: TypeQuery,
+) -> Result<Json<pact_engine::views::ArchiveView>, ApiError> {
+    Ok(Json(st.engine.archive(key, q.ty.map(TypeName)).await?))
 }
 
 async fn read_token(
@@ -440,10 +658,29 @@ async fn read_token(
     headers: HeaderMap,
     JsonReq(req): JsonReq<ParticipantReq>,
 ) -> Result<Json<TokenResp>, ApiError> {
+    read_inner(&st, default_key(&d), id, headers, req).await
+}
+
+async fn read_token_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i, id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    JsonReq(req): JsonReq<ParticipantReq>,
+) -> Result<Json<TokenResp>, ApiError> {
+    read_inner(&st, InstanceKey::new(d, i), id, headers, req).await
+}
+
+async fn read_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    id: String,
+    headers: HeaderMap,
+    req: ParticipantReq,
+) -> Result<Json<TokenResp>, ApiError> {
     st.authorize(&req.participant, &headers)?;
     let token = st
         .engine
-        .read(&d, ParticipantName(req.participant), TokenId(id))
+        .read(key, ParticipantName(req.participant), TokenId(id))
         .await?;
     Ok(Json(TokenResp { token }))
 }
@@ -454,11 +691,30 @@ async fn consume_token(
     headers: HeaderMap,
     JsonReq(req): JsonReq<ConsumeReq>,
 ) -> Result<Json<EntryResp>, ApiError> {
+    consume_inner(&st, default_key(&d), id, headers, req).await
+}
+
+async fn consume_token_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i, id)): Path<(String, String, String)>,
+    headers: HeaderMap,
+    JsonReq(req): JsonReq<ConsumeReq>,
+) -> Result<Json<EntryResp>, ApiError> {
+    consume_inner(&st, InstanceKey::new(d, i), id, headers, req).await
+}
+
+async fn consume_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    id: String,
+    headers: HeaderMap,
+    req: ConsumeReq,
+) -> Result<Json<EntryResp>, ApiError> {
     st.authorize(&req.participant, &headers)?;
     let entry = st
         .engine
         .consume(
-            &d,
+            key,
             ParticipantName(req.participant),
             TokenId(id),
             req.request_id,
@@ -472,8 +728,28 @@ async fn gates(
     Path((d, participant)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<GatesResp>, ApiError> {
+    gates_inner(&st, default_key(&d), participant, headers).await
+}
+
+async fn gates_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i, participant)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<GatesResp>, ApiError> {
+    gates_inner(&st, InstanceKey::new(d, i), participant, headers).await
+}
+
+async fn gates_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    participant: String,
+    headers: HeaderMap,
+) -> Result<Json<GatesResp>, ApiError> {
     st.authorize(&participant, &headers)?;
-    let gates = st.engine.my_gates(&d, ParticipantName(participant)).await?;
+    let gates = st
+        .engine
+        .my_gates(key, ParticipantName(participant))
+        .await?;
     Ok(Json(GatesResp { gates }))
 }
 
@@ -483,10 +759,28 @@ async fn enabled(
     headers: HeaderMap,
     Query(q): Query<ParticipantQuery>,
 ) -> Result<Json<EnabledResp>, ApiError> {
+    enabled_inner(&st, default_key(&d), headers, q).await
+}
+
+async fn enabled_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(q): Query<ParticipantQuery>,
+) -> Result<Json<EnabledResp>, ApiError> {
+    enabled_inner(&st, InstanceKey::new(d, i), headers, q).await
+}
+
+async fn enabled_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    headers: HeaderMap,
+    q: ParticipantQuery,
+) -> Result<Json<EnabledResp>, ApiError> {
     st.authorize(&q.participant, &headers)?;
     let options = st
         .engine
-        .enabled(&d, ParticipantName(q.participant))
+        .enabled(key, ParticipantName(q.participant))
         .await?
         .into_iter()
         .map(EnabledOption::from)
@@ -498,7 +792,21 @@ async fn status(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
 ) -> Result<Json<StatusView>, ApiError> {
-    Ok(Json(st.engine.status(&d).await?))
+    status_inner(&st, default_key(&d)).await
+}
+
+async fn status_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+) -> Result<Json<StatusView>, ApiError> {
+    status_inner(&st, InstanceKey::new(d, i)).await
+}
+
+async fn status_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+) -> Result<Json<StatusView>, ApiError> {
+    Ok(Json(st.engine.status(key).await?))
 }
 
 /// §6.4 SSE：Counter 变更通知流。
@@ -506,7 +814,21 @@ async fn events(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let rx = st.engine.subscribe(&d).await?;
+    events_inner(&st, default_key(&d)).await
+}
+
+async fn events_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    events_inner(&st, InstanceKey::new(d, i)).await
+}
+
+async fn events_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let rx = st.engine.subscribe(key).await?;
     let stream = BroadcastStream::new(rx).filter_map(|r| async move {
         r.ok().map(|n| {
             Ok(Event::default()

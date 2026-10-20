@@ -1,6 +1,6 @@
 // 软件工程通用域：生命周期（中等粒度）
 //
-// 出处：docs/pactv1_rev2.md Part II Section 1
+// 出处：docs/pactv1_rev3.md Part II Section 1
 //   Chapter 1 骨架（5 类型 / 4 规则 / 生产链）
 //   Chapter 2 权限细化（reviewer、qa_lead 为只读参与者，从不生产也不消费）
 //   Chapter 3 审批关联（deployer 的 via 溯源见证）

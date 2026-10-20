@@ -4,9 +4,16 @@
 //! - 崩溃恢复（JSONL 尾部半行截断、索引丢失重建、中部损坏 fail-fast）；
 //! - 订阅通知时序（事件顺序、seq 单调、变更后规模）；
 //! - 域替换重置（恢复只重放最后一次 DomainLoaded 之后的事件）。
+//!
+//! 域双键（D27）：本文件全部以 `default` 实例（[`DEFAULT_INSTANCE`]）运行旧语义，
+//! 存储布局为 `<data_dir>/<domain>/default.events.jsonl`。
 
 use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
-use pact_engine::{Engine, EngineError, LogicalClock, NotificationKind, SequentialIdGen};
+use pact_engine::views::DomainListing;
+use pact_engine::{
+    Engine, EngineError, InstanceKey, LogicalClock, NotificationKind, SequentialIdGen,
+    DEFAULT_INSTANCE,
+};
 use pact_store::Store;
 use std::sync::Arc;
 
@@ -35,6 +42,11 @@ fn tyn(s: &str) -> TypeName {
     TypeName(s.into())
 }
 
+/// `default` 实例的双键（域双键 D27）。
+fn key(domain: &str) -> InstanceKey {
+    InstanceKey::new(domain, DEFAULT_INSTANCE)
+}
+
 /// 临时数据目录 + 引擎（LogicalClock + 顺序 id，确定性）。
 async fn setup(dir: &std::path::Path) -> Engine {
     let store = Store::open(dir).await.unwrap();
@@ -53,8 +65,16 @@ async fn crash(engine: Engine) {
     }
 }
 
+/// `default` 实例的事件日志路径：`<dir>/<domain>/default.events.jsonl`。
 fn log_path(dir: &std::path::Path, domain: &str) -> std::path::PathBuf {
-    dir.join(format!("{domain}.events.jsonl"))
+    dir.join(domain)
+        .join(format!("{DEFAULT_INSTANCE}.events.jsonl"))
+}
+
+/// `default` 实例的快照路径。
+fn snapshot_path(dir: &std::path::Path, domain: &str) -> std::path::PathBuf {
+    dir.join(domain)
+        .join(format!("{DEFAULT_INSTANCE}.snapshot.json"))
 }
 
 fn log_lines(dir: &std::path::Path, domain: &str) -> Vec<String> {
@@ -65,12 +85,18 @@ fn log_lines(dir: &std::path::Path, domain: &str) -> Vec<String> {
         .collect()
 }
 
+/// 取域清单中的名字（排序）。
+fn domain_names(listings: Vec<DomainListing>) -> Vec<String> {
+    listings.into_iter().map(|d| d.name).collect()
+}
+
 /// seed → produce → consume 前进到"design 在 Counter、requirement 已归档"。
 /// 事件序列：DomainLoaded(1) Seeded(2) Produced(3) Consumed(4)。
 async fn run_partial_flow(engine: &Engine, domain: &str) -> TokenId {
+    let k = key(domain);
     let req = engine
         .seed(
-            domain,
+            k.clone(),
             par("external"),
             tyn("requirement"),
             ThingRef::some("urn:req:1"),
@@ -79,7 +105,7 @@ async fn run_partial_flow(engine: &Engine, domain: &str) -> TokenId {
         .unwrap();
     let design = engine
         .produce(
-            domain,
+            k.clone(),
             par("architect"),
             tyn("design"),
             vec![req.id.clone()],
@@ -88,7 +114,7 @@ async fn run_partial_flow(engine: &Engine, domain: &str) -> TokenId {
         .await
         .unwrap();
     engine
-        .consume(domain, par("architect"), req.id.clone(), None)
+        .consume(k, par("architect"), req.id.clone(), None)
         .await
         .unwrap();
     design.id
@@ -101,22 +127,25 @@ async fn full_lifecycle_with_notifications() {
     let dir = tempfile::tempdir().unwrap();
     let engine = setup(dir.path()).await;
 
-    let summary = engine.load_domain("proj", DECL).await.unwrap();
+    let summary = engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
     assert_eq!((summary.types, summary.gates, summary.last_seq), (3, 6, 1));
 
     // Rule-W：种子注入前 architect 无可生产选项
     assert!(engine
-        .enabled("proj", par("architect"))
+        .enabled(key("proj"), par("architect"))
         .await
         .unwrap()
         .is_empty());
 
     // 订阅先于动作（broadcast 只投递给已存在的订阅者）
-    let mut rx = engine.subscribe("proj").await.unwrap();
+    let mut rx = engine.subscribe(key("proj")).await.unwrap();
 
     let req = engine
         .seed(
-            "proj",
+            key("proj"),
             par("external"),
             tyn("requirement"),
             ThingRef::some("urn:req:1"),
@@ -126,13 +155,16 @@ async fn full_lifecycle_with_notifications() {
     assert_eq!(req.produced_by, par("external"));
 
     // Rule-W：requirement 就位后 design 生产选项出现，见证前驱 = 该 token
-    let enabled = engine.enabled("proj", par("architect")).await.unwrap();
+    let enabled = engine.enabled(key("proj"), par("architect")).await.unwrap();
     assert_eq!(enabled.len(), 1);
     assert_eq!(enabled[0].ty, tyn("design"));
     assert_eq!(enabled[0].witness_predecessors, vec![req.id.clone()]);
 
     // my_gates 自省
-    let gates = engine.my_gates("proj", par("architect")).await.unwrap();
+    let gates = engine
+        .my_gates(key("proj"), par("architect"))
+        .await
+        .unwrap();
     assert_eq!(gates.len(), 3);
     assert!(gates.iter().any(|g| g.ty == tyn("requirement")));
     assert!(gates.iter().any(|g| g.ty == tyn("design")));
@@ -140,7 +172,7 @@ async fn full_lifecycle_with_notifications() {
     // Rule-R 无副作用（D9）：读前后日志行数不变
     let lines_before = log_lines(dir.path(), "proj").len();
     let read_back = engine
-        .read("proj", par("architect"), req.id.clone())
+        .read(key("proj"), par("architect"), req.id.clone())
         .await
         .unwrap();
     assert_eq!(read_back.id, req.id);
@@ -148,7 +180,7 @@ async fn full_lifecycle_with_notifications() {
 
     let design = engine
         .produce(
-            "proj",
+            key("proj"),
             par("architect"),
             tyn("design"),
             vec![req.id.clone()],
@@ -157,12 +189,12 @@ async fn full_lifecycle_with_notifications() {
         .await
         .unwrap();
     engine
-        .consume("proj", par("architect"), req.id.clone(), None)
+        .consume(key("proj"), par("architect"), req.id.clone(), None)
         .await
         .unwrap();
     let impl_t = engine
         .produce(
-            "proj",
+            key("proj"),
             par("developer"),
             tyn("implementation"),
             vec![design.id.clone()],
@@ -171,24 +203,24 @@ async fn full_lifecycle_with_notifications() {
         .await
         .unwrap();
     engine
-        .consume("proj", par("developer"), design.id.clone(), None)
+        .consume(key("proj"), par("developer"), design.id.clone(), None)
         .await
         .unwrap();
     engine
-        .consume("proj", par("user"), impl_t.id.clone(), None)
+        .consume(key("proj"), par("user"), impl_t.id.clone(), None)
         .await
         .unwrap();
 
     // 终态：Counter 空、Archive 3 项、Rule-T 成立
-    let status = engine.status("proj").await.unwrap();
+    let status = engine.status(key("proj")).await.unwrap();
     assert_eq!(
         (status.counter_size, status.archive_size, status.terminated),
         (0, 3, true)
     );
-    assert_eq!(engine.counter("proj", None).await.unwrap().size, 0);
+    assert_eq!(engine.counter(key("proj"), None).await.unwrap().size, 0);
     assert_eq!(
         engine
-            .archive("proj", Some(tyn("requirement")))
+            .archive(key("proj"), Some(tyn("requirement")))
             .await
             .unwrap()
             .size,
@@ -211,6 +243,7 @@ async fn full_lifecycle_with_notifications() {
         assert_eq!(n.seq, seq);
         assert_eq!(n.summary.counter_size, cs);
         assert_eq!(n.domain, "proj");
+        assert_eq!(n.instance, DEFAULT_INSTANCE);
     }
     assert!(rx.try_recv().is_err(), "不应有多余通知");
 
@@ -239,30 +272,36 @@ async fn replay_equivalence_snapshot_and_pure_replay() {
     // 第一次运行：快照路径恢复（shutdown 写终态快照）
     let (counter, archive, status) = {
         let engine = setup(dir.path()).await;
-        engine.load_domain("proj", DECL).await.unwrap();
+        engine
+            .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+            .await
+            .unwrap();
         run_partial_flow(&engine, "proj").await;
         (
-            engine.counter("proj", None).await.unwrap(),
-            engine.archive("proj", None).await.unwrap(),
-            engine.status("proj").await.unwrap(),
+            engine.counter(key("proj"), None).await.unwrap(),
+            engine.archive(key("proj"), None).await.unwrap(),
+            engine.status(key("proj")).await.unwrap(),
         )
     };
     {
         let engine2 = setup(dir.path()).await; // 恢复含快照快速路径
-        assert_eq!(engine2.counter("proj", None).await.unwrap(), counter);
-        assert_eq!(engine2.archive("proj", None).await.unwrap(), archive);
-        assert_eq!(engine2.status("proj").await.unwrap(), status);
-        assert_eq!(engine2.list_domains().await.unwrap(), vec!["proj"]);
+        assert_eq!(engine2.counter(key("proj"), None).await.unwrap(), counter);
+        assert_eq!(engine2.archive(key("proj"), None).await.unwrap(), archive);
+        assert_eq!(engine2.status(key("proj")).await.unwrap(), status);
+        let listings = engine2.list_domains().await.unwrap();
+        assert_eq!(listings.len(), 1);
+        assert_eq!(listings[0].name, "proj");
+        assert_eq!(listings[0].instances, vec![DEFAULT_INSTANCE]);
         engine2.shutdown().await.unwrap(); // 确保句柄生命周期结束
     }
 
     // 第二次运行：删除快照 → 纯重放路径恢复，状态仍逐字段等价
-    std::fs::remove_file(dir.path().join("proj.snapshot.json")).unwrap();
+    std::fs::remove_file(snapshot_path(dir.path(), "proj")).unwrap();
     {
         let engine3 = setup(dir.path()).await;
-        assert_eq!(engine3.counter("proj", None).await.unwrap(), counter);
-        assert_eq!(engine3.archive("proj", None).await.unwrap(), archive);
-        assert_eq!(engine3.status("proj").await.unwrap(), status);
+        assert_eq!(engine3.counter(key("proj"), None).await.unwrap(), counter);
+        assert_eq!(engine3.archive(key("proj"), None).await.unwrap(), archive);
+        assert_eq!(engine3.status(key("proj")).await.unwrap(), status);
         // 终止状态也应重导出（counter 非空 → 未终止）
         assert!(!status.terminated);
         engine3.shutdown().await.unwrap();
@@ -277,16 +316,21 @@ async fn crash_recovery_truncates_partial_tail() {
 
     // 崩溃前：完成 seed + produce（不 shutdown，无终态快照）
     let engine = setup(dir.path()).await;
-    engine.load_domain("proj", DECL).await.unwrap();
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
     let design_id = run_partial_flow(&engine, "proj").await;
     crash(engine).await;
 
     // 模拟崩溃残留：日志尾部写入半行 JSON（无换行）
     {
         use std::io::Write;
+        let path = log_path(dir.path(), "proj");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut f = std::fs::OpenOptions::new()
             .append(true)
-            .open(log_path(dir.path(), "proj"))
+            .open(&path)
             .unwrap();
         f.write_all(br#"{"kind":"Consumed","seq":5,"ts":"T99""#)
             .unwrap();
@@ -299,16 +343,16 @@ async fn crash_recovery_truncates_partial_tail() {
 
     // 重启：截断半行，重放到 seq 4；后续命令 seq 续接
     let engine2 = setup(dir.path()).await;
-    let status = engine2.status("proj").await.unwrap();
+    let status = engine2.status(key("proj")).await.unwrap();
     assert_eq!((status.counter_size, status.archive_size), (1, 1));
     assert_eq!(log_lines(dir.path(), "proj").len(), 4, "半行应被截断");
 
     // 恢复后可继续工作：消费 design token，Rule-T 触发
     engine2
-        .consume("proj", par("developer"), design_id, None)
+        .consume(key("proj"), par("developer"), design_id, None)
         .await
         .unwrap();
-    let status = engine2.status("proj").await.unwrap();
+    let status = engine2.status(key("proj")).await.unwrap();
     assert_eq!(
         (status.counter_size, status.archive_size, status.terminated),
         (0, 2, true)
@@ -329,7 +373,10 @@ async fn index_loss_triggers_rebuild() {
     let dir = tempfile::tempdir().unwrap();
     {
         let engine = setup(dir.path()).await;
-        engine.load_domain("proj", DECL).await.unwrap();
+        engine
+            .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+            .await
+            .unwrap();
         run_partial_flow(&engine, "proj").await;
         engine.shutdown().await.unwrap();
     }
@@ -338,20 +385,20 @@ async fn index_loss_triggers_rebuild() {
     std::fs::remove_file(dir.path().join("index.tursodb")).unwrap();
 
     let engine2 = setup(dir.path()).await;
-    let status = engine2.status("proj").await.unwrap();
+    let status = engine2.status(key("proj")).await.unwrap();
     assert_eq!((status.counter_size, status.archive_size), (1, 1));
 
     // 重建后引擎继续可用（索引写入路径正常）
     engine2
         .seed(
-            "proj",
+            key("proj"),
             par("external"),
             tyn("requirement"),
             ThingRef::some("urn:req:2"),
         )
         .await
         .unwrap();
-    assert_eq!(engine2.counter("proj", None).await.unwrap().size, 2);
+    assert_eq!(engine2.counter(key("proj"), None).await.unwrap().size, 2);
     engine2.shutdown().await.unwrap();
 }
 
@@ -362,7 +409,10 @@ async fn corrupt_middle_line_fails_fast() {
     let dir = tempfile::tempdir().unwrap();
     {
         let engine = setup(dir.path()).await;
-        engine.load_domain("proj", DECL).await.unwrap();
+        engine
+            .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+            .await
+            .unwrap();
         run_partial_flow(&engine, "proj").await;
         engine.shutdown().await.unwrap();
     }
@@ -374,7 +424,7 @@ async fn corrupt_middle_line_fails_fast() {
     std::fs::write(&path, lines.join("\n") + "\n").unwrap();
 
     let engine2 = setup(dir.path()).await;
-    let err = engine2.status("proj").await.unwrap_err();
+    let err = engine2.status(key("proj")).await.unwrap_err();
     assert!(
         matches!(err, EngineError::Recovery(_)),
         "应 fail-fast：{err:?}"
@@ -391,16 +441,25 @@ async fn multi_domain_sessions_isolated() {
     let dir = tempfile::tempdir().unwrap();
     let engine = setup(dir.path()).await;
 
-    engine.load_domain("alpha", DECL).await.unwrap();
-    engine.load_domain("beta", DECL).await.unwrap();
-    assert_eq!(engine.list_domains().await.unwrap(), vec!["alpha", "beta"]);
+    engine
+        .load_domain("alpha", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    engine
+        .load_domain("beta", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        domain_names(engine.list_domains().await.unwrap()),
+        vec!["alpha", "beta"]
+    );
 
-    let mut rx_alpha = engine.subscribe("alpha").await.unwrap();
+    let mut rx_alpha = engine.subscribe(key("alpha")).await.unwrap();
 
     // 仅在 alpha 注入
     let req = engine
         .seed(
-            "alpha",
+            key("alpha"),
             par("external"),
             tyn("requirement"),
             ThingRef::some("urn:req:1"),
@@ -409,10 +468,10 @@ async fn multi_domain_sessions_isolated() {
         .unwrap();
 
     // beta 不受影响（状态、通知均隔离）
-    assert_eq!(engine.status("beta").await.unwrap().counter_size, 0);
+    assert_eq!(engine.status(key("beta")).await.unwrap().counter_size, 0);
     assert_eq!(
         engine
-            .counter("beta", Some(tyn("requirement")))
+            .counter(key("beta"), Some(tyn("requirement")))
             .await
             .unwrap()
             .size,
@@ -421,7 +480,7 @@ async fn multi_domain_sessions_isolated() {
 
     // beta 上消费 alpha 的 token → 域不存在该 token，拒绝
     let err = engine
-        .consume("beta", par("architect"), req.id.clone(), None)
+        .consume(key("beta"), par("architect"), req.id.clone(), None)
         .await
         .unwrap_err();
     assert!(matches!(err, EngineError::Rule(_)));
@@ -436,22 +495,22 @@ async fn multi_domain_sessions_isolated() {
 
     // 同一参与者跨域互不感知：beta 的 architect 无生产选项
     assert!(engine
-        .enabled("beta", par("architect"))
+        .enabled(key("beta"), par("architect"))
         .await
         .unwrap()
         .is_empty());
     assert_eq!(
         engine
-            .enabled("alpha", par("architect"))
+            .enabled(key("alpha"), par("architect"))
             .await
             .unwrap()
             .len(),
         1
     );
 
-    // 未加载的域报 DomainNotFound
-    let err = engine.status("ghost").await.unwrap_err();
-    assert!(matches!(err, EngineError::DomainNotFound { .. }));
+    // 未加载的实例报 InstanceNotFound
+    let err = engine.status(key("ghost")).await.unwrap_err();
+    assert!(matches!(err, EngineError::InstanceNotFound { .. }));
 
     engine.shutdown().await.unwrap();
 }
@@ -462,7 +521,10 @@ async fn multi_domain_sessions_isolated() {
 async fn concurrent_commands_serialize() {
     let dir = tempfile::tempdir().unwrap();
     let engine = setup(dir.path()).await;
-    engine.load_domain("proj", DECL).await.unwrap();
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
 
     // 8 个并发 seed：单权威串行化 → 全部成功、seq 唯一递增
     let handles: Vec<_> = (0..8)
@@ -470,7 +532,7 @@ async fn concurrent_commands_serialize() {
             let e = engine.clone();
             tokio::spawn(async move {
                 e.seed(
-                    "proj",
+                    key("proj"),
                     par("external"),
                     tyn("requirement"),
                     ThingRef::some(format!("urn:req:{i}")),
@@ -500,7 +562,7 @@ async fn concurrent_commands_serialize() {
     // 重启后重放等价：8 枚 token 全部恢复
     engine.shutdown().await.unwrap();
     let engine2 = setup(dir.path()).await;
-    assert_eq!(engine2.status("proj").await.unwrap().counter_size, 8);
+    assert_eq!(engine2.status(key("proj")).await.unwrap().counter_size, 8);
     engine2.shutdown().await.unwrap();
 }
 
@@ -512,21 +574,27 @@ async fn domain_replace_resets_state_and_recovery_uses_last_load() {
 
     {
         let engine = setup(dir.path()).await;
-        engine.load_domain("proj", DECL).await.unwrap();
+        engine
+            .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+            .await
+            .unwrap();
         run_partial_flow(&engine, "proj").await;
-        assert_eq!(engine.status("proj").await.unwrap().counter_size, 1);
+        assert_eq!(engine.status(key("proj")).await.unwrap().counter_size, 1);
 
         // 替换重载：状态清零、seq 续接（DomainLoaded(5)）
-        let summary = engine.load_domain("proj", DECL).await.unwrap();
+        let summary = engine
+            .load_domain("proj", DECL, DEFAULT_INSTANCE, true)
+            .await
+            .unwrap();
         assert_eq!(summary.last_seq, 5);
-        let status = engine.status("proj").await.unwrap();
+        let status = engine.status(key("proj")).await.unwrap();
         assert_eq!((status.counter_size, status.archive_size), (0, 0));
         assert_eq!(log_lines(dir.path(), "proj").len(), 5);
 
         // 替换后注入新 token（Seeded(6)）
         engine
             .seed(
-                "proj",
+                key("proj"),
                 par("external"),
                 tyn("requirement"),
                 ThingRef::some("urn:req:9"),
@@ -537,11 +605,11 @@ async fn domain_replace_resets_state_and_recovery_uses_last_load() {
 
     // 崩溃重启：恢复只重放最后一次 DomainLoaded(5) 之后的事件
     let engine2 = setup(dir.path()).await;
-    let counter = engine2.counter("proj", None).await.unwrap();
+    let counter = engine2.counter(key("proj"), None).await.unwrap();
     assert_eq!(counter.size, 1, "只有替换后的 token");
     assert_eq!(counter.tokens[0].thing_ref, ThingRef::some("urn:req:9"));
     assert_eq!(
-        engine2.status("proj").await.unwrap().archive_size,
+        engine2.status(key("proj")).await.unwrap().archive_size,
         0,
         "替换前的 Archive 不复活"
     );
@@ -577,16 +645,23 @@ async fn validate_analyze_compose_commands() {
         gates { developer: consumes design, produces implementation }
         seed_authority { }";
     let summary = engine
-        .compose_and_load("merged", vec![frag1.to_owned(), frag2.to_owned()])
+        .compose_and_load(
+            "merged",
+            vec![frag1.to_owned(), frag2.to_owned()],
+            DEFAULT_INSTANCE,
+        )
         .await
         .unwrap();
     assert_eq!(summary.types, 3);
-    assert_eq!(engine.list_domains().await.unwrap(), vec!["merged"]);
+    assert_eq!(
+        domain_names(engine.list_domains().await.unwrap()),
+        vec!["merged"]
+    );
 
     // 组合域可正常运转
     let req = engine
         .seed(
-            "merged",
+            key("merged"),
             par("external"),
             tyn("requirement"),
             ThingRef::none(),
@@ -595,7 +670,7 @@ async fn validate_analyze_compose_commands() {
         .unwrap();
     engine
         .produce(
-            "merged",
+            key("merged"),
             par("architect"),
             tyn("design"),
             vec![req.id.clone()],
@@ -603,7 +678,7 @@ async fn validate_analyze_compose_commands() {
         )
         .await
         .unwrap();
-    assert_eq!(engine.status("merged").await.unwrap().counter_size, 2);
+    assert_eq!(engine.status(key("merged")).await.unwrap().counter_size, 2);
 
     engine.shutdown().await.unwrap();
 }
@@ -614,10 +689,13 @@ async fn validate_analyze_compose_commands() {
 async fn logical_clock_and_sequential_ids_are_deterministic() {
     let dir = tempfile::tempdir().unwrap();
     let engine = setup(dir.path()).await;
-    engine.load_domain("proj", DECL).await.unwrap();
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
     let t = engine
         .seed(
-            "proj",
+            key("proj"),
             par("external"),
             tyn("requirement"),
             ThingRef::none(),
@@ -636,10 +714,13 @@ async fn logical_clock_and_sequential_ids_are_deterministic() {
 async fn consume_request_id_is_idempotent_and_persists() {
     let dir = tempfile::tempdir().unwrap();
     let engine = setup(dir.path()).await;
-    engine.load_domain("proj", DECL).await.unwrap();
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
     let req = engine
         .seed(
-            "proj",
+            key("proj"),
             par("external"),
             tyn("requirement"),
             ThingRef::none(),
@@ -650,7 +731,7 @@ async fn consume_request_id_is_idempotent_and_persists() {
     // 首次消费：成功归档
     let first = engine
         .consume(
-            "proj",
+            key("proj"),
             par("architect"),
             req.id.clone(),
             Some("req-1".into()),
@@ -663,7 +744,7 @@ async fn consume_request_id_is_idempotent_and_persists() {
     let lines_before = log_lines(dir.path(), "proj").len();
     let retry = engine
         .consume(
-            "proj",
+            key("proj"),
             par("architect"),
             req.id.clone(),
             Some("req-1".into()),
@@ -676,13 +757,13 @@ async fn consume_request_id_is_idempotent_and_persists() {
         lines_before,
         "重试不产生新事件"
     );
-    let status = engine.status("proj").await.unwrap();
+    let status = engine.status(key("proj")).await.unwrap();
     assert_eq!((status.counter_size, status.archive_size), (0, 1));
 
     // 同一 request_id 用于另一 token → 幂等冲突
     let req2 = engine
         .seed(
-            "proj",
+            key("proj"),
             par("external"),
             tyn("requirement"),
             ThingRef::none(),
@@ -691,7 +772,7 @@ async fn consume_request_id_is_idempotent_and_persists() {
         .unwrap();
     let err = engine
         .consume(
-            "proj",
+            key("proj"),
             par("architect"),
             req2.id.clone(),
             Some("req-1".into()),
@@ -705,7 +786,7 @@ async fn consume_request_id_is_idempotent_and_persists() {
     let engine2 = setup(dir.path()).await;
     let retry2 = engine2
         .consume(
-            "proj",
+            key("proj"),
             par("architect"),
             req.id.clone(),
             Some("req-1".into()),
@@ -716,9 +797,255 @@ async fn consume_request_id_is_idempotent_and_persists() {
 
     // 不带 request_id 的正常消费不受幂等表影响
     let fresh = engine2
-        .consume("proj", par("architect"), req2.id.clone(), None)
+        .consume(key("proj"), par("architect"), req2.id.clone(), None)
         .await
         .unwrap();
     assert_eq!(fresh.token.id, req2.id);
+    engine2.shutdown().await.unwrap();
+}
+
+// ============ 12. 域双键：同一声明并发承载多个实例（D27） ============
+
+#[tokio::test]
+async fn same_declaration_supports_multiple_instances() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup(dir.path()).await;
+
+    // default 实例 + 额外实例 proj/x
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    engine.instantiate("proj", "x").await.unwrap();
+
+    // 清单：一个定义键、两个实例
+    let listings = engine.list_domains().await.unwrap();
+    assert_eq!(listings.len(), 1);
+    assert_eq!(listings[0].name, "proj");
+    assert_eq!(listings[0].instances, vec!["default", "x"]);
+
+    let kd = key("proj");
+    let kx = InstanceKey::new("proj", "x");
+
+    // 两实例并发注入，Counter 相互独立
+    engine
+        .seed(
+            kd.clone(),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    engine
+        .seed(
+            kx.clone(),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    engine
+        .seed(
+            kx.clone(),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(engine.counter(kd.clone(), None).await.unwrap().size, 1);
+    assert_eq!(engine.counter(kx.clone(), None).await.unwrap().size, 2);
+
+    // 日志分文件：各自 `default`/`x` 独立 seq（均从 DomainLoaded(1) 起）
+    assert_eq!(log_lines(dir.path(), "proj").len(), 2);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("proj").join("x.events.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        3
+    );
+
+    // 未声明域实例化 → DomainNotDeclared；重复实例化 → InstanceExists
+    let err = engine.instantiate("ghost", "x").await.unwrap_err();
+    assert!(matches!(err, EngineError::DomainNotDeclared { .. }));
+    let err = engine.instantiate("proj", "x").await.unwrap_err();
+    assert!(matches!(err, EngineError::InstanceExists { .. }));
+
+    // 非空实例再 load 且不带 force → DomainBusy；带 force → 重置该实例
+    let err = engine
+        .load_domain("proj", DECL, "x", false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, EngineError::DomainBusy { .. }));
+    engine.load_domain("proj", DECL, "x", true).await.unwrap();
+    assert_eq!(engine.counter(kx.clone(), None).await.unwrap().size, 0);
+    // default 实例不受影响
+    assert_eq!(engine.counter(kd.clone(), None).await.unwrap().size, 1);
+
+    engine.shutdown().await.unwrap();
+}
+
+// ============ 13. 声明替换不影响运行中的实例（D27 实例-声明绑定） ============
+
+/// 与 [`DECL`] 同域但语义不同：architect 不产出 design。
+const DECL_ALT: &str = r#"
+types { requirement; design }
+
+preconditions { requirement → design }
+
+gates {
+    architect: reads requirement, consumes requirement
+}
+
+seed_authority { external: seeds requirement }
+"#;
+
+#[tokio::test]
+async fn replacing_declaration_does_not_disturb_running_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup(dir.path()).await;
+
+    let kd = key("proj");
+    let kx = InstanceKey::new("proj", "x");
+
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    engine.instantiate("proj", "x").await.unwrap();
+
+    // 在 x 上运转到「requirement 就位、architect 可产出」
+    engine
+        .seed(
+            kx.clone(),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .enabled(kx.clone(), par("architect"))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // 用 DECL_ALT 替换重载 default（force）：default 语义变化（architect 不再可产出）
+    engine
+        .load_domain("proj", DECL_ALT, DEFAULT_INSTANCE, true)
+        .await
+        .unwrap();
+    engine
+        .seed(
+            kd.clone(),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .enabled(kd.clone(), par("architect"))
+            .await
+            .unwrap()
+            .is_empty(),
+        "default 采用新声明（无 producer）"
+    );
+
+    // x 的运行态与语义不受影响（实例声明快照自封闭）
+    assert_eq!(engine.counter(kx.clone(), None).await.unwrap().size, 1);
+    assert_eq!(
+        engine
+            .enabled(kx.clone(), par("architect"))
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "x 仍按自身声明快照运转"
+    );
+
+    // 重启重放：x 的声明仍由自身 DomainLoaded 承载，不被替换后的声明污染
+    engine.shutdown().await.unwrap();
+    let engine2 = setup(dir.path()).await;
+    assert_eq!(
+        engine2.enabled(kx, par("architect")).await.unwrap().len(),
+        1,
+        "重启后 x 语义仍自封闭"
+    );
+    assert!(engine2
+        .enabled(kd, par("architect"))
+        .await
+        .unwrap()
+        .is_empty());
+    engine2.shutdown().await.unwrap();
+}
+
+// ============ 14. 声明回填：重启后可直接实例化新实例（D27 declaration.pact） ============
+
+#[tokio::test]
+async fn declaration_backfill_supports_new_instances_after_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let engine = setup(dir.path()).await;
+        engine
+            .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+            .await
+            .unwrap();
+        engine.instantiate("proj", "x").await.unwrap();
+        engine
+            .seed(
+                InstanceKey::new("proj", "x"),
+                par("external"),
+                tyn("requirement"),
+                ThingRef::none(),
+            )
+            .await
+            .unwrap();
+        engine.shutdown().await.unwrap();
+    }
+
+    // declare 时落盘的声明原文（R4 裁决）
+    let decl_file = dir.path().join("proj").join("declaration.pact");
+    assert!(decl_file.exists(), "declaration.pact 应存在");
+    assert!(std::fs::read_to_string(&decl_file)
+        .unwrap()
+        .contains("requirement"));
+
+    // 重启：注册表由 declaration.pact 复原 → 声明级分析可用、可实例化新实例
+    let engine2 = setup(dir.path()).await;
+    let report = engine2.analyze_loaded("proj").await.unwrap();
+    assert!(report.structural_deadlock.is_empty());
+
+    engine2.instantiate("proj", "y").await.unwrap();
+    let ky = InstanceKey::new("proj", "y");
+    assert_eq!(engine2.counter(ky.clone(), None).await.unwrap().size, 0);
+    // 新实例可按声明的 seed 权与 gate 正常运转
+    engine2
+        .seed(
+            ky.clone(),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(engine2.counter(ky, None).await.unwrap().size, 1);
+    // 既有实例 x 的运行态保留
+    assert_eq!(
+        engine2
+            .counter(InstanceKey::new("proj", "x"), None)
+            .await
+            .unwrap()
+            .size,
+        1
+    );
+
     engine2.shutdown().await.unwrap();
 }

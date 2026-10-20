@@ -13,7 +13,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// 追加句柄（每域一个，由 Store 持有；单写者——引擎 actor 串行化保证）。
+/// 追加句柄（每域实例一个，由 Store 持有；单写者——引擎 actor 串行化保证）。
 pub struct EventLog {
     file: File,
 }
@@ -103,14 +103,25 @@ pub fn read_and_sanitize(path: &Path) -> Result<ReadOutcome, StoreError> {
     Ok(ReadOutcome { events, truncated })
 }
 
-/// 域名 → 事件日志文件路径。
-pub fn events_path(data_dir: &Path, domain: &str) -> PathBuf {
-    data_dir.join(format!("{domain}.events.jsonl"))
+/// 域名 → 域子目录（双键布局，D27）：`<data_dir>/<domain>`。
+pub fn domain_dir(data_dir: &Path, domain: &str) -> PathBuf {
+    data_dir.join(domain)
 }
 
-/// 域名 → 快照文件路径。
-pub fn snapshot_path(data_dir: &Path, domain: &str) -> PathBuf {
-    data_dir.join(format!("{domain}.snapshot.json"))
+/// 实例键 → 事件日志文件路径：`<data_dir>/<domain>/<instance>.events.jsonl`。
+pub fn events_path(data_dir: &Path, domain: &str, instance: &str) -> PathBuf {
+    domain_dir(data_dir, domain).join(format!("{instance}.events.jsonl"))
+}
+
+/// 实例键 → 快照文件路径：`<data_dir>/<domain>/<instance>.snapshot.json`。
+pub fn snapshot_path(data_dir: &Path, domain: &str, instance: &str) -> PathBuf {
+    domain_dir(data_dir, domain).join(format!("{instance}.snapshot.json"))
+}
+
+/// 域名 → 声明原文文件路径：`<data_dir>/<domain>/declaration.pact`。
+/// 定义态缓存（非审计记录）：declare 时写入，recover 用它回填声明注册表。
+pub fn declaration_path(data_dir: &Path, domain: &str) -> PathBuf {
+    domain_dir(data_dir, domain).join("declaration.pact")
 }
 
 #[cfg(test)]
@@ -127,6 +138,12 @@ mod tests {
             depends_on: vec![],
             produced_at: "T0".into(),
         }
+    }
+
+    /// 双键布局测试路径（建域子目录）；本模块只关心日志机制，与实例无关。
+    fn test_path(dir: &Path) -> PathBuf {
+        std::fs::create_dir_all(domain_dir(dir, "d")).unwrap();
+        events_path(dir, "d", "default")
     }
 
     fn sample_events() -> Vec<Event> {
@@ -148,7 +165,7 @@ mod tests {
     #[test]
     fn append_read_roundtrip_with_fsync() {
         let dir = tempfile::tempdir().unwrap();
-        let path = events_path(dir.path(), "d");
+        let path = test_path(dir.path());
         let mut log = EventLog::open(&path).unwrap();
         for ev in sample_events() {
             log.append(&ev).unwrap();
@@ -161,7 +178,7 @@ mod tests {
     #[test]
     fn half_line_is_truncated_on_recovery() {
         let dir = tempfile::tempdir().unwrap();
-        let path = events_path(dir.path(), "d");
+        let path = test_path(dir.path());
         let mut log = EventLog::open(&path).unwrap();
         for ev in sample_events() {
             log.append(&ev).unwrap();
@@ -184,7 +201,7 @@ mod tests {
     #[test]
     fn corrupt_complete_line_is_fatal() {
         let dir = tempfile::tempdir().unwrap();
-        let path = events_path(dir.path(), "d");
+        let path = test_path(dir.path());
         std::fs::write(
             &path,
             concat!(
@@ -203,7 +220,7 @@ mod tests {
     #[test]
     fn seq_gap_is_fatal() {
         let dir = tempfile::tempdir().unwrap();
-        let path = events_path(dir.path(), "d");
+        let path = test_path(dir.path());
         let mut log = EventLog::open(&path).unwrap();
         log.append(&Event::DomainLoaded {
             seq: 1,

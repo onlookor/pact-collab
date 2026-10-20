@@ -4,7 +4,7 @@
 //! 执行器订阅 `Consumed` 通知、落地外部动作；失败时**不表现为消费回滚**，而是以 Rule-S 追加
 //! 一条补偿事实（saga）。补偿后可选立刻归档该事实（`finalize`），以保持域仍可终止。
 
-use crate::client::ParticipantClient;
+use crate::client::{bound_ready, ParticipantClient};
 use crate::error::RuntimeError;
 use async_trait::async_trait;
 use pact_core::ArchiveEntry;
@@ -158,22 +158,21 @@ impl<C: ParticipantClient> SideEffectExecutor<C> {
     ) -> Result<ExecutorReport, RuntimeError> {
         // —— 引导：等待域出现（执行器不承担引导职责，可能先于引导者启动）——
         let domain = self.client.domain().to_owned();
+        let instance = self.client.instance().map(str::to_owned);
         let mut found = false;
         for _ in 0..DISCOVERY_TRIES {
-            if self
-                .client
-                .list_domains()
-                .await?
-                .iter()
-                .any(|d| d == &domain)
-            {
+            let listings = self.client.list_domains().await?;
+            if bound_ready(&listings, &domain, instance.as_deref()) {
                 found = true;
                 break;
             }
             tokio::time::sleep(DISCOVERY_INTERVAL).await;
         }
         if !found {
-            return Err(RuntimeError::Timeout(format!("执行器未发现域 {domain}")));
+            return Err(RuntimeError::Timeout(format!(
+                "执行器未发现域 {domain}/{}",
+                instance.as_deref().unwrap_or(pact_engine::DEFAULT_INSTANCE)
+            )));
         }
 
         let mut wake = self.client.subscribe().await?;

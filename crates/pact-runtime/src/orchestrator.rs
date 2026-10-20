@@ -100,20 +100,29 @@ impl AgentSpec {
 /// 多 agent 编排器。
 pub struct Orchestrator {
     domain: String,
+    /// 实例键；`None` = `default` 实例（D27）。
+    instance: Option<String>,
     poll: Duration,
     deadline: Duration,
     agents: Vec<AgentSpec>,
 }
 
 impl Orchestrator {
-    /// 以绑定域构造（默认轮询/期限）。
+    /// 以绑定域构造（默认轮询/期限；作用于 `default` 实例）。
     pub fn new(domain: impl Into<String>) -> Self {
         Self {
             domain: domain.into(),
+            instance: None,
             poll: DEFAULT_POLL,
             deadline: DEFAULT_DEADLINE,
             agents: Vec::new(),
         }
+    }
+
+    /// 绑定实例键（缺省 `default` 实例，D27）；应用于全部参与者。
+    pub fn with_instance(mut self, instance: impl Into<String>) -> Self {
+        self.instance = Some(instance.into());
+        self
     }
 
     /// 追加一个参与者。
@@ -138,6 +147,7 @@ impl Orchestrator {
     pub async fn run(self) -> Result<Vec<AgentReport>, RuntimeError> {
         let Orchestrator {
             domain,
+            instance,
             poll,
             deadline,
             agents,
@@ -148,6 +158,7 @@ impl Orchestrator {
         for spec in agents {
             names.push(spec.participant.clone());
             let domain = domain.clone();
+            let instance = instance.clone();
             handles.push(tokio::spawn(async move {
                 let cfg = DriverConfig {
                     participant: spec.participant,
@@ -158,8 +169,11 @@ impl Orchestrator {
                 };
                 match spec.transport {
                     Transport::Rest { endpoint, bearer } => {
-                        let client =
+                        let mut client =
                             RestClient::from_endpoint(&endpoint, &domain, bearer.as_deref());
+                        if let Some(i) = instance {
+                            client = client.with_instance(i);
+                        }
                         drive(client, &cfg).await
                     }
                     Transport::Mcp {
@@ -167,8 +181,11 @@ impl Orchestrator {
                         endpoint,
                         bearer,
                     } => {
-                        let client =
+                        let mut client =
                             McpClient::spawn(&bin, &endpoint, bearer.as_deref(), domain).await?;
+                        if let Some(i) = instance {
+                            client = client.with_instance(i);
+                        }
                         drive(client, &cfg).await
                     }
                 }

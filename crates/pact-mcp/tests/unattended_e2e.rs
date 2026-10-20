@@ -245,7 +245,7 @@ async fn run_agent(cfg: AgentCfg) -> AgentReport {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|d| d.as_str() == Some(cfg.domain.as_str()));
+                    .any(|d| d["name"].as_str() == Some(cfg.domain.as_str()));
                 if dominated {
                     found = true;
                     break;
@@ -550,7 +550,7 @@ async fn scenario_react_loop() {
 
     // —— 只读核验（测试进程不做任何状态变更）——
     let c = Client::unix(&sock);
-    let st = c.status("react").await.unwrap();
+    let st = c.status("react", None).await.unwrap();
     assert_eq!(
         st,
         StatusView {
@@ -560,7 +560,7 @@ async fn scenario_react_loop() {
         }
     );
 
-    let ar = c.archive("react", None).await.unwrap();
+    let ar = c.archive("react", None, None).await.unwrap();
     let types: Vec<&str> = ar.entries.iter().map(|e| e.token.ty.0.as_str()).collect();
     // 单 agent 串行，消费序即两轮循环序
     assert_eq!(
@@ -676,7 +676,7 @@ async fn scenario_software_lifecycle() {
 
     // —— 只读核验 ——
     let c = Client::unix(&sock);
-    let st = c.status("swe").await.unwrap();
+    let st = c.status("swe", None).await.unwrap();
     assert_eq!(
         st,
         StatusView {
@@ -686,7 +686,7 @@ async fn scenario_software_lifecycle() {
         }
     );
 
-    let ar = c.archive("swe", None).await.unwrap();
+    let ar = c.archive("swe", None, None).await.unwrap();
     let mut types: Vec<String> = ar.entries.iter().map(|e| e.token.ty.0.clone()).collect();
     types.sort();
     assert_eq!(

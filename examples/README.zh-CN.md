@@ -12,7 +12,7 @@
 本目录是**通用**的那一套。
 
 约定：下文所有 `pact ...` 都是 `./target/debug/pact`（或你安装的同名二进制）；
-`§x.y` 引用范式规范 `docs/pactv1_rev2.md`（论文手稿族不入公开仓库，仅本地保留，
+`§x.y` 引用范式规范 `docs/pactv1_rev3.md`（论文手稿族不入公开仓库，仅本地保留，
 见 `.gitignore` 的 `/docs/pact*`）。
 
 ---
@@ -418,4 +418,4 @@ SeedAuthorityDecl。本目录五份域就是五次不同的填充——软件工
 | [`docs/design.md`](../docs/design.md) | 设计决策（含 D21 SeedProduceOverlap 的类型级判定、D22 示例与手册作为交付资产） |
 | [`docs/architecture.md`](../docs/architecture.md) | 架构：crate 依赖、数据流、部署视图、联网演进 |
 | [`docs/skill-adaptation.md`](../docs/skill-adaptation.md) | 与两个技能强绑定的适配产物（另一个仓库），与本目录互补 |
-| `docs/pactv1_rev2.md` | 范式规范母本（论文手稿族，不入公开仓库）；本文 §x.y 引用均指该文档 |
+| `docs/pactv1_rev3.md` | 范式规范母本（论文手稿族，不入公开仓库）；本文 §x.y 引用均指该文档 |

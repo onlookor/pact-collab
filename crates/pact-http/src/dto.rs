@@ -4,17 +4,29 @@
 //! 格式由引擎层 Clock 保证）。
 
 use pact_core::{ArchiveEntry, ProductionOption, RuleError, Token, TokenId, TypeName};
-use pact_engine::views::GateClause;
+use pact_engine::views::{DomainListing, GateClause};
 use pact_parser::Problem;
 use serde::{Deserialize, Serialize};
 
 // ============ 请求 ============
 
-/// `POST /domains`
+/// `POST /domains`：声明 + 实例化（不指定实例 ⇒ 默认实例 `default`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoadDomainReq {
     pub name: String,
     pub declaration: String,
+    /// 目标实例名（缺省 = `default`）。
+    #[serde(default)]
+    pub instance: Option<String>,
+    /// 目标实例非空时是否允许替换（缺省 false → 409 DomainBusy）。
+    #[serde(default)]
+    pub force: Option<bool>,
+}
+
+/// `POST /domains/{d}/instances`：在已登记声明上创建额外实例。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstantiateReq {
+    pub instance: String,
 }
 
 /// `POST /domains/{d}:compose`
@@ -71,7 +83,7 @@ pub struct ParticipantReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsumeReq {
     pub participant: String,
-    /// 可选幂等键：同域内重复请求返回首次结果，不重复消费。
+    /// 可选幂等键：同一域实例内重复请求返回首次结果，不重复消费。
     #[serde(default)]
     pub request_id: Option<String>,
 }
@@ -90,16 +102,18 @@ pub struct EntryResp {
     pub entry: ArchiveEntry,
 }
 
-/// `GET /domains`
+/// `GET /domains`：定义键 + 其实例清单（D27）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DomainsResp {
-    pub domains: Vec<String>,
+    pub domains: Vec<DomainListing>,
 }
 
-/// `GET /domains/{d}`：域信息 + 状态摘要。
+/// `GET /domains/{d}`（含实例端点）：域信息 + 状态摘要。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DomainInfo {
     pub name: String,
+    /// 实例键（默认 `default`）。
+    pub instance: String,
     pub counter_size: usize,
     pub archive_size: usize,
     pub terminated: bool,

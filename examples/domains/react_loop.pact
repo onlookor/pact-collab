@@ -1,6 +1,6 @@
 // 单 agent ReAct 循环域
 //
-// 出处：docs/pactv1_rev2.md Part III Chapter 1（逐字对应 §1.1 编码）
+// 出处：docs/pactv1_rev3.md Part III Chapter 1（逐字对应 §1.1 编码）
 //
 // 展示范式的一个反直觉性质：前置图可以有环，且仍然自然终止。
 //   observation → thought → action → tool_result → observation（回到起点）

@@ -4,7 +4,7 @@
 //! 仅保留「发现域 → 订阅 → 取门 → （引导）播种 → 决策循环 → 关闭」的语义主干；差异仅在
 //! 协议错误以 [`RuntimeError`] 返回而非 panic，传输由注入的 [`ParticipantClient`] 提供。
 
-use crate::client::ParticipantClient;
+use crate::client::{bound_ready, ParticipantClient};
 use crate::error::RuntimeError;
 use pact_core::Action;
 use pact_engine::notify::{Notification, NotificationKind};
@@ -120,6 +120,7 @@ pub async fn drive<C: ParticipantClient>(
     cfg: &DriverConfig,
 ) -> Result<AgentReport, RuntimeError> {
     let domain = client.domain().to_owned();
+    let instance = client.instance().map(str::to_owned);
 
     // —— 引导：加载域 或 等待域出现 ——
     match &cfg.bootstrap {
@@ -129,7 +130,8 @@ pub async fn drive<C: ParticipantClient>(
         None => {
             let mut found = false;
             for _ in 0..DISCOVERY_TRIES {
-                if client.list_domains().await?.iter().any(|d| d == &domain) {
+                let listings = client.list_domains().await?;
+                if bound_ready(&listings, &domain, instance.as_deref()) {
                     found = true;
                     break;
                 }
@@ -137,8 +139,9 @@ pub async fn drive<C: ParticipantClient>(
             }
             if !found {
                 return Err(RuntimeError::Timeout(format!(
-                    "参与者 {} 未发现域 {domain}",
-                    cfg.participant
+                    "参与者 {} 未发现域 {domain}/{}",
+                    cfg.participant,
+                    instance.as_deref().unwrap_or(pact_engine::DEFAULT_INSTANCE)
                 )));
             }
         }

@@ -7,7 +7,7 @@ use crate::clock::Clock;
 use crate::idgen::IdGen;
 use crate::notify::{Notification, NotificationKind, NotificationSummary};
 use crate::views::{
-    AnalysisReport, ArchiveView, CounterView, DomainSummary, GateClause, StatusView,
+    AnalysisReport, ArchiveView, CounterView, DomainListing, DomainSummary, GateClause, StatusView,
 };
 use pact_analysis as analysis;
 use pact_compose::{compose as compose_fragments, Conflict};
@@ -17,17 +17,36 @@ use pact_core::{
     TokenId, TypeName,
 };
 use pact_parser::{emit_domain, load_domain, Problem};
-use pact_store::{apply_event, Event, Snapshot, Store, StoreError};
+use pact_store::{apply_event, Event, InstanceKey, Snapshot, Store, StoreError};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot};
+
+/// 默认实例名：接口层不指定实例时回退到该实例（FR19「不指定实例 ⇒ 默认实例」）。
+pub const DEFAULT_INSTANCE: &str = "default";
 
 // ============ 错误 ============
 
 #[derive(Debug)]
 pub enum EngineError {
-    DomainNotFound {
+    /// 实例未加载（内存会话与磁盘日志均无）。
+    InstanceNotFound {
+        domain: String,
+        instance: String,
+    },
+    /// 域声明未登记（定义键缺失：未 declare）。
+    DomainNotDeclared {
         name: String,
+    },
+    /// 目标实例已存在（不可重复 instantiate）。
+    InstanceExists {
+        domain: String,
+        instance: String,
+    },
+    /// 目标实例非空且未显式 `force`（防止误替换销毁运行中的 Counter）。
+    DomainBusy {
+        domain: String,
+        instance: String,
     },
     Store(StoreError),
     Parse(Problem),
@@ -48,7 +67,18 @@ pub enum EngineError {
 impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EngineError::DomainNotFound { name } => write!(f, "域未加载：{name}"),
+            EngineError::InstanceNotFound { domain, instance } => {
+                write!(f, "实例未加载：{domain}/{instance}")
+            }
+            EngineError::DomainNotDeclared { name } => write!(f, "域声明未登记：{name}"),
+            EngineError::InstanceExists { domain, instance } => {
+                write!(f, "实例已存在：{domain}/{instance}")
+            }
+            EngineError::DomainBusy { domain, instance } => write!(
+                f,
+                "实例 {domain}/{instance} 非空（Reserved）：加载将重置其 Counter，\
+                 如确认替换请显式 --force"
+            ),
             EngineError::Store(e) => write!(f, "存储失败：{e}"),
             EngineError::Parse(e) => write!(f, "域声明无效：{e:?}"),
             EngineError::Rule(e) => write!(f, "规则拒绝：{e:?}"),
@@ -94,7 +124,7 @@ impl From<RuleError> for EngineError {
 pub struct EngineConfig {
     /// 每 N 个状态事件写一次快照（0 = 仅关停时写终态快照）。
     pub snapshot_every: u64,
-    /// 每域 broadcast 通道容量（Rule-W 通知）。
+    /// 每域实例 broadcast 通道容量（Rule-W 通知）。
     pub notify_capacity: usize,
     /// 命令通道容量。
     pub command_capacity: usize,
@@ -115,9 +145,19 @@ impl Default for EngineConfig {
 type Responder<T> = oneshot::Sender<Result<T, EngineError>>;
 
 pub enum Command {
+    /// 声明 + 实例化默认/指定实例（declare + instantiate 的合并入口）。
     LoadDomain {
         name: String,
         declaration: String,
+        instance: String,
+        /// 目标实例非空时是否允许替换（默认 false → `DomainBusy`）。
+        force: bool,
+        resp: Responder<DomainSummary>,
+    },
+    /// 从已登记声明创建额外实例（不改变声明）。
+    Instantiate {
+        domain: String,
+        instance: String,
         resp: Responder<DomainSummary>,
     },
     Validate {
@@ -125,14 +165,14 @@ pub enum Command {
         resp: Responder<Domain>,
     },
     Seed {
-        domain: String,
+        key: InstanceKey,
         participant: ParticipantName,
         ty: TypeName,
         thing_ref: ThingRef,
         resp: Responder<Token>,
     },
     Produce {
-        domain: String,
+        key: InstanceKey,
         participant: ParticipantName,
         ty: TypeName,
         predecessors: Vec<TokenId>,
@@ -140,60 +180,60 @@ pub enum Command {
         resp: Responder<Token>,
     },
     Read {
-        domain: String,
+        key: InstanceKey,
         participant: ParticipantName,
         token_id: TokenId,
         resp: Responder<Token>,
     },
     Consume {
-        domain: String,
+        key: InstanceKey,
         participant: ParticipantName,
         token_id: TokenId,
-        /// 可选幂等键：同域内重复请求返回首次结果（不重复消费）。
+        /// 可选幂等键：同实例内重复请求返回首次结果（不重复消费）。
         request_id: Option<String>,
         resp: Responder<ArchiveEntry>,
     },
     QueryCounter {
-        domain: String,
+        key: InstanceKey,
         filter: Option<TypeName>,
         resp: Responder<CounterView>,
     },
     QueryArchive {
-        domain: String,
+        key: InstanceKey,
         filter: Option<TypeName>,
         resp: Responder<ArchiveView>,
     },
     QueryGates {
-        domain: String,
+        key: InstanceKey,
         participant: ParticipantName,
         resp: Responder<Vec<GateClause>>,
     },
     QueryEnabled {
-        domain: String,
+        key: InstanceKey,
         participant: ParticipantName,
         resp: Responder<Vec<ProductionOption>>,
     },
     QueryStatus {
-        domain: String,
+        key: InstanceKey,
         resp: Responder<StatusView>,
     },
     ListDomains {
-        resp: Responder<Vec<String>>,
+        resp: Responder<Vec<DomainListing>>,
     },
-    /// 卸载域（内存态；日志保留，设计 §9.2 DELETE）。
+    /// 卸载实例（内存态；日志保留，设计 §9.2 DELETE）。
     UnloadDomain {
-        domain: String,
+        key: InstanceKey,
         resp: Responder<()>,
     },
     Subscribe {
-        domain: String,
+        key: InstanceKey,
         resp: Responder<broadcast::Receiver<Notification>>,
     },
     Analyze {
         text: String,
         resp: Responder<AnalysisReport>,
     },
-    /// 分析已加载域的声明（`POST /domains/{d}:analyze`）。
+    /// 分析已加载域**声明**（`POST /domains/{d}:analyze`，定义级）。
     AnalyzeLoaded {
         domain: String,
         resp: Responder<AnalysisReport>,
@@ -201,6 +241,7 @@ pub enum Command {
     ComposeAndLoad {
         name: String,
         fragments: Vec<String>,
+        instance: String,
         resp: Responder<DomainSummary>,
     },
     Shutdown {
@@ -213,7 +254,9 @@ impl Command {
     /// 各命令 responder 类型不同，无法合并 or-pattern，逐变体应答。
     fn fail(self, err: EngineError) {
         match self {
-            Command::LoadDomain { resp, .. } | Command::ComposeAndLoad { resp, .. } => {
+            Command::LoadDomain { resp, .. }
+            | Command::ComposeAndLoad { resp, .. }
+            | Command::Instantiate { resp, .. } => {
                 let _ = resp.send(Err(err));
             }
             Command::Validate { resp, .. } => {
@@ -263,17 +306,37 @@ impl Command {
 
 // ============ 会话 ============
 
-struct DomainSession {
+/// 声明注册表条目（**定义键** `domain`）：解析后的声明 + 原文。
+struct DeclarationEntry {
+    declaration: String,
+    domain: Domain,
+}
+
+/// 实例会话（**实例键** `InstanceKey`）；`declaration` = 实例创建时的声明快照。
+struct InstanceSession {
+    /// 实例创建时的声明原文（重放自封闭：后续 `declare` 覆盖不影响本实例）。
+    /// 保留为实例的声明快照记录；语义重放的声明来源是该实例日志的 `DomainLoaded`。
+    #[allow(dead_code)]
+    declaration: String,
     domain: Domain,
     state: CounterState,
     last_seq: u64,
+    /// 本实例最近一次 `DomainLoaded` 的 seq（「实例非空」判据基线，R5）。
+    dl_seq: u64,
     events_since_snapshot: u64,
-    /// 当前 Rule-T 判定（信息性，不锁定域——种子仍可注入）。
+    /// 当前 Rule-T 判定（信息性，不锁定域实例——种子仍可注入）。
     terminated: bool,
     /// Rule-E 幂等表：request_id → (目标 token id, 首次归档结果)。
     /// 随事件日志持久化（Consumed 事件的 request_id 字段），启动时重建。
     consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)>,
     notify: broadcast::Sender<Notification>,
+}
+
+impl InstanceSession {
+    /// 「实例非空」：最后一次 DomainLoaded 之后已有事件（R5）。
+    fn is_occupied(&self) -> bool {
+        self.last_seq > self.dl_seq
+    }
 }
 
 // ============ Actor ============
@@ -283,7 +346,10 @@ struct EngineActor {
     clock: Arc<dyn Clock>,
     idgen: Arc<dyn IdGen>,
     config: EngineConfig,
-    domains: BTreeMap<String, DomainSession>,
+    /// 定义键 → 声明（跨实例共享；declare 登记）。
+    declarations: BTreeMap<String, DeclarationEntry>,
+    /// 实例键 → 运行会话。
+    instances: BTreeMap<InstanceKey, InstanceSession>,
 }
 
 impl EngineActor {
@@ -303,23 +369,62 @@ impl EngineActor {
         }
     }
 
-    /// 启动恢复：store 清洗日志 + 索引校验 → 逐域重建会话。
+    /// 启动恢复：store 清洗日志 + 索引校验 → 回填声明注册表 → 逐域实例重建会话。
     async fn recover(&mut self) -> Result<(), EngineError> {
-        for rd in self.store.recover().await? {
-            self.recover_domain(rd.name, rd.events)?;
+        let recovered = self.store.recover().await?;
+
+        // 声明注册表回填（定义键与实例解耦）：优先 `<domain>/declaration.pact`，
+        // 缺失则回退该域 `default` 实例的声明快照，再退化为按 (domain, instance) 排序首个实例。
+        let mut by_domain: BTreeMap<String, String> = BTreeMap::new();
+        for ri in &recovered {
+            if ri.key.instance == DEFAULT_INSTANCE {
+                if let Some(d) = last_declaration(&ri.events) {
+                    by_domain.insert(ri.key.domain.clone(), d);
+                }
+            }
+        }
+        for ri in &recovered {
+            if let Some(d) = last_declaration(&ri.events) {
+                by_domain.entry(ri.key.domain.clone()).or_insert(d);
+            }
+        }
+        for (name, fallback) in by_domain {
+            let declaration = match self.store.load_declaration(&name)? {
+                Some(d) => d,
+                None => {
+                    eprintln!(
+                        "pactd: 域 {name} 缺 declaration.pact，回退用实例声明快照（建议人工补写）"
+                    );
+                    fallback
+                }
+            };
+            let domain = load_domain(&declaration).map_err(EngineError::Parse)?;
+            self.declarations.insert(
+                name,
+                DeclarationEntry {
+                    declaration,
+                    domain,
+                },
+            );
+        }
+
+        for ri in recovered {
+            self.recover_instance(ri)?;
         }
         Ok(())
     }
 
-    /// 单域恢复：最后一个 DomainLoaded 解析声明 →
+    /// 单实例恢复：最后一个 DomainLoaded 解析声明（该实例的声明快照）→
     /// 快照快速路径（snapshot.seq ≥ DomainLoaded.seq 才有效）→ 尾部重放。
-    fn recover_domain(&mut self, name: String, events: Vec<Event>) -> Result<(), EngineError> {
+    fn recover_instance(&mut self, ri: pact_store::RecoveredInstance) -> Result<(), EngineError> {
+        let key = ri.key;
+        let events = ri.events;
         let Some(dl_idx) = events
             .iter()
             .rposition(|e| matches!(e, Event::DomainLoaded { .. }))
         else {
             return Err(EngineError::Recovery(format!(
-                "域 {name} 的日志缺少 DomainLoaded 事件（日志损坏）"
+                "实例 {key} 的日志缺少 DomainLoaded 事件（日志损坏）"
             )));
         };
         let (declaration, dl_seq) = match &events[dl_idx] {
@@ -331,7 +436,7 @@ impl EngineActor {
         let domain = load_domain(&declaration).map_err(EngineError::Parse)?;
 
         let last_seq = events.last().map(|e| e.seq()).unwrap_or(0);
-        let snap = self.store.load_snapshot(&name)?;
+        let snap = self.store.load_snapshot(&key)?;
         let (mut state, base_seq) = match snap {
             // 快照晚于最后一次域重置才可用（否则已被重置作废）
             Some(s) if s.seq >= dl_seq && s.seq <= last_seq => (s.state, s.seq),
@@ -368,12 +473,14 @@ impl EngineActor {
             .collect();
         let terminated = termination_holds(&domain, &state);
         let (notify, _) = broadcast::channel(self.config.notify_capacity);
-        self.domains.insert(
-            name,
-            DomainSession {
+        self.instances.insert(
+            key,
+            InstanceSession {
+                declaration,
                 domain,
                 state,
                 last_seq,
+                dl_seq,
                 events_since_snapshot: 0,
                 terminated,
                 consumed_requests,
@@ -389,20 +496,31 @@ impl EngineActor {
             Command::LoadDomain {
                 name,
                 declaration,
+                instance,
+                force,
                 resp,
-            } => respond(resp, self.load_domain(&name, &declaration).await),
+            } => respond(
+                resp,
+                self.load_domain(&name, &declaration, &instance, force)
+                    .await,
+            ),
+            Command::Instantiate {
+                domain,
+                instance,
+                resp,
+            } => respond(resp, self.instantiate(&domain, &instance).await),
             Command::Validate { declaration, resp } => {
                 respond(resp, load_domain(&declaration).map_err(EngineError::Parse))
             }
             Command::Seed {
-                domain,
+                key,
                 participant,
                 ty,
                 thing_ref,
                 resp,
-            } => respond(resp, self.seed(&domain, &participant, &ty, thing_ref).await),
+            } => respond(resp, self.seed(&key, &participant, &ty, thing_ref).await),
             Command::Produce {
-                domain,
+                key,
                 participant,
                 ty,
                 predecessors,
@@ -410,59 +528,57 @@ impl EngineActor {
                 resp,
             } => respond(
                 resp,
-                self.produce(&domain, &participant, &ty, &predecessors, thing_ref)
+                self.produce(&key, &participant, &ty, &predecessors, thing_ref)
                     .await,
             ),
             Command::Read {
-                domain,
+                key,
                 participant,
                 token_id,
                 resp,
-            } => respond(resp, self.read(&domain, &participant, &token_id).await),
+            } => respond(resp, self.read(&key, &participant, &token_id).await),
             Command::Consume {
-                domain,
+                key,
                 participant,
                 token_id,
                 request_id,
                 resp,
             } => respond(
                 resp,
-                self.consume(&domain, &participant, &token_id, request_id)
+                self.consume(&key, &participant, &token_id, request_id)
                     .await,
             ),
-            Command::QueryCounter {
-                domain,
-                filter,
-                resp,
-            } => respond(resp, self.query_counter(&domain, filter.as_ref())),
-            Command::QueryArchive {
-                domain,
-                filter,
-                resp,
-            } => respond(resp, self.query_archive(&domain, filter.as_ref())),
-            Command::QueryGates {
-                domain,
-                participant,
-                resp,
-            } => respond(resp, self.query_gates(&domain, &participant)),
-            Command::QueryEnabled {
-                domain,
-                participant,
-                resp,
-            } => respond(resp, self.query_enabled(&domain, &participant)),
-            Command::QueryStatus { domain, resp } => respond(resp, self.query_status(&domain)),
-            Command::ListDomains { resp } => {
-                respond(resp, Ok(self.domains.keys().cloned().collect()))
+            Command::QueryCounter { key, filter, resp } => {
+                respond(resp, self.query_counter(&key, filter.as_ref()))
             }
-            Command::UnloadDomain { domain, resp } => respond(resp, self.unload_domain(&domain)),
-            Command::Subscribe { domain, resp } => respond(resp, self.subscribe(&domain)),
+            Command::QueryArchive { key, filter, resp } => {
+                respond(resp, self.query_archive(&key, filter.as_ref()))
+            }
+            Command::QueryGates {
+                key,
+                participant,
+                resp,
+            } => respond(resp, self.query_gates(&key, &participant)),
+            Command::QueryEnabled {
+                key,
+                participant,
+                resp,
+            } => respond(resp, self.query_enabled(&key, &participant)),
+            Command::QueryStatus { key, resp } => respond(resp, self.query_status(&key)),
+            Command::ListDomains { resp } => respond(resp, Ok(self.list_domains())),
+            Command::UnloadDomain { key, resp } => respond(resp, self.unload_domain(&key)),
+            Command::Subscribe { key, resp } => respond(resp, self.subscribe(&key)),
             Command::Analyze { text, resp } => respond(resp, self.analyze(&text)),
             Command::AnalyzeLoaded { domain, resp } => respond(resp, self.analyze_loaded(&domain)),
             Command::ComposeAndLoad {
                 name,
                 fragments,
+                instance,
                 resp,
-            } => respond(resp, self.compose_and_load(&name, &fragments).await),
+            } => respond(
+                resp,
+                self.compose_and_load(&name, &fragments, &instance).await,
+            ),
             Command::Shutdown { resp } => {
                 respond(resp, self.snapshot_all());
                 return true;
@@ -471,43 +587,99 @@ impl EngineActor {
         false
     }
 
-    // —— 域生命周期 ——
+    // —— 域/实例生命周期 ——
 
-    async fn load_domain(
-        &mut self,
-        name: &str,
-        declaration: &str,
-    ) -> Result<DomainSummary, EngineError> {
+    /// 列出定义键及其实例（`GET /domains`）：以**运行中实例**为准，
+    /// 并合并磁盘上存在但未加载的实例（避免遗漏）。
+    fn list_domains(&self) -> Vec<DomainListing> {
+        let mut listings: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for key in self.store.list_instances() {
+            listings.entry(key.domain).or_default().push(key.instance);
+        }
+        for key in self.instances.keys() {
+            listings
+                .entry(key.domain.clone())
+                .or_default()
+                .push(key.instance.clone());
+        }
+        listings
+            .into_iter()
+            .map(|(name, mut instances)| {
+                instances.sort();
+                instances.dedup();
+                DomainListing { name, instances }
+            })
+            .collect()
+    }
+
+    /// 登记声明（定义键）：解析 + 落 `declaration.pact`（best-effort）+ 注册表覆盖。
+    /// 已运行实例的声明快照不受影响（重放自封闭）。
+    fn declare(&mut self, name: &str, declaration: &str) -> Result<(), EngineError> {
         pact_store::validate_domain_name(name)?;
         let domain = load_domain(declaration).map_err(EngineError::Parse)?;
-        let now = self.clock.now();
-        // 替换语义：同名额重置会话（快照清理 + 状态清零），seq 续接
-        let next_seq = self.domains.get(name).map(|s| s.last_seq + 1).unwrap_or(1);
+        if let Err(e) = self.store.write_declaration(name, declaration) {
+            eprintln!("pactd: 写 declaration.pact 失败（域 {name}）：{e}");
+        }
+        self.declarations.insert(
+            name.to_owned(),
+            DeclarationEntry {
+                declaration: declaration.to_owned(),
+                domain,
+            },
+        );
+        Ok(())
+    }
+
+    /// 实例化：从已登记声明创建实例（不改变声明）。新实例追加 `DomainLoaded`，
+    /// seq 依据存储在实例日志上的续接点（兼容"卸载后再实例化"）。
+    async fn instantiate(
+        &mut self,
+        name: &str,
+        instance: &str,
+    ) -> Result<DomainSummary, EngineError> {
+        pact_store::validate_domain_name(name)?;
+        pact_store::validate_instance_name(instance)?;
+        let key = InstanceKey::new(name, instance);
+        if self.instances.contains_key(&key) {
+            return Err(EngineError::InstanceExists {
+                domain: name.to_owned(),
+                instance: instance.to_owned(),
+            });
+        }
+        let entry = self
+            .declarations
+            .get(name)
+            .ok_or_else(|| EngineError::DomainNotDeclared {
+                name: name.to_owned(),
+            })?;
+        let declaration = entry.declaration.clone();
+        let domain = entry.domain.clone();
+        let next_seq = self.store.last_seq(&key) + 1;
         let ev = Event::DomainLoaded {
             seq: next_seq,
-            ts: now,
+            ts: self.clock.now(),
             name: name.to_owned(),
-            declaration: declaration.to_owned(),
+            declaration: declaration.clone(),
         };
-        self.store.append(name, &ev).await?;
-        if self.domains.contains_key(name) {
-            let _ = self.store.remove_snapshot(name);
-        }
-        let terminated = termination_holds(&domain, &CounterState::new());
-        let (notify, _) = broadcast::channel(self.config.notify_capacity);
+        self.store.append(&key, &ev).await?;
         let summary = DomainSummary {
             name: name.to_owned(),
+            instance: instance.to_owned(),
             types: domain.types.len(),
             gates: domain.gates.len(),
             seed_authority: domain.seed_authority.len(),
             last_seq: next_seq,
         };
-        self.domains.insert(
-            name.to_owned(),
-            DomainSession {
+        let terminated = termination_holds(&domain, &CounterState::new());
+        let (notify, _) = broadcast::channel(self.config.notify_capacity);
+        self.instances.insert(
+            key,
+            InstanceSession {
+                declaration,
                 domain,
                 state: CounterState::new(),
                 last_seq: next_seq,
+                dl_seq: next_seq,
                 events_since_snapshot: 0,
                 terminated,
                 consumed_requests: BTreeMap::new(),
@@ -517,10 +689,74 @@ impl EngineActor {
         Ok(summary)
     }
 
+    /// `LoadDomain` = declare + instantiate：登记声明后创建/重置目标实例。
+    /// 目标实例**非空且未 `force`** → `DomainBusy`（防误替换销毁运行中 Counter）。
+    async fn load_domain(
+        &mut self,
+        name: &str,
+        declaration: &str,
+        instance: &str,
+        force: bool,
+    ) -> Result<DomainSummary, EngineError> {
+        pact_store::validate_domain_name(name)?;
+        pact_store::validate_instance_name(instance)?;
+        self.declare(name, declaration)?;
+
+        let key = InstanceKey::new(name, instance);
+        match self.instances.get(&key) {
+            // 非空且未显式 force：拒绝（Reserved 实例的 Counter 将随重置被销毁）
+            Some(s) if s.is_occupied() && !force => Err(EngineError::DomainBusy {
+                domain: name.to_owned(),
+                instance: instance.to_owned(),
+            }),
+            // 已存在（空或已 force）：重置语义 —— 清快照、状态清零、seq 续接
+            Some(s) => {
+                let next_seq = s.last_seq + 1;
+                let ev = Event::DomainLoaded {
+                    seq: next_seq,
+                    ts: self.clock.now(),
+                    name: name.to_owned(),
+                    declaration: declaration.to_owned(),
+                };
+                self.store.append(&key, &ev).await?;
+                let _ = self.store.remove_snapshot(&key);
+                let domain = load_domain(declaration).map_err(EngineError::Parse)?;
+                let summary = DomainSummary {
+                    name: name.to_owned(),
+                    instance: instance.to_owned(),
+                    types: domain.types.len(),
+                    gates: domain.gates.len(),
+                    seed_authority: domain.seed_authority.len(),
+                    last_seq: next_seq,
+                };
+                let terminated = termination_holds(&domain, &CounterState::new());
+                let (notify, _) = broadcast::channel(self.config.notify_capacity);
+                self.instances.insert(
+                    key,
+                    InstanceSession {
+                        declaration: declaration.to_owned(),
+                        domain,
+                        state: CounterState::new(),
+                        last_seq: next_seq,
+                        dl_seq: next_seq,
+                        events_since_snapshot: 0,
+                        terminated,
+                        consumed_requests: BTreeMap::new(),
+                        notify,
+                    },
+                );
+                Ok(summary)
+            }
+            // 新实例
+            None => self.instantiate(name, instance).await,
+        }
+    }
+
     async fn compose_and_load(
         &mut self,
         name: &str,
         fragments: &[String],
+        instance: &str,
     ) -> Result<DomainSummary, EngineError> {
         let mut domains = Vec::with_capacity(fragments.len());
         for f in fragments {
@@ -528,22 +764,25 @@ impl EngineActor {
         }
         let merged = compose_fragments(&domains).map_err(EngineError::Compose)?;
         let declaration = emit_domain(&merged);
-        self.load_domain(name, &declaration).await
+        self.load_domain(name, &declaration, instance, false).await
     }
 
     // —— 四类动作（Rule-S/P/R/E）——
 
     async fn seed(
         &mut self,
-        name: &str,
+        key: &InstanceKey,
         participant: &ParticipantName,
         ty: &TypeName,
         thing_ref: ThingRef,
     ) -> Result<Token, EngineError> {
         let id = self.idgen.next();
         let now = self.clock.now();
-        // 直接字段访问：domains 的可变借用与 store/clock/config 的使用不相交
-        let session = self.domains.get_mut(name).ok_or_else(|| not_found(name))?;
+        // 直接字段访问：instances 的可变借用与 store/clock/config 的使用不相交
+        let session = self
+            .instances
+            .get_mut(key)
+            .ok_or_else(|| instance_not_found(key))?;
         let token = rule_s(&session.domain, participant, ty, thing_ref, id, now.clone())?;
         let seq = session.last_seq + 1;
         let ev = Event::Seeded {
@@ -551,31 +790,24 @@ impl EngineActor {
             ts: now.clone(),
             token: token.clone(),
         };
-        self.store.append(name, &ev).await?;
+        self.store.append(key, &ev).await?;
         session.state.apply(Effect::Seeded(token.clone()));
         session.last_seq = seq;
         notify_state_change(
             session,
-            name,
+            key,
             NotificationKind::Seeded,
             seq,
             &now,
             Some(token.id.clone()),
         );
-        post_commit(
-            &self.store,
-            self.clock.as_ref(),
-            &self.config,
-            name,
-            session,
-        )
-        .await;
+        post_commit(&self.store, self.clock.as_ref(), &self.config, key, session).await;
         Ok(token)
     }
 
     async fn produce(
         &mut self,
-        name: &str,
+        key: &InstanceKey,
         participant: &ParticipantName,
         ty: &TypeName,
         predecessors: &[TokenId],
@@ -583,7 +815,10 @@ impl EngineActor {
     ) -> Result<Token, EngineError> {
         let id = self.idgen.next();
         let now = self.clock.now();
-        let session = self.domains.get_mut(name).ok_or_else(|| not_found(name))?;
+        let session = self
+            .instances
+            .get_mut(key)
+            .ok_or_else(|| instance_not_found(key))?;
         let token = rule_p(
             &session.domain,
             &session.state,
@@ -600,48 +835,44 @@ impl EngineActor {
             ts: now.clone(),
             token: token.clone(),
         };
-        self.store.append(name, &ev).await?;
+        self.store.append(key, &ev).await?;
         session.state.apply(Effect::Produced(token.clone()));
         session.last_seq = seq;
         notify_state_change(
             session,
-            name,
+            key,
             NotificationKind::Produced,
             seq,
             &now,
             Some(token.id.clone()),
         );
-        post_commit(
-            &self.store,
-            self.clock.as_ref(),
-            &self.config,
-            name,
-            session,
-        )
-        .await;
+        post_commit(&self.store, self.clock.as_ref(), &self.config, key, session).await;
         Ok(token)
     }
 
     /// Rule-R：无状态变更、无事件（D9）、无通知。
     async fn read(
         &mut self,
-        name: &str,
+        key: &InstanceKey,
         participant: &ParticipantName,
         token_id: &TokenId,
     ) -> Result<Token, EngineError> {
-        let session = self.session(name)?;
+        let session = self.session(key)?;
         rule_r(&session.domain, &session.state, participant, token_id).map_err(EngineError::Rule)
     }
 
     async fn consume(
         &mut self,
-        name: &str,
+        key: &InstanceKey,
         participant: &ParticipantName,
         token_id: &TokenId,
         request_id: Option<String>,
     ) -> Result<ArchiveEntry, EngineError> {
         let now = self.clock.now();
-        let session = self.domains.get_mut(name).ok_or_else(|| not_found(name))?;
+        let session = self
+            .instances
+            .get_mut(key)
+            .ok_or_else(|| instance_not_found(key))?;
         // 幂等命中：同一 request_id 的重复请求直接返回首次结果，不重复消费。
         // 首次结果随 Consumed 事件持久化，跨重启仍生效（恢复时重建幂等表）。
         if let Some(rid) = &request_id {
@@ -672,7 +903,7 @@ impl EngineActor {
             request_id: request_id.clone(),
         };
         // 提交点 = 日志落盘（store.append 内部 fsync）。其后步骤均不可失败（见 post_commit）。
-        self.store.append(name, &ev).await?;
+        self.store.append(key, &ev).await?;
         session.state.apply(Effect::Consumed(entry.clone()));
         session.last_seq = seq;
         if let Some(rid) = request_id {
@@ -682,20 +913,13 @@ impl EngineActor {
         }
         notify_state_change(
             session,
-            name,
+            key,
             NotificationKind::Consumed,
             seq,
             &now,
             Some(token_id.clone()),
         );
-        post_commit(
-            &self.store,
-            self.clock.as_ref(),
-            &self.config,
-            name,
-            session,
-        )
-        .await;
+        post_commit(&self.store, self.clock.as_ref(), &self.config, key, session).await;
         Ok(entry)
     }
 
@@ -703,10 +927,10 @@ impl EngineActor {
 
     fn query_counter(
         &self,
-        name: &str,
+        key: &InstanceKey,
         filter: Option<&TypeName>,
     ) -> Result<CounterView, EngineError> {
-        let s = self.session(name)?;
+        let s = self.session(key)?;
         let tokens: Vec<Token> = s
             .state
             .counter
@@ -720,10 +944,10 @@ impl EngineActor {
 
     fn query_archive(
         &self,
-        name: &str,
+        key: &InstanceKey,
         filter: Option<&TypeName>,
     ) -> Result<ArchiveView, EngineError> {
-        let s = self.session(name)?;
+        let s = self.session(key)?;
         let entries: Vec<ArchiveEntry> = s
             .state
             .archive
@@ -737,10 +961,10 @@ impl EngineActor {
 
     fn query_gates(
         &self,
-        name: &str,
+        key: &InstanceKey,
         participant: &ParticipantName,
     ) -> Result<Vec<GateClause>, EngineError> {
-        let s = self.session(name)?;
+        let s = self.session(key)?;
         Ok(s.domain
             .gates
             .iter()
@@ -755,15 +979,15 @@ impl EngineActor {
 
     fn query_enabled(
         &self,
-        name: &str,
+        key: &InstanceKey,
         participant: &ParticipantName,
     ) -> Result<Vec<ProductionOption>, EngineError> {
-        let s = self.session(name)?;
+        let s = self.session(key)?;
         Ok(enabled_productions(&s.domain, &s.state, participant))
     }
 
-    fn query_status(&self, name: &str) -> Result<StatusView, EngineError> {
-        let s = self.session(name)?;
+    fn query_status(&self, key: &InstanceKey) -> Result<StatusView, EngineError> {
+        let s = self.session(key)?;
         Ok(StatusView {
             counter_size: s.state.counter.len(),
             archive_size: s.state.archive.len(),
@@ -771,8 +995,11 @@ impl EngineActor {
         })
     }
 
-    fn subscribe(&self, name: &str) -> Result<broadcast::Receiver<Notification>, EngineError> {
-        Ok(self.session(name)?.notify.subscribe())
+    fn subscribe(
+        &self,
+        key: &InstanceKey,
+    ) -> Result<broadcast::Receiver<Notification>, EngineError> {
+        Ok(self.session(key)?.notify.subscribe())
     }
 
     fn analyze(&self, text: &str) -> Result<AnalysisReport, EngineError> {
@@ -780,34 +1007,39 @@ impl EngineActor {
         Ok(report_of(&domain))
     }
 
-    /// 分析已加载域（无需重新解析声明原文）。
+    /// 分析已登记声明（定义级，无需实例）。
     fn analyze_loaded(&self, name: &str) -> Result<AnalysisReport, EngineError> {
-        let session = self.domains.get(name).ok_or_else(|| not_found(name))?;
-        Ok(report_of(&session.domain))
+        let entry = self
+            .declarations
+            .get(name)
+            .ok_or_else(|| domain_not_declared(name))?;
+        Ok(report_of(&entry.domain))
     }
 
-    /// 卸载域：仅移除内存会话；日志/快照保留，重启后自动恢复（设计 §9.2）。
-    fn unload_domain(&mut self, name: &str) -> Result<(), EngineError> {
-        if self.domains.remove(name).is_none() {
-            return Err(not_found(name));
+    /// 卸载实例：仅移除内存会话；日志/快照保留，重启后自动恢复（设计 §9.2）。
+    fn unload_domain(&mut self, key: &InstanceKey) -> Result<(), EngineError> {
+        if self.instances.remove(key).is_none() {
+            return Err(instance_not_found(key));
         }
         Ok(())
     }
 
     // —— 内部 ——
 
-    fn session(&self, name: &str) -> Result<&DomainSession, EngineError> {
-        self.domains.get(name).ok_or_else(|| not_found(name))
+    fn session(&self, key: &InstanceKey) -> Result<&InstanceSession, EngineError> {
+        self.instances
+            .get(key)
+            .ok_or_else(|| instance_not_found(key))
     }
 
-    /// 关停前终态快照（全部域）。
+    /// 关停前终态快照（全部实例）。
     fn snapshot_all(&self) -> Result<(), EngineError> {
-        for (name, s) in &self.domains {
+        for (key, s) in &self.instances {
             let snap = Snapshot {
                 seq: s.last_seq,
                 state: s.state.clone(),
             };
-            self.store.write_snapshot(name, &snap)?;
+            self.store.write_snapshot(key, &snap)?;
         }
         Ok(())
     }
@@ -815,8 +1047,8 @@ impl EngineActor {
 
 /// 状态变更通知（§6.4）：变更后 Counter 规模随通知发出。
 fn notify_state_change(
-    session: &DomainSession,
-    name: &str,
+    session: &InstanceSession,
+    key: &InstanceKey,
     kind: NotificationKind,
     seq: u64,
     ts: &str,
@@ -824,7 +1056,8 @@ fn notify_state_change(
 ) {
     let _ = session.notify.send(Notification {
         event: kind,
-        domain: name.to_owned(),
+        domain: key.domain.clone(),
+        instance: key.instance.clone(),
         seq,
         ts: ts.to_owned(),
         token_id,
@@ -842,8 +1075,8 @@ async fn post_commit(
     store: &Store,
     clock: &dyn Clock,
     config: &EngineConfig,
-    name: &str,
-    session: &mut DomainSession,
+    key: &InstanceKey,
+    session: &mut InstanceSession,
 ) {
     // 定期快照（尽力而为）
     session.events_since_snapshot += 1;
@@ -852,7 +1085,7 @@ async fn post_commit(
             seq: session.last_seq,
             state: session.state.clone(),
         };
-        if store.write_snapshot(name, &snap).is_ok() {
+        if store.write_snapshot(key, &snap).is_ok() {
             session.events_since_snapshot = 0;
         }
     }
@@ -864,7 +1097,7 @@ async fn post_commit(
         let ts = clock.now();
         if store
             .append(
-                name,
+                key,
                 &Event::Terminated {
                     seq,
                     ts: ts.clone(),
@@ -876,7 +1109,8 @@ async fn post_commit(
             session.last_seq = seq;
             let _ = session.notify.send(Notification {
                 event: NotificationKind::Terminated,
-                domain: name.to_owned(),
+                domain: key.domain.clone(),
+                instance: key.instance.clone(),
                 seq,
                 ts,
                 token_id: None,
@@ -887,6 +1121,14 @@ async fn post_commit(
         }
     }
     session.terminated = now_terminated;
+}
+
+/// 实例最后一次 `DomainLoaded` 的声明原文（恢复回填用）。
+fn last_declaration(events: &[Event]) -> Option<String> {
+    events.iter().rev().find_map(|e| match e {
+        Event::DomainLoaded { declaration, .. } => Some(declaration.clone()),
+        _ => None,
+    })
 }
 
 fn respond<T>(resp: oneshot::Sender<Result<T, EngineError>>, result: Result<T, EngineError>) {
@@ -906,8 +1148,15 @@ fn report_of(domain: &Domain) -> AnalysisReport {
     }
 }
 
-fn not_found(name: &str) -> EngineError {
-    EngineError::DomainNotFound {
+fn instance_not_found(key: &InstanceKey) -> EngineError {
+    EngineError::InstanceNotFound {
+        domain: key.domain.clone(),
+        instance: key.instance.clone(),
+    }
+}
+
+fn domain_not_declared(name: &str) -> EngineError {
+    EngineError::DomainNotDeclared {
         name: name.to_owned(),
     }
 }
@@ -938,7 +1187,8 @@ impl Engine {
             clock,
             idgen,
             config,
-            domains: BTreeMap::new(),
+            declarations: BTreeMap::new(),
+            instances: BTreeMap::new(),
         };
         tokio::spawn(actor.run(rx));
         Self { tx }
@@ -952,15 +1202,36 @@ impl Engine {
             .map_err(|_| EngineError::EngineStopped)
     }
 
+    /// `LoadDomain` = declare + instantiate：登记声明后创建/重置目标实例。
     pub async fn load_domain(
         &self,
         name: &str,
         declaration: &str,
+        instance: &str,
+        force: bool,
     ) -> Result<DomainSummary, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::LoadDomain {
             name: name.to_owned(),
             declaration: declaration.to_owned(),
+            instance: instance.to_owned(),
+            force,
+            resp,
+        })
+        .await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 从已登记声明创建额外实例。
+    pub async fn instantiate(
+        &self,
+        domain: &str,
+        instance: &str,
+    ) -> Result<DomainSummary, EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::Instantiate {
+            domain: domain.to_owned(),
+            instance: instance.to_owned(),
             resp,
         })
         .await?;
@@ -979,14 +1250,14 @@ impl Engine {
 
     pub async fn seed(
         &self,
-        domain: &str,
+        key: InstanceKey,
         participant: ParticipantName,
         ty: TypeName,
         thing_ref: ThingRef,
     ) -> Result<Token, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::Seed {
-            domain: domain.to_owned(),
+            key,
             participant,
             ty,
             thing_ref,
@@ -998,7 +1269,7 @@ impl Engine {
 
     pub async fn produce(
         &self,
-        domain: &str,
+        key: InstanceKey,
         participant: ParticipantName,
         ty: TypeName,
         predecessors: Vec<TokenId>,
@@ -1006,7 +1277,7 @@ impl Engine {
     ) -> Result<Token, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::Produce {
-            domain: domain.to_owned(),
+            key,
             participant,
             ty,
             predecessors,
@@ -1019,13 +1290,13 @@ impl Engine {
 
     pub async fn read(
         &self,
-        domain: &str,
+        key: InstanceKey,
         participant: ParticipantName,
         token_id: TokenId,
     ) -> Result<Token, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::Read {
-            domain: domain.to_owned(),
+            key,
             participant,
             token_id,
             resp,
@@ -1036,14 +1307,14 @@ impl Engine {
 
     pub async fn consume(
         &self,
-        domain: &str,
+        key: InstanceKey,
         participant: ParticipantName,
         token_id: TokenId,
         request_id: Option<String>,
     ) -> Result<ArchiveEntry, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::Consume {
-            domain: domain.to_owned(),
+            key,
             participant,
             token_id,
             request_id,
@@ -1055,42 +1326,34 @@ impl Engine {
 
     pub async fn counter(
         &self,
-        domain: &str,
+        key: InstanceKey,
         filter: Option<TypeName>,
     ) -> Result<CounterView, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::QueryCounter {
-            domain: domain.to_owned(),
-            filter,
-            resp,
-        })
-        .await?;
+        self.execute(Command::QueryCounter { key, filter, resp })
+            .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
     pub async fn archive(
         &self,
-        domain: &str,
+        key: InstanceKey,
         filter: Option<TypeName>,
     ) -> Result<ArchiveView, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::QueryArchive {
-            domain: domain.to_owned(),
-            filter,
-            resp,
-        })
-        .await?;
+        self.execute(Command::QueryArchive { key, filter, resp })
+            .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
     pub async fn my_gates(
         &self,
-        domain: &str,
+        key: InstanceKey,
         participant: ParticipantName,
     ) -> Result<Vec<GateClause>, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::QueryGates {
-            domain: domain.to_owned(),
+            key,
             participant,
             resp,
         })
@@ -1100,12 +1363,12 @@ impl Engine {
 
     pub async fn enabled(
         &self,
-        domain: &str,
+        key: InstanceKey,
         participant: ParticipantName,
     ) -> Result<Vec<ProductionOption>, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::QueryEnabled {
-            domain: domain.to_owned(),
+            key,
             participant,
             resp,
         })
@@ -1113,17 +1376,13 @@ impl Engine {
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
-    pub async fn status(&self, domain: &str) -> Result<StatusView, EngineError> {
+    pub async fn status(&self, key: InstanceKey) -> Result<StatusView, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::QueryStatus {
-            domain: domain.to_owned(),
-            resp,
-        })
-        .await?;
+        self.execute(Command::QueryStatus { key, resp }).await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
-    pub async fn list_domains(&self) -> Result<Vec<String>, EngineError> {
+    pub async fn list_domains(&self) -> Result<Vec<DomainListing>, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::ListDomains { resp }).await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
@@ -1131,14 +1390,10 @@ impl Engine {
 
     pub async fn subscribe(
         &self,
-        domain: &str,
+        key: InstanceKey,
     ) -> Result<broadcast::Receiver<Notification>, EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::Subscribe {
-            domain: domain.to_owned(),
-            resp,
-        })
-        .await?;
+        self.execute(Command::Subscribe { key, resp }).await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
@@ -1152,7 +1407,7 @@ impl Engine {
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
-    /// 分析已加载域的声明（`POST /domains/{d}:analyze` / `pact_analyze`）。
+    /// 分析已登记声明（`POST /domains/{d}:analyze` / `pact_analyze`）。
     pub async fn analyze_loaded(&self, domain: &str) -> Result<AnalysisReport, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::AnalyzeLoaded {
@@ -1163,14 +1418,10 @@ impl Engine {
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
-    /// 卸载域（内存态；日志保留，重启自动恢复）。
-    pub async fn unload_domain(&self, domain: &str) -> Result<(), EngineError> {
+    /// 卸载实例（内存态；日志保留，重启自动恢复）。
+    pub async fn unload_domain(&self, key: InstanceKey) -> Result<(), EngineError> {
         let (resp, rx) = oneshot::channel();
-        self.execute(Command::UnloadDomain {
-            domain: domain.to_owned(),
-            resp,
-        })
-        .await?;
+        self.execute(Command::UnloadDomain { key, resp }).await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
@@ -1178,18 +1429,20 @@ impl Engine {
         &self,
         name: &str,
         fragments: Vec<String>,
+        instance: &str,
     ) -> Result<DomainSummary, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::ComposeAndLoad {
             name: name.to_owned(),
             fragments,
+            instance: instance.to_owned(),
             resp,
         })
         .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
-    /// 关停：写全部域终态快照后退出 actor。
+    /// 关停：写全部实例终态快照后退出 actor。
     pub async fn shutdown(&self) -> Result<(), EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::Shutdown { resp }).await?;

@@ -50,7 +50,7 @@ pub enum DomainError {
     },
 }
 
-/// PACT 域实例：四个注入点的规范表示（论文 §2.2、§3.1）。
+/// PACT 域声明：四个注入点的规范表示（论文 §2.2、§3.1）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Domain {
     pub types: BTreeSet<TypeName>,

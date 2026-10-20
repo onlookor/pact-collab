@@ -1,5 +1,6 @@
-//! PACT MCP server（阶段 4，§9.1）：rmcp stdio，15 个 `pact_` 工具，
+//! PACT MCP server（阶段 4/10，§9.1）：rmcp stdio，16 个 `pact_` 工具，
 //! 经 [`pact_http::client`] 接入 daemon；错误以 §6.3 结构化 JSON 返回。
+//! 域双键（D27）：域级工具均接受可选 `instance`（缺省 `default`）。
 
 use clap::Parser;
 use pact_http::client::{Client, ClientError};
@@ -60,12 +61,29 @@ struct LoadIn {
     name: String,
     /// 域声明文本。
     declaration: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
+    /// 目标实例非空时允许替换（缺省 false → DomainBusy 冲突）。
+    #[serde(default)]
+    force: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct InstantiateIn {
+    /// 已登记的域名。
+    domain: String,
+    /// 新实例名。
+    instance: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct DomainIn {
     /// 域名。
     domain: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -79,6 +97,9 @@ struct ComposeIn {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct SeedIn {
     domain: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
     participant: String,
     /// 源类型名（线上字段名 `type`）。
     #[serde(rename = "type")]
@@ -92,6 +113,9 @@ struct SeedIn {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ProduceIn {
     domain: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
     participant: String,
     #[serde(rename = "type")]
     #[schemars(rename = "type")]
@@ -106,6 +130,9 @@ struct ProduceIn {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct TokenIn {
     domain: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
     participant: String,
     token_id: String,
 }
@@ -113,9 +140,12 @@ struct TokenIn {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ConsumeIn {
     domain: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
     participant: String,
     token_id: String,
-    /// 可选幂等键：同域内重复请求返回首次结果，不重复消费。
+    /// 可选幂等键：同实例内重复请求返回首次结果，不重复消费。
     #[serde(default)]
     request_id: Option<String>,
 }
@@ -123,6 +153,9 @@ struct ConsumeIn {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct TypeFilterIn {
     domain: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
     /// 可选类型过滤。
     #[serde(rename = "type", default)]
     #[schemars(rename = "type")]
@@ -132,6 +165,9 @@ struct TypeFilterIn {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct ParticipantIn {
     domain: String,
+    /// 目标实例名（缺省 default）。
+    #[serde(default)]
+    instance: Option<String>,
     participant: String,
 }
 
@@ -173,19 +209,44 @@ impl PactMcp {
 
     #[tool(
         name = "pact_domain_load",
-        description = "加载/替换命名域（幂等按 name）"
+        description = "加载/替换命名域（声明 + 实例化；缺省 default 实例；非空实例需 force）"
     )]
     async fn domain_load(&self, Parameters(in_): Parameters<LoadIn>) -> Result<String, String> {
         to_ok(
             &self
                 .client
-                .load_domain(&in_.name, &in_.declaration)
+                .load_domain(
+                    &in_.name,
+                    &in_.declaration,
+                    in_.instance.as_deref(),
+                    in_.force,
+                )
                 .await
                 .map_err(to_err)?,
         )
     }
 
-    #[tool(name = "pact_list_domains", description = "已加载域清单")]
+    #[tool(
+        name = "pact_domain_instantiate",
+        description = "在已登记声明上创建额外实例（不改变声明）"
+    )]
+    async fn domain_instantiate(
+        &self,
+        Parameters(in_): Parameters<InstantiateIn>,
+    ) -> Result<String, String> {
+        to_ok(
+            &self
+                .client
+                .instantiate(&in_.domain, &in_.instance)
+                .await
+                .map_err(to_err)?,
+        )
+    }
+
+    #[tool(
+        name = "pact_list_domains",
+        description = "已加载域清单（定义键 + 实例）"
+    )]
     async fn list_domains(&self) -> Result<String, String> {
         to_ok(&self.client.list_domains().await.map_err(to_err)?)
     }
@@ -225,6 +286,7 @@ impl PactMcp {
                 .client
                 .seed(
                     &in_.domain,
+                    in_.instance.as_deref(),
                     &in_.participant,
                     &in_.ty,
                     in_.thing_ref.as_deref(),
@@ -244,6 +306,7 @@ impl PactMcp {
                 .client
                 .produce(
                     &in_.domain,
+                    in_.instance.as_deref(),
                     &in_.participant,
                     &in_.ty,
                     in_.predecessors,
@@ -262,7 +325,12 @@ impl PactMcp {
         to_ok(
             &self
                 .client
-                .read_token(&in_.domain, &in_.participant, &in_.token_id)
+                .read_token(
+                    &in_.domain,
+                    in_.instance.as_deref(),
+                    &in_.participant,
+                    &in_.token_id,
+                )
                 .await
                 .map_err(to_err)?,
         )
@@ -278,6 +346,7 @@ impl PactMcp {
                 .client
                 .consume(
                     &in_.domain,
+                    in_.instance.as_deref(),
                     &in_.participant,
                     &in_.token_id,
                     in_.request_id.as_deref(),
@@ -298,7 +367,7 @@ impl PactMcp {
         to_ok(
             &self
                 .client
-                .counter(&in_.domain, in_.ty.as_deref())
+                .counter(&in_.domain, in_.instance.as_deref(), in_.ty.as_deref())
                 .await
                 .map_err(to_err)?,
         )
@@ -315,7 +384,7 @@ impl PactMcp {
         to_ok(
             &self
                 .client
-                .archive(&in_.domain, in_.ty.as_deref())
+                .archive(&in_.domain, in_.instance.as_deref(), in_.ty.as_deref())
                 .await
                 .map_err(to_err)?,
         )
@@ -329,7 +398,7 @@ impl PactMcp {
         to_ok(
             &self
                 .client
-                .gates(&in_.domain, &in_.participant)
+                .gates(&in_.domain, in_.instance.as_deref(), &in_.participant)
                 .await
                 .map_err(to_err)?,
         )
@@ -343,7 +412,7 @@ impl PactMcp {
         to_ok(
             &self
                 .client
-                .enabled(&in_.domain, &in_.participant)
+                .enabled(&in_.domain, in_.instance.as_deref(), &in_.participant)
                 .await
                 .map_err(to_err)?,
         )
@@ -351,7 +420,13 @@ impl PactMcp {
 
     #[tool(name = "pact_status", description = "Counter 概要 + terminated 判定")]
     async fn status(&self, Parameters(in_): Parameters<DomainIn>) -> Result<String, String> {
-        to_ok(&self.client.status(&in_.domain).await.map_err(to_err)?)
+        to_ok(
+            &self
+                .client
+                .status(&in_.domain, in_.instance.as_deref())
+                .await
+                .map_err(to_err)?,
+        )
     }
 
     #[tool(
@@ -363,7 +438,11 @@ impl PactMcp {
         peer: Peer<RoleServer>,
         Parameters(in_): Parameters<DomainIn>,
     ) -> Result<String, String> {
-        let mut stream = self.client.events(&in_.domain).await.map_err(to_err)?;
+        let mut stream = self
+            .client
+            .events(&in_.domain, in_.instance.as_deref())
+            .await
+            .map_err(to_err)?;
         tokio::spawn(async move {
             while let Ok(Some(n)) = stream.next_event().await {
                 let params = serde_json::to_value(&n).unwrap_or_default();

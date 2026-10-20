@@ -21,10 +21,12 @@
                 ┌───────────────────┐
                 │   pact-engine     │  引擎层：单权威 actor
                 │  ┌─────────────┐  │  - 命令串行化（mpsc）
-                │  │ 域会话表     │  │  - 检查+应用+持久化原子完成
-                │  │  domain → {  │  │  - broadcast 通知总线（Rule-W 唤醒）
-                │  │   Domain,    │  │  - Rule-T 终止检测
-                │  │   CounterState,│ │  - Clock / IdGen 注入
+                │  │ 声明注册表   │  │  - 检查+应用+持久化原子完成
+                │  │ domain→声明  │  │  - broadcast 通知总线（Rule-W 唤醒）
+                │  ├─────────────┤  │  - Rule-T 终止检测（按实例）
+                │  │ 实例会话表   │  │  - Clock / IdGen 注入
+                │  │(domain,inst)│  │
+                │  │ → {声明,状态,│  │
                 │  │   订阅者 }   │  │
                 │  └─────────────┘  │
                 └───┬───────────┬───┘
@@ -33,10 +35,13 @@
                     ▼           ▼
         ┌────────────────┐  ┌─────────────────────────────┐
         │ pact-core      │  │ pact-store                  │
-        │ pact-parser    │  │  <domain>.events.jsonl 真相源│
-        │ pact-analysis  │  │  <domain>.snapshot.json     │
-        │ pact-compose   │  │  index.tursodb 派生索引     │
-        └────────────────┘  │  (turso, IndexStore 隔离)    │
+        │ pact-parser    │  │  <domain>/<instance>        │
+        │ pact-analysis  │  │   .events.jsonl 真相源       │
+        │ pact-compose   │  │   .snapshot.json            │
+        └────────────────┘  │  declaration.pact           │
+                            │  index.tursodb              │
+                            │   (domain,instance) 双列     │
+                            │   (turso, IndexStore 隔离)   │
                             └─────────────────────────────┘
 ```
 
@@ -73,10 +78,11 @@ agent ──MCP pact_produce──► pact-mcp ──REST POST /tokens──► 
 ### 2.3 启动恢复
 
 ```
-daemon 启动（pact daemon start / pactd）→ 读 data_dir：
-  逐域：截断尾部半行（崩溃残留）→ 载入最近快照（seq ≥ 最后一次 DomainLoaded 才有效）
+daemon 启动（pact daemon start / pactd）→ 先取 data_dir 独占 flock（<data_dir>/pactd.lock，第二实例拒绝启动）
+  顶层遗留单层文件（<domain>.events.jsonl / .snapshot.json）→ fail-fast（LegacyLayoutDetected）须人工迁移
+  逐域实例（<domain>/<instance>.events.jsonl）：截断尾部半行（崩溃残留）→ 载入最近快照（seq ≥ 最后一次 DomainLoaded 才有效）
        → 重放 events.jsonl 尾部（seq > snapshot.seq）
-       → 校验/重建 index.tursodb → 重建内存态 → 恢复订阅总线
+       → 校验/重建 index.tursodb → 重建实例内存态 → 恢复声明注册表（读 <domain>/declaration.pact）→ 恢复订阅总线
 中部损坏行（完整行非法 JSON）→ fail-fast，命令以恢复失败统一应答（需人工介入）。
 ```
 
@@ -118,6 +124,7 @@ daemon 启动（pact daemon start / pactd）→ 读 data_dir：
 | 可测试性 | Clock/IdGen 注入；core 纯环境属性测试；四层测试组织（单元/属性/集成/端到端+回归） |
 | 安全边界 | 单机默认 unix socket；参与者令牌可选；核心不感知认证 |
 | 可运维性（NFR7，D25，未实现） | daemon 暴露 health/ready 与 metrics、PID 文件、信号化优雅停机；事件日志有压缩/保留策略与 schema 版本；域级 ACL 阻止任意客户端装卸域；读审计为可选开启扩展 |
+| 多实例承载（FR19，D27，**已实现**） | 同一域声明可并发承载多个 **Counter 实例**（实例键 `instance`）；实例为接口层一等键，各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / 幂等表。**存储布局（已定案 + 已实现）**：域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、审计流 `‹instance›.read-audit.jsonl`、声明原文 `declaration.pact` 同目录）；索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键）。顶层遗留单层文件（`‹domain›.events.jsonl`）**不识别、fail-fast**（`LegacyLayoutDetected`）。同一 `data_dir` 上多实例以 flock（`‹data_dir›/pactd.lock`）保证单写者，禁止交错写同一日志；非空实例再加载默认拒绝（`DomainBusy`，须 `force`）。实例键以路径段承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` ≡ `default`），键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越 |
 | 层边界（D24–D26） | 范式机制限于 `crates/`；领域内容在独立仓库；生产驱动逻辑收于 `pact-runtime` crate（已实现，经 REST 接入 daemon，不内嵌引擎）；分发产物在同仓库 `dist/`（详见 §6） |
 
 ## 6. 生产运行层与分发（D24–D26，2026-10-19 裁决；L3 运行层已实现）

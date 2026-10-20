@@ -96,9 +96,9 @@ async fn mcp_full_lifecycle_over_stdio() {
     .expect("启动 pact-mcp 子进程失败");
     let client = ().serve(transport).await.expect("MCP 握手失败");
 
-    // —— 工具清单（§9.1：15 个） ——
+    // —— 工具清单（§9.1 + D27：16 个） ——
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 15, "应注册 15 个工具: {tools:?}");
+    assert_eq!(tools.len(), 16, "应注册 16 个工具: {tools:?}");
 
     // —— 域生命周期 ——
     let v = tool_ok(
@@ -127,7 +127,33 @@ async fn mcp_full_lifecycle_over_stdio() {
     assert_eq!(summary["types"], 3);
 
     let list = tool_ok(&client, "pact_list_domains", json!({})).await;
-    assert_eq!(list["domains"], json!(["proj"]));
+    assert_eq!(list["domains"][0]["name"], "proj");
+    assert_eq!(list["domains"][0]["instances"], json!(["default"]));
+
+    // —— 域实例化（D27）：新增实例 x，实例级工具透传 instance ——
+    let inst = tool_ok(
+        &client,
+        "pact_domain_instantiate",
+        json!({ "domain": "proj", "instance": "x" }),
+    )
+    .await;
+    assert_eq!(inst["instance"], "x");
+    let seeded_x = tool_ok(
+        &client,
+        "pact_seed",
+        json!({ "domain": "proj", "instance": "x", "participant": "external", "type": "requirement" }),
+    )
+    .await;
+    assert_eq!(seeded_x["token"]["type"], "requirement");
+    let counter_x = tool_ok(
+        &client,
+        "pact_counter_query",
+        json!({ "domain": "proj", "instance": "x" }),
+    )
+    .await;
+    assert_eq!(counter_x["size"], 1);
+    let counter_default = tool_ok(&client, "pact_counter_query", json!({ "domain": "proj" })).await;
+    assert_eq!(counter_default["size"], 0, "default 实例不受 x 影响");
 
     // —— Rule-S：越权 → 错误体；授权参与者 → 成功 ——
     let denied = tool_err(

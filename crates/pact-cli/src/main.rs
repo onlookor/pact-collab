@@ -51,6 +51,9 @@ enum Command {
     Seed {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
         #[arg(long)]
         participant: String,
         #[arg(long = "type")]
@@ -62,6 +65,9 @@ enum Command {
     Produce {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
         #[arg(long)]
         participant: String,
         #[arg(long = "type")]
@@ -76,6 +82,9 @@ enum Command {
     Read {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
         #[arg(long)]
         participant: String,
         #[arg(long)]
@@ -85,11 +94,14 @@ enum Command {
     Consume {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
         #[arg(long)]
         participant: String,
         #[arg(long)]
         token: String,
-        /// 可选幂等键：同域内重复请求返回首次结果，不重复消费。
+        /// 可选幂等键：同实例内重复请求返回首次结果，不重复消费。
         #[arg(long)]
         request_id: Option<String>,
     },
@@ -112,6 +124,9 @@ enum Command {
     Enabled {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
         #[arg(long)]
         participant: String,
     },
@@ -119,6 +134,9 @@ enum Command {
     Status {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
     },
     /// 离线：静态分析（不经 daemon）
     Analyze {
@@ -132,7 +150,7 @@ enum Command {
     },
     /// 离线：重放事件日志
     Replay {
-        /// <domain>.events.jsonl
+        /// <domain>/<instance>.events.jsonl
         file: PathBuf,
     },
 }
@@ -153,25 +171,49 @@ enum DomainCmd {
         /// .pact 声明文件
         file: PathBuf,
     },
-    /// 加载域
+    /// 加载域（声明 + 实例化；不指定实例 ⇒ 默认实例）
     Load {
         /// .pact 声明文件
         file: PathBuf,
         /// 域名（缺省取文件 stem）
         #[arg(long)]
         name: Option<String>,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
+        /// 目标实例非空时允许替换（重置其 Counter）
+        #[arg(long)]
+        force: bool,
     },
-    /// 域清单
+    /// 在已登记声明上创建额外实例
+    Instantiate {
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        instance: String,
+    },
+    /// 域清单（定义键 + 实例）
     List,
+    /// 单域实例清单
+    Instances {
+        #[arg(long)]
+        domain: String,
+    },
     /// 域信息 + 状态摘要
     Info {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
     },
-    /// 卸载域（内存态，日志保留）
+    /// 卸载实例（内存态，日志保留）
     Unload {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
     },
 }
 
@@ -181,6 +223,9 @@ enum CounterCmd {
     Ls {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
         /// 按类型过滤
         #[arg(long = "type")]
         ty: Option<String>,
@@ -193,6 +238,9 @@ enum ArchiveCmd {
     Ls {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
         #[arg(long = "type")]
         ty: Option<String>,
     },
@@ -204,6 +252,9 @@ enum GatesCmd {
     Show {
         #[arg(long)]
         domain: String,
+        /// 目标实例名（缺省 default）
+        #[arg(long)]
+        instance: Option<String>,
         #[arg(long)]
         participant: String,
     },
@@ -280,7 +331,13 @@ async fn run(cli: Cli) -> ExitCode {
             })
         }
         Command::Domain {
-            cmd: DomainCmd::Load { file, name },
+            cmd:
+                DomainCmd::Load {
+                    file,
+                    name,
+                    instance,
+                    force,
+                },
         } => {
             let text = match read_file(&file, json) {
                 Ok(t) => t,
@@ -288,9 +345,25 @@ async fn run(cli: Cli) -> ExitCode {
             };
             let name = name.unwrap_or_else(|| default_name(&file));
             let c = conn.client();
-            done(json, c.load_domain(&name, &text).await, |r| {
+            done(
+                json,
+                c.load_domain(&name, &text, instance.as_deref(), force)
+                    .await,
+                |r| {
+                    println!(
+                        "loaded {}: types={} gates={} seed_authority={} last_seq={}",
+                        r.name, r.types, r.gates, r.seed_authority, r.last_seq
+                    );
+                },
+            )
+        }
+        Command::Domain {
+            cmd: DomainCmd::Instantiate { domain, instance },
+        } => {
+            let c = conn.client();
+            done(json, c.instantiate(&domain, &instance).await, |r| {
                 println!(
-                    "loaded {}: types={} gates={} seed_authority={} last_seq={}",
+                    "instantiated {}: types={} gates={} seed_authority={} last_seq={}",
                     r.name, r.types, r.gates, r.seed_authority, r.last_seq
                 );
             })
@@ -304,34 +377,65 @@ async fn run(cli: Cli) -> ExitCode {
                     println!("(无域)");
                 } else {
                     for d in &r.domains {
-                        println!("{d}");
+                        println!("{} [{}]", d.name, d.instances.join(", "));
                     }
                 }
             })
         }
         Command::Domain {
-            cmd: DomainCmd::Info { domain },
+            cmd: DomainCmd::Instances { domain },
         } => {
             let c = conn.client();
-            done(json, c.domain_info(&domain).await, |r| {
-                println!(
-                    "{}: counter={} archive={} terminated={}",
-                    r.name, r.counter_size, r.archive_size, r.terminated
-                );
+            // JSON 输出该域的实例清单（缺省域不存在时为空间量）
+            let res = c.list_domains().await.map(|r| {
+                r.domains
+                    .into_iter()
+                    .find(|d| d.name == domain)
+                    .map(|d| d.instances)
+                    .unwrap_or_default()
+            });
+            done(json, res, |instances| {
+                if instances.is_empty() {
+                    println!("(无实例)");
+                } else {
+                    for i in instances {
+                        println!("{i}");
+                    }
+                }
             })
         }
         Command::Domain {
-            cmd: DomainCmd::Unload { domain },
+            cmd: DomainCmd::Info { domain, instance },
         } => {
             let c = conn.client();
-            done(json, c.unload_domain(&domain).await, |()| {
-                println!("unloaded {domain}");
-            })
+            done(
+                json,
+                c.domain_info(&domain, instance.as_deref()).await,
+                |r| {
+                    println!(
+                        "{}/{}: counter={} archive={} terminated={}",
+                        r.name, r.instance, r.counter_size, r.archive_size, r.terminated
+                    );
+                },
+            )
+        }
+        Command::Domain {
+            cmd: DomainCmd::Unload { domain, instance },
+        } => {
+            let c = conn.client();
+            done(
+                json,
+                c.unload_domain(&domain, instance.as_deref()).await,
+                |()| {
+                    println!("unloaded {domain}");
+                },
+            )
         }
 
         // —— 四类动作 ——
         Command::Seed {
             domain,
+            instance,
             participant,
             ty,
             thing_ref,
@@ -339,13 +443,20 @@ async fn run(cli: Cli) -> ExitCode {
             let c = conn.client();
             done(
                 json,
-                c.seed(&domain, &participant, &ty, thing_ref.as_deref())
-                    .await,
+                c.seed(
+                    &domain,
+                    instance.as_deref(),
+                    &participant,
+                    &ty,
+                    thing_ref.as_deref(),
+                )
+                .await,
                 print_token,
             )
         }
         Command::Produce {
             domain,
+            instance,
             participant,
             ty,
             predecessors,
@@ -356,6 +467,7 @@ async fn run(cli: Cli) -> ExitCode {
                 json,
                 c.produce(
                     &domain,
+                    instance.as_deref(),
                     &participant,
                     &ty,
                     predecessors,
@@ -367,18 +479,21 @@ async fn run(cli: Cli) -> ExitCode {
         }
         Command::Read {
             domain,
+            instance,
             participant,
             token,
         } => {
             let c = conn.client();
             done(
                 json,
-                c.read_token(&domain, &participant, &token).await,
+                c.read_token(&domain, instance.as_deref(), &participant, &token)
+                    .await,
                 print_token,
             )
         }
         Command::Consume {
             domain,
+            instance,
             participant,
             token,
             request_id,
@@ -386,8 +501,14 @@ async fn run(cli: Cli) -> ExitCode {
             let c = conn.client();
             done(
                 json,
-                c.consume(&domain, &participant, &token, request_id.as_deref())
-                    .await,
+                c.consume(
+                    &domain,
+                    instance.as_deref(),
+                    &participant,
+                    &token,
+                    request_id.as_deref(),
+                )
+                .await,
                 |r| {
                     println!(
                         "consumed {} (type {}, by {} at {})",
@@ -402,84 +523,113 @@ async fn run(cli: Cli) -> ExitCode {
 
         // —— 查询 ——
         Command::Counter {
-            cmd: CounterCmd::Ls { domain, ty },
+            cmd:
+                CounterCmd::Ls {
+                    domain,
+                    instance,
+                    ty,
+                },
         } => {
             let c = conn.client();
-            done(json, c.counter(&domain, ty.as_deref()).await, |r| {
-                println!("counter: {} tokens", r.size);
-                for t in &r.tokens {
-                    println!(
-                        "{} type={} depends_on=[{}]",
-                        t.id,
-                        t.ty,
-                        t.depends_on
-                            .iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
-            })
+            done(
+                json,
+                c.counter(&domain, instance.as_deref(), ty.as_deref()).await,
+                |r| {
+                    println!("counter: {} tokens", r.size);
+                    for t in &r.tokens {
+                        println!(
+                            "{} type={} depends_on=[{}]",
+                            t.id,
+                            t.ty,
+                            t.depends_on
+                                .iter()
+                                .map(|i| i.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
+                },
+            )
         }
         Command::Archive {
-            cmd: ArchiveCmd::Ls { domain, ty },
+            cmd:
+                ArchiveCmd::Ls {
+                    domain,
+                    instance,
+                    ty,
+                },
         } => {
             let c = conn.client();
-            done(json, c.archive(&domain, ty.as_deref()).await, |r| {
-                println!("archive: {} entries", r.size);
-                for e in &r.entries {
-                    println!(
-                        "{} type={} exhausted_by={} at {}",
-                        e.token.id, e.token.ty, e.exhausted_by, e.exhausted_at
-                    );
-                }
-            })
+            done(
+                json,
+                c.archive(&domain, instance.as_deref(), ty.as_deref()).await,
+                |r| {
+                    println!("archive: {} entries", r.size);
+                    for e in &r.entries {
+                        println!(
+                            "{} type={} exhausted_by={} at {}",
+                            e.token.id, e.token.ty, e.exhausted_by, e.exhausted_at
+                        );
+                    }
+                },
+            )
         }
         Command::Gates {
-            cmd: GatesCmd::Show {
-                domain,
-                participant,
-            },
+            cmd:
+                GatesCmd::Show {
+                    domain,
+                    instance,
+                    participant,
+                },
         } => {
             let c = conn.client();
-            done(json, c.gates(&domain, &participant).await, |r| {
-                println!("gates of {participant} in {domain}: {}", r.gates.len());
-                for g in &r.gates {
-                    match &g.condition {
-                        Some(expr) => println!(
-                            "{} {} when {}",
-                            g.action.as_str(),
-                            g.ty,
-                            pact_parser::emit_expr(expr)
-                        ),
-                        None => println!("{} {}", g.action.as_str(), g.ty),
+            done(
+                json,
+                c.gates(&domain, instance.as_deref(), &participant).await,
+                |r| {
+                    println!("gates of {participant} in {domain}: {}", r.gates.len());
+                    for g in &r.gates {
+                        match &g.condition {
+                            Some(expr) => println!(
+                                "{} {} when {}",
+                                g.action.as_str(),
+                                g.ty,
+                                pact_parser::emit_expr(expr)
+                            ),
+                            None => println!("{} {}", g.action.as_str(), g.ty),
+                        }
                     }
-                }
-            })
+                },
+            )
         }
         Command::Enabled {
             domain,
+            instance,
             participant,
         } => {
             let c = conn.client();
-            done(json, c.enabled(&domain, &participant).await, |r| {
-                println!("enabled productions for {participant}: {}", r.options.len());
-                for o in &r.options {
-                    println!(
-                        "{} witnesses=[{}]",
-                        o.ty,
-                        o.witness_predecessors
-                            .iter()
-                            .map(|i| i.to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
-            })
+            done(
+                json,
+                c.enabled(&domain, instance.as_deref(), &participant).await,
+                |r| {
+                    println!("enabled productions for {participant}: {}", r.options.len());
+                    for o in &r.options {
+                        println!(
+                            "{} witnesses=[{}]",
+                            o.ty,
+                            o.witness_predecessors
+                                .iter()
+                                .map(|i| i.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    }
+                },
+            )
         }
-        Command::Status { domain } => {
+        Command::Status { domain, instance } => {
             let c = conn.client();
-            done(json, c.status(&domain).await, |r| {
+            done(json, c.status(&domain, instance.as_deref()).await, |r| {
                 println!(
                     "{}: counter={} archive={} terminated={}",
                     domain, r.counter_size, r.archive_size, r.terminated

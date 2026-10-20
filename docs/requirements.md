@@ -1,6 +1,6 @@
 # PACT 实现需求
 
-来源：`docs/pactv1_rev2.md`（范式论文最新版）+ 用户指示。本文件只保留当前有效需求，变更历史记入 `docs/requirements-change.md`。
+来源：`docs/pactv1_rev3.md`（范式论文最新版）+ 用户指示。本文件只保留当前有效需求，变更历史记入 `docs/requirements-change.md`。
 
 ## 1. 项目目标
 
@@ -57,15 +57,15 @@
 - 事件溯源：Rule-S/P/E 均为不可变事件；append-only JSONL 事件日志为唯一真相源。
 - SQLite 作为派生索引（查询加速），可从日志重建。
 - Archive 语义：消费记录含 token 全量数据、exhausted_by、exhausted_at。
-- 事件自足：Consumed 事件携带 token 全量快照（含可选幂等键 request_id），单行日志即可独立审计与重放，不依赖同域其他行。
+- 事件自足：Consumed 事件携带 token 全量快照（含可选幂等键 request_id），单行日志即可独立审计与重放，不依赖同一域实例其他行。
 - 提交契约：事件日志 fsync 为**提交点**；其后步骤（索引投影、快照、Terminated、通知）为派生动作，失败不回滚、不失败本次调用（索引滞后由启动一致性校验重建自愈）。
 - 崩溃恢复：快照 + 日志尾部重放。
 
 ### FR10 引擎服务
 - 单权威：所有状态变更经串行化执行点，GateHolds 检查与状态变更原子完成。
-- 多域会话：一个引擎实例可承载多个命名域，各自独立 Counter/Archive。
+- 多域会话：一个引擎实例可承载多个命名域，各自独立 Counter/Archive；**域内可并发承载多个 Counter 实例**（D27，见 FR19）。
 - Rule-W 唤醒：订阅推送（状态变更事件主动通知订阅者）+ 轮询查询兜底。
-- Rule-T 检测：Counter 为空且无任何参与者的 Rule-P 可满足时发出终止事件（信息性，不锁定域）。
+- Rule-T 检测：Counter 为空且无任何参与者的 Rule-P 可满足时发出终止事件（信息性，不锁定域实例）。
 - 外部副作用边界：引擎不执行外部副作用，ThingRef 对引擎不透明；消费成功与外部动作成功为**独立承诺**（最终一致，见 FR15）。
 
 ### FR11 无人值守运行
@@ -75,7 +75,7 @@
 ### FR12 领域数据格式
 - `.pact` 域声明文件为四个注入点的唯一载体，格式遵循论文 §3.1 文法。
 - 定义线上数据格式（JSON）：Token、ArchiveEntry、规则动作请求/响应、结构化错误（错误码 + 载荷）、Counter 变更通知事件。
-- 规则动作请求：Rule-E（consume）可选携带 `request_id` 幂等键；同域重复键返回首次归档结果，同键异 token 返回错误码 `IdempotencyConflict`（HTTP 409）。
+- 规则动作请求：Rule-E（consume）可选携带 `request_id` 幂等键；同一域实例内重复键返回首次归档结果，同键异 token 返回错误码 `IdempotencyConflict`（HTTP 409）。
 - 全部接口（MCP / REST / CLI 输出）共享同一套 JSON 线上格式，保证三接口行为可对照。
 - 时间戳统一 ISO-8601 UTC；字段名 snake_case。
 
@@ -93,7 +93,7 @@
 ### FR15 消耗原子性、幂等与物化边界
 - 提交契约：Rule-E 的提交点 = 事件日志 fsync；其后步骤（索引投影、快照、Terminated、通知）失败不回滚、不失败本次调用（决策 D23）。
 - 原子域：GateHolds 检查（含 via/exists/count/not 读集）与「Counter 移除 + Archive 追加」在同一临界区完成，无 TOCTOU、无并发双消费。
-- 幂等：consume 可选 `request_id`；同域内重复请求返回首次归档结果，不重复消费；跨重启（由事件日志重建幂等表）仍生效；同键异 token → `IdempotencyConflict`。
+- 幂等：consume 可选 `request_id`；同一域实例内重复请求返回首次归档结果，不重复消费；跨重启（由事件日志重建幂等表）仍生效；同键异 token → `IdempotencyConflict`。
 - 边界：引擎不执行外部副作用，`consume` 成功 ≠ 外部动作成功；"产物未就位"应前移为 gate 准入条件（witness-token 模式）或后置为显式补偿（saga 式），**不得**表现为消费回滚。
 - 文档化：上述契约与边界须写入 `docs/design.md`、`docs/manual.md` 并在 `examples/` 提供对应示例。
 
@@ -116,19 +116,32 @@
 - 本仓库 `dist/` 目录交付：容器镜像（Dockerfile）、systemd unit、静态二进制（musl）打包脚本。
 - 与 FR14/决策 D22 同精神：发行产物属交付资产，不接入 CI 的语义测试（`examples/**` 仍不被 cargo test 遍历）。
 
+### FR19 域双键实例化（D27）
+
+- **定义键 / 实例键分离**：同一域声明（定义键 `domain`）可并发承载多个 **Counter 实例**（实例键 `instance`），各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / Rule-E 幂等表。
+- **实例为接口层一等键**：REST 路由、CLI、MCP、ACL、审计读视图、日志压缩、运维指标均以实例为键维度——原「以域名为唯一会话键」的语义收窄为「以实例为会话键」。
+- **默认回退**：不指定实例 ⇒ 默认实例（`default`）；既有 `--domain` 调用与既有脚本语义不变（落到 `default` 实例）。
+- **旧日志不兼容（用户裁决）**：双键布局下只识别 `<data_dir>/<domain>/<instance>.events.jsonl`；顶层遗留单层文件（`<domain>.events.jsonl` / `<domain>.snapshot.json`）**不再被识别**，启动恢复时 **fail-fast**（`StoreError::LegacyLayoutDetected`），须人工迁移，不静默丢数据。
+- **实例键承载形态（用户裁决）**：实例名作为**路径段**承载（`/domains/{d}/instances/{i}/…`），`/domains/{d}` 语义等价于 `default` 实例；`DomainLoaded` 事件**不新增 `instance` 字段**（实例由文件路径承载）。
+- **声明原文另存**：`declare` 时把声明原文写入 `<data_dir>/<domain>/declaration.pact`，`recover` 用它回填声明注册表（支持重启后新增实例）。
+- **形式依据**：论文 rev3 §1.3「Counter instantiation and partitioning」——实例划分属**实现自由**，论文全部规则与性质**按实例成立**（Rule-T 各实例独立终止；§1.4.1 TokenId 唯一性作用域为「该 Counter」，实现以 ULID 加强为跨实例唯一，见 Q4 裁定）；跨实例协同不在范式范围内。
+- **通用护栏（用户裁决）**：同一 `data_dir` 上 daemon 启动须获取独占 flock（`<data_dir>/pactd.lock`），第二实例启动即拒绝；对**非空实例**（`last_seq > DomainLoaded.seq`）的再加载默认拒绝（`DomainBusy`），须显式 `force` 才重置。
+- **归属**：`pact-store` + `pact-engine` + 接口层（`pact-http` / `pact-cli` / `pact-mcp` / `pact-runtime`）；`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` 零改动（形式语义不变）。
+- **实现状态**：已实现（阶段 10，路径 β）。存储 `(domain, instance)` 双列 + 域子目录布局；引擎声明注册表（`declare` / `instantiate` 分离）；接口全链（REST 默认族 + 实例镜像族、CLI `--instance`/`--force`/`instantiate`/`instances`、MCP 16 工具含 `pact_domain_instantiate`、`pact-runtime` 实例透传）；键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。
-- **NFR2 审计完整性**：事件日志自身即完整审计记录，人类可直接阅读；每条事件自足（消费事件携带 token 全量快照与可选幂等键），不依赖同域其他行。
+- **NFR2 审计完整性**：事件日志自身即完整审计记录，人类可直接阅读；每条事件自足（消费事件携带 token 全量快照与可选幂等键），不依赖同一域实例其他行。
 - **NFR3 确定性**：时钟抽象注入（系统时钟/逻辑时钟），支持确定性测试与重放。
 - **NFR4 部署**：单一静态二进制（daemon + CLI），零运行时依赖。
 - **NFR5 身份模型**：v1 采用信任声明（客户端自报参与者名）+ 可选的按参与者令牌认证；为联网版真实认证预留抽象。
 - **NFR6 联网演进**：Counter 单权威架构不变，联网形态为 client/server（无分布式共识需求）；传输层（stdio/本地 HTTP/远程 TLS）与核心逻辑分离。
-- **NFR7 可运维性**：生产形态须可被外部进程管理器托管（可探活、可优雅停机），运行状态可观测（指标），数据可备份恢复；事件日志的长期增长须有可控的压缩/保留手段。
+- **NFR7 可运维性**：生产形态须可被外部进程管理器托管（可探活、可优雅停机），运行状态可观测（指标），数据可备份恢复；事件日志的长期增长须有可控的压缩/保留手段。**多实例边界（D27）**：同一 `data_dir` 上并发承载多实例时须以独占锁（flock）保证单写者，禁止交错写同一日志；实例间不共享 Counter/Archive，跨实例协同不在范式保障范围内。
 
 ## 6. 范围外（显式排除）
 
-- CPN 编码生成器（论文 §4.5/附录 B）：列入后期可选阶段（决策 D12）。
+- CPN 编码生成器（论文 §4.5/附录 B）：列入后期可选阶段（决策 D12）。**实现约束（G1）**：须遵论文 §4.5/§B.2 的**单实例作用域**——每个 Counter 实例独立编码，库所与迁移不跨实例共享，跨实例协同不入 `N(D)`；CPN 编码的「域」为域声明，实例划分属运行期（D27）。
 - Archival Policy（论文 §2.2 可选第五注入点）：引擎不内置；域内可由持有 `consumes` gate 的系统参与者以正常 Rule-E 承担。
 - 多机分布式 Counter、OR 分支、时间约束、概率行为（范式本身不可表达）。
 - 分布式事务 / 2PC / 共识协议，以及由引擎执行的外部副作用：引擎不执行副作用（FR10/FR15）；单写者 actor + 事件日志已满足线性化与崩溃一致性，引入这些机制只增复杂度（决策 D23）。

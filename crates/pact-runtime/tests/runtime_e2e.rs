@@ -138,6 +138,7 @@ fn notification(kind: &str, counter_size: usize) -> Notification {
     serde_json::from_value(json!({
         "event": kind,
         "domain": "d",
+        "instance": "default",
         "seq": 1,
         "ts": "2026-10-19T00:00:00Z",
         "token_id": null,
@@ -229,6 +230,7 @@ async fn runtime_scenarios() {
     software_lifecycle().await;
     react_loop().await;
     side_effect_saga().await;
+    instance_binding().await;
 }
 
 /// T1：REST 编排软件工程生命周期至 Rule-T（论文 Part II §1.5 / Part III Ch.2）。
@@ -300,14 +302,14 @@ async fn software_lifecycle() {
     // —— 只读核验 ——
     let c = Client::unix(&sock);
     assert_eq!(
-        c.status("swe").await.unwrap(),
+        c.status("swe", None).await.unwrap(),
         StatusView {
             counter_size: 0,
             archive_size: 5,
             terminated: true
         }
     );
-    let ar = c.archive("swe", None).await.unwrap();
+    let ar = c.archive("swe", None, None).await.unwrap();
     let role: BTreeMap<&str, (&str, &str)> = ar
         .entries
         .iter()
@@ -388,14 +390,14 @@ async fn react_loop() {
 
     let c = Client::unix(&sock);
     assert_eq!(
-        c.status("react").await.unwrap(),
+        c.status("react", None).await.unwrap(),
         StatusView {
             counter_size: 0,
             archive_size: 8,
             terminated: true
         }
     );
-    let ar = c.archive("react", None).await.unwrap();
+    let ar = c.archive("react", None, None).await.unwrap();
     let types: Vec<&str> = ar.entries.iter().map(|e| e.token.ty.0.as_str()).collect();
     assert_eq!(
         types,
@@ -470,7 +472,7 @@ async fn side_effect_saga() {
 
     // —— 只读核验：补偿事实已归档，且与被失败的消费关联 ——
     let c = Client::unix(&sock);
-    let ar = c.archive("mat", None).await.unwrap();
+    let ar = c.archive("mat", None, None).await.unwrap();
     let task_id = ar
         .entries
         .iter()
@@ -495,11 +497,80 @@ async fn side_effect_saga() {
         "补偿事实应以 thing_ref 关联被失败的 token"
     );
     assert_eq!(
-        c.status("mat").await.unwrap(),
+        c.status("mat", None).await.unwrap(),
         StatusView {
             counter_size: 0,
             archive_size: 3,
             terminated: true
         }
     );
+}
+
+/// T4：域双键（D27）——同一域声明并发承载两个实例，运行态互不干扰。
+async fn instance_binding() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = spawn_daemon(dir.path()).await;
+    let endpoint = Endpoint::unix(&sock);
+
+    // 构造绑定到「swe/<instance>」的整套编排（引导者自动载入声明）
+    let build = |instance: Option<&str>| {
+        let mut orch = Orchestrator::new("swe");
+        if let Some(i) = instance {
+            orch = orch.with_instance(i.to_owned());
+        }
+        orch = orch.with_agent(
+            AgentSpec::rest("external_stakeholder", endpoint.clone()).with_bootstrap(Bootstrap {
+                declaration: LIFECYCLE.to_owned(),
+                seed_type: "requirement".to_owned(),
+                thing_ref: Some("need".to_owned()),
+            }),
+        );
+        for p in [
+            "architect",
+            "developer",
+            "tester",
+            "operator",
+            "stakeholder",
+        ] {
+            orch = orch.with_agent(AgentSpec::rest(p, endpoint.clone()));
+        }
+        orch
+    };
+
+    // default 与 alt 两实例并发独立自驱（各自引导并跑完整生命周期）
+    let (r_def, r_alt) = tokio::join!(build(None).run(), build(Some("alt")).run());
+    let def = r_def.expect("default 实例应终止");
+    let alt = r_alt.expect("alt 实例应终止");
+    assert_eq!((def.len(), alt.len()), (6, 6));
+    for r in def.iter().chain(alt.iter()) {
+        assert!(r.saw_terminated, "参与者未观察到终止：{r:?}");
+    }
+
+    // 只读核验：两实例各自独立归档（各 5 条），未串扰
+    let c = Client::unix(&sock);
+    assert_eq!(c.archive("swe", None, None).await.unwrap().size, 5);
+    assert_eq!(c.archive("swe", Some("alt"), None).await.unwrap().size, 5);
+    let st_def = c.status("swe", None).await.unwrap();
+    let st_alt = c.status("swe", Some("alt")).await.unwrap();
+    assert!(st_def.terminated && st_alt.terminated);
+
+    // 清单：一个定义键、两个实例
+    let list = c.list_domains().await.unwrap();
+    assert_eq!(list.domains.len(), 1);
+    assert_eq!(list.domains[0].name, "swe");
+    assert_eq!(list.domains[0].instances, vec!["alt", "default"]);
+
+    // 存储层：两实例日志分文件，各自完整记录生命周期（含 Terminated）
+    let data = dir.path().join("data").join("swe");
+    for f in ["default.events.jsonl", "alt.events.jsonl"] {
+        let text = std::fs::read_to_string(data.join(f)).unwrap();
+        assert!(
+            text.contains("\"kind\":\"DomainLoaded\""),
+            "{f} 缺 DomainLoaded"
+        );
+        assert!(
+            text.contains("\"kind\":\"Terminated\""),
+            "{f} 缺 Terminated"
+        );
+    }
 }

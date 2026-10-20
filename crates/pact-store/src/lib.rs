@@ -6,13 +6,15 @@
 mod error;
 mod event;
 mod index;
+mod key;
 mod log;
 mod snapshot;
 mod store;
 
-pub use error::{validate_domain_name, StoreError};
+pub use error::{validate_domain_name, validate_instance_name, StoreError};
 pub use event::{apply_event, ApplyOutcome, Event};
 pub use index::{IndexStore, TokenStatus, TursoIndexStore};
+pub use key::InstanceKey;
 pub use log::EventLog;
 pub use snapshot::Snapshot;
-pub use store::{RecoveredDomain, Store};
+pub use store::{RecoveredInstance, Store};

@@ -1,6 +1,6 @@
 // 跨 harness 协调域：共享 Counter 作为协调基底
 //
-// 出处：docs/pactv1_rev2.md Part III Chapter 2 §2.1
+// 出处：docs/pactv1_rev3.md Part III Chapter 2 §2.1
 //
 // 展示范式的核心主张：多个自治 AI harness 之间不需要编排器、不需要直接通信。
 // 每个 harness 只关心"当前 Counter 上有没有我能生产的前驱"，靠 Rule-P 可满足性

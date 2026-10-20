@@ -23,6 +23,9 @@ use std::time::Duration;
 struct FileConfig {
     /// 绑定域名。
     domain: String,
+    /// 绑定实例名（缺省 `default` 实例，D27）。
+    #[serde(default)]
+    instance: Option<String>,
     /// `.pact` 域声明文件路径。
     declaration: PathBuf,
     /// daemon 端点。
@@ -176,6 +179,9 @@ async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let bearer = cfg.bearer.clone();
 
     let mut orch = Orchestrator::new(cfg.domain.clone());
+    if let Some(i) = &cfg.instance {
+        orch = orch.with_instance(i.clone());
+    }
     if let Some(ms) = cfg.poll_ms {
         orch = orch.with_poll(Duration::from_millis(ms));
     }
@@ -231,7 +237,10 @@ async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }),
         poll: DEFAULT_EXECUTOR_POLL,
     };
-    let client = RestClient::from_endpoint(&endpoint, &cfg.domain, bearer.as_deref());
+    let mut client = RestClient::from_endpoint(&endpoint, &cfg.domain, bearer.as_deref());
+    if let Some(i) = &cfg.instance {
+        client = client.with_instance(i.clone());
+    }
     let mut executor = SideEffectExecutor::new(client, exec_cfg);
     let stop_for_exec = stop.clone();
     let exec_fut = async move {
