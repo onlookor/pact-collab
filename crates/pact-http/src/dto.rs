@@ -129,6 +129,12 @@ pub struct DomainInfo {
     pub terminated: bool,
 }
 
+/// `GET /domains/{d}[/instances/{i}]/read-audit`：最近 Rule-R 读审计记录（时间正序）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadAuditResp {
+    pub records: Vec<pact_store::ReadAuditRecord>,
+}
+
 /// `GET /domains/{d}/gates/{participant}`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatesResp {

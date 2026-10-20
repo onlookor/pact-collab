@@ -116,6 +116,11 @@
   - **固有取舍（须文档化）**：压缩后被丢弃前缀不再可查——审计视图退化为「快照 + 保留尾部事件」，`events` 索引行被裁剪（`tokens` 投影行保留）；NFR2 的「日志即完整审计」在压缩后由「快照 + 保留尾部」共同承担。v1 不做自动周期性轮转。
 - **运维接口**：daemon 提供 `GET /health`（存活）、`GET /ready`（就绪：引擎可应答）、`GET /metrics`（Prometheus 文本格式运行指标，含 uptime 与域实例计数）；可选 `pid_file`（缺省不写，含陈旧检测）；信号化优雅停机（SIGINT/SIGTERM → 停止接受新连接 → 有界等待在途 → 终态快照 → 清理）。运维端点**不校验令牌**（仅供本地/内网探活与抓取）。
 - **域级授权与审计读视图**：接口层按域 ACL（阻止任意客户端 `load` / `unload` 任意域）；读审计（Rule-R 记录）为**可选开启**扩展，默认关闭（修订决策 D9 的默认值表述，见 D25）。
+  - **ACL 粒度**：条目为 `domain/instance`，支持 `domain/*` 通配（实例键，FR19）；配置形如 `[auth.acl] principal = ["proj/*", "other/default"]`。
+  - **ACL 范围**：启用后覆盖全部域作用域端点——生命周期（load / instantiate / unload / compact / `:analyze` / `:compose`）、四类动作（seed / produce / read / consume）、查询（counter / archive / gates / enabled / status / events）与读审计视图；`GET /domains` 按授权过滤（空域剔除）。无令牌 → `401`，越权 → `403`。**未配置 ACL 时保持既有行为**（生命周期与查询不绑定身份，向后兼容）。
+  - **配置合法性**：ACL 非空而令牌表为空 ⇒ daemon 启动失败（身份不可判定）；每条目须为合法 `domain/instance` 或 `domain/*`。
+  - **读审计**：开启 `read_audit = true` 后，每次成功的 Rule-R 读取在 `<data_dir>/<domain>/<instance>.read-audit.jsonl` 追加一条自足记录（`version/ts/domain/instance/participant/token_id`）并 fsync。**fail-closed**：审计写失败则本次读取以 `500` 拒绝，不允许「读成功但无审计」。审计流**不进入**事件日志 / `seq` / 重放 / Rule-T，不参与快照与压缩。
+  - **只读视图**：REST `GET /domains/{d}[/instances/{i}]/read-audit?limit=N`（缺省 100，上限 1000，时间正序）返回 `{records:[...]}`。
 
 ### FR18 部署与分发产物
 

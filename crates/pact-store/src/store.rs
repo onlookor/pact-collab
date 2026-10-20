@@ -7,6 +7,7 @@
 //! 索引与日志末尾 seq 一致性校验（不一致则全量重建）。
 //! 语义重放（解析声明、恢复 CounterState）由引擎层驱动（store 不依赖 parser）。
 
+use crate::audit::ReadAuditRecord;
 use crate::error::{validate_domain_name, validate_instance_name, StoreError};
 use crate::event::Event;
 use crate::index::{IndexStore, TokenStatus, TursoIndexStore};
@@ -14,6 +15,7 @@ use crate::key::InstanceKey;
 use crate::log::{self, EventLog, ReadOutcome};
 use crate::snapshot::{self, Snapshot};
 use std::collections::BTreeMap;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -345,6 +347,158 @@ impl Store {
         }
     }
 
+    /// 追加一条读审计记录（D25 子项 3）：独立审计流 append + fsync。
+    ///
+    /// 调用方为引擎 actor（单写者）。失败须上抛——开启读审计后 fail-closed，
+    /// 不允许"读成功但无审计"。
+    pub fn append_read_audit(
+        &self,
+        key: &InstanceKey,
+        rec: &ReadAuditRecord,
+    ) -> Result<(), StoreError> {
+        key.validate()?;
+        let path = log::read_audit_path(&self.data_dir, &key.domain, &key.instance);
+        std::fs::create_dir_all(log::domain_dir(&self.data_dir, &key.domain))?;
+        let mut line = serde_json::to_string(rec).map_err(|e| StoreError::Json {
+            context: "读审计序列化",
+            source: e,
+        })?;
+        line.push('\n');
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| StoreError::Io {
+                context: "打开读审计流",
+                source: e,
+            })?;
+        file.write_all(line.as_bytes())
+            .map_err(|e| StoreError::Io {
+                context: "写入读审计流",
+                source: e,
+            })?;
+        file.sync_all().map_err(|e| StoreError::Io {
+            context: "读审计流 fsync",
+            source: e,
+        })?;
+        Ok(())
+    }
+
+    /// 读取最近 `limit` 条读审计记录（按写入顺序，时间正序）；文件不存在 → 空。
+    ///
+    /// 从文件尾部按块反向扫描：内存与扫描量只与 `limit` 相关（扫描上限 16 MiB），
+    /// 不随审计流总长度增长。崩溃可能留下末尾半行：仅末尾无换行时容忍其解析失败；
+    /// 其余损坏行上抛（不静默跳过，避免掩盖篡改）。
+    pub fn read_audit_tail(
+        &self,
+        key: &InstanceKey,
+        limit: usize,
+    ) -> Result<Vec<ReadAuditRecord>, StoreError> {
+        key.validate()?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let path = log::read_audit_path(&self.data_dir, &key.domain, &key.instance);
+        let mut file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => {
+                return Err(StoreError::Io {
+                    context: "读取读审计流",
+                    source: e,
+                })
+            }
+        };
+        let len = file
+            .metadata()
+            .map_err(|e| StoreError::Io {
+                context: "读取读审计流元数据",
+                source: e,
+            })?
+            .len();
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
+        const CHUNK: u64 = 64 * 1024;
+        const MAX_SCAN: u64 = 16 * 1024 * 1024;
+        let mut pos = len;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut newlines = 0usize;
+        let mut scanned = 0u64;
+        // 多读一行冗余，抵消块边界恰好落在行首时的丢弃。
+        let want_newlines = limit.saturating_add(1);
+        while pos > 0 && newlines <= want_newlines {
+            let read_len = CHUNK.min(pos);
+            pos -= read_len;
+            scanned += read_len;
+            if scanned > MAX_SCAN {
+                return Err(StoreError::Io {
+                    context: "读取读审计流",
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "审计尾部超过 16 MiB 扫描上限",
+                    ),
+                });
+            }
+            file.seek(SeekFrom::Start(pos))
+                .map_err(|e| StoreError::Io {
+                    context: "读取读审计流",
+                    source: e,
+                })?;
+            let mut chunk = vec![0u8; read_len as usize];
+            file.read_exact(&mut chunk).map_err(|e| StoreError::Io {
+                context: "读取读审计流",
+                source: e,
+            })?;
+            newlines += chunk.iter().filter(|b| **b == b'\n').count();
+            buf.splice(0..0, chunk);
+        }
+        if pos > 0 {
+            // 未读到文件头：首行可能被块边界截断（且可能切在多字节字符中间），
+            // 丢弃到第一个换行为止，保证剩余字节是完整 UTF-8 行。
+            match buf.iter().position(|b| *b == b'\n') {
+                Some(idx) => {
+                    buf.drain(..=idx);
+                }
+                None => buf.clear(),
+            }
+        }
+        let text = String::from_utf8(buf).map_err(|e| StoreError::Io {
+            context: "读审计解码",
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        })?;
+
+        let ended_with_newline = text.ends_with('\n');
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        if ended_with_newline {
+            lines.pop(); // 末尾换行产生的空串
+        }
+        if !ended_with_newline {
+            // 崩溃残留：末尾半行允许解析失败
+            if let Some(last) = lines.last() {
+                if serde_json::from_str::<ReadAuditRecord>(last).is_err() {
+                    lines.pop();
+                }
+            }
+        }
+
+        let start = lines.len().saturating_sub(limit);
+        let mut tail = Vec::with_capacity(lines.len() - start);
+        for line in &lines[start..] {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let rec: ReadAuditRecord =
+                serde_json::from_str(line).map_err(|e| StoreError::Json {
+                    context: "读审计解析",
+                    source: e,
+                })?;
+            tail.push(rec);
+        }
+        Ok(tail)
+    }
+
     /// 已存在的实例键清单（按文件扫描，含尚未被引擎加载的）。
     pub fn list_instances(&self) -> Vec<InstanceKey> {
         self.scan_instance_keys()
@@ -409,6 +563,7 @@ mod tests {
     use pact_core::{
         ArchiveEntry, CounterState, Effect, ParticipantName, ThingRef, Token, TokenId, TypeName,
     };
+    use std::io::Write;
 
     fn key() -> InstanceKey {
         InstanceKey::new("d", "default")
@@ -788,5 +943,87 @@ mod tests {
             store.recover().await.unwrap_err(),
             StoreError::SnapshotRequiredForCompactedLog { base_seq: 3, .. }
         ));
+    }
+
+    // ── 读审计流（D25 子项 3）────────────────────────────────────────────
+
+    fn audit_rec(ts: &str, participant: &str, token_id: &str) -> ReadAuditRecord {
+        ReadAuditRecord {
+            version: crate::EVENT_SCHEMA_VERSION,
+            ts: ts.into(),
+            domain: "d".into(),
+            instance: "default".into(),
+            participant: participant.into(),
+            token_id: token_id.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_audit_append_and_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        // 文件不存在 → 空（未开启读审计）
+        assert!(store.read_audit_tail(&key(), 10).unwrap().is_empty());
+
+        for i in 0..5 {
+            let rec = audit_rec(&format!("T{i}"), "arch", &format!("t{i}"));
+            store.append_read_audit(&key(), &rec).unwrap();
+        }
+        let all = store.read_audit_tail(&key(), 10).unwrap();
+        assert_eq!(all.len(), 5);
+        assert_eq!(all[0].ts, "T0");
+        assert_eq!(all[0].version, crate::EVENT_SCHEMA_VERSION);
+
+        // 只取尾部 N 条，保持时间正序
+        let tail = store.read_audit_tail(&key(), 2).unwrap();
+        assert_eq!(
+            tail.iter().map(|r| r.ts.as_str()).collect::<Vec<_>>(),
+            vec!["T3", "T4"]
+        );
+        // 独立审计流：未写入事件日志（不改变 seq/重放）
+        assert!(!log::events_path(dir.path(), "d", "default").exists());
+    }
+
+    #[tokio::test]
+    async fn read_audit_tolerates_trailing_partial_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        store
+            .append_read_audit(&key(), &audit_rec("T0", "arch", "t0"))
+            .unwrap();
+        // 模拟崩溃残留：末尾无换行的半行
+        let path = log::read_audit_path(dir.path(), "d", "default");
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        f.write_all(b"{\"ts\":\"T1\"").unwrap();
+        let recs = store.read_audit_tail(&key(), 10).unwrap();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].ts, "T0");
+    }
+
+    /// 反向块扫描：大文件只取尾部、跨多个 64 KiB 块仍保持顺序与完整性。
+    #[tokio::test]
+    async fn read_audit_tail_scans_multiple_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        let path = log::read_audit_path(dir.path(), "d", "default");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut text = String::new();
+        for i in 0..1500 {
+            text.push_str(&serde_json::to_string(&audit_rec(&format!("T{i}"), "a", "t")).unwrap());
+            text.push('\n');
+        }
+        assert!(text.len() > 64 * 1024, "需跨块以覆盖反向扫描");
+        std::fs::write(&path, text).unwrap();
+
+        let recs = store.read_audit_tail(&key(), 3).unwrap();
+        assert_eq!(
+            recs.iter().map(|r| r.ts.as_str()).collect::<Vec<_>>(),
+            vec!["T1497", "T1498", "T1499"]
+        );
+        assert_eq!(store.read_audit_tail(&key(), 1000).unwrap().len(), 1000);
+        assert_eq!(store.read_audit_tail(&key(), 0).unwrap().len(), 0);
     }
 }

@@ -18,7 +18,7 @@ use pact_core::{
     TokenId, TypeName,
 };
 use pact_parser::{emit_domain, load_domain, Problem};
-use pact_store::{apply_event, Event, InstanceKey, Snapshot, Store, StoreError};
+use pact_store::{apply_event, Event, InstanceKey, ReadAuditRecord, Snapshot, Store, StoreError};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -133,6 +133,9 @@ pub struct EngineConfig {
     pub compact_on_start: bool,
     /// 压缩时保留的最近事件条数（0 = 丢弃全部已入快照的前缀）。
     pub compact_keep_last: u64,
+    /// 是否持久化 Rule-R 读审计（D25 子项 3；默认关闭）。
+    /// 开启后写审计失败即拒绝本次读取（fail-closed）。
+    pub read_audit: bool,
 }
 
 impl Default for EngineConfig {
@@ -143,6 +146,7 @@ impl Default for EngineConfig {
             command_capacity: 256,
             compact_on_start: false,
             compact_keep_last: 0,
+            read_audit: false,
         }
     }
 }
@@ -224,6 +228,12 @@ pub enum Command {
         key: InstanceKey,
         resp: Responder<StatusView>,
     },
+    /// 读审计视图（D25 子项 3）：最近 `limit` 条 Rule-R 记录（时间正序）。
+    QueryReadAudit {
+        key: InstanceKey,
+        limit: usize,
+        resp: Responder<Vec<ReadAuditRecord>>,
+    },
     ListDomains {
         resp: Responder<Vec<DomainListing>>,
     },
@@ -297,6 +307,9 @@ impl Command {
                 let _ = resp.send(Err(err));
             }
             Command::QueryStatus { resp, .. } => {
+                let _ = resp.send(Err(err));
+            }
+            Command::QueryReadAudit { resp, .. } => {
                 let _ = resp.send(Err(err));
             }
             Command::ListDomains { resp } => {
@@ -626,6 +639,9 @@ impl EngineActor {
                 resp,
             } => respond(resp, self.query_enabled(&key, &participant)),
             Command::QueryStatus { key, resp } => respond(resp, self.query_status(&key)),
+            Command::QueryReadAudit { key, limit, resp } => {
+                respond(resp, self.query_read_audit(&key, limit))
+            }
             Command::ListDomains { resp } => respond(resp, Ok(self.list_domains())),
             Command::UnloadDomain { key, resp } => respond(resp, self.unload_domain(&key)),
             Command::Subscribe { key, resp } => respond(resp, self.subscribe(&key)),
@@ -917,14 +933,30 @@ impl EngineActor {
     }
 
     /// Rule-R：无状态变更、无事件（D9）、无通知。
+    /// D25 子项 3：开启读审计时另写独立审计流；写失败即拒绝本次读取（fail-closed）。
     async fn read(
         &mut self,
         key: &InstanceKey,
         participant: &ParticipantName,
         token_id: &TokenId,
     ) -> Result<Token, EngineError> {
-        let session = self.session(key)?;
-        rule_r(&session.domain, &session.state, participant, token_id).map_err(EngineError::Rule)
+        let token = {
+            let session = self.session(key)?;
+            rule_r(&session.domain, &session.state, participant, token_id)
+                .map_err(EngineError::Rule)?
+        };
+        if self.config.read_audit {
+            let rec = ReadAuditRecord {
+                version: pact_store::EVENT_SCHEMA_VERSION,
+                ts: self.clock.now(),
+                domain: key.domain.clone(),
+                instance: key.instance.clone(),
+                participant: participant.0.clone(),
+                token_id: token.id.0.clone(),
+            };
+            self.store.append_read_audit(key, &rec)?;
+        }
+        Ok(token)
     }
 
     async fn consume(
@@ -1059,6 +1091,15 @@ impl EngineActor {
             archive_size: s.state.archive.len(),
             terminated: s.terminated,
         })
+    }
+
+    /// 读审计视图（D25 子项 3）：独立审计流，实例未加载也可查看历史记录。
+    fn query_read_audit(
+        &self,
+        key: &InstanceKey,
+        limit: usize,
+    ) -> Result<Vec<ReadAuditRecord>, EngineError> {
+        Ok(self.store.read_audit_tail(key, limit)?)
     }
 
     fn subscribe(
@@ -1483,6 +1524,18 @@ impl Engine {
     pub async fn status(&self, key: InstanceKey) -> Result<StatusView, EngineError> {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::QueryStatus { key, resp }).await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 读审计视图（D25 子项 3）：最近 `limit` 条 Rule-R 记录（时间正序）。
+    pub async fn read_audit(
+        &self,
+        key: InstanceKey,
+        limit: usize,
+    ) -> Result<Vec<ReadAuditRecord>, EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::QueryReadAudit { key, limit, resp })
+            .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 

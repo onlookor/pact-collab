@@ -1227,3 +1227,140 @@ async fn declaration_backfill_supports_new_instances_after_restart() {
 
     engine2.shutdown().await.unwrap();
 }
+
+// ============ 13. 读审计（D25 子项 3） ============
+
+/// `default` 实例的读审计流路径。
+fn audit_path(dir: &std::path::Path, domain: &str) -> std::path::PathBuf {
+    dir.join(domain)
+        .join(format!("{DEFAULT_INSTANCE}.read-audit.jsonl"))
+}
+
+#[tokio::test]
+async fn read_audit_records_rule_r_without_touching_event_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup_with(
+        dir.path(),
+        EngineConfig {
+            read_audit: true,
+            ..EngineConfig::default()
+        },
+    )
+    .await;
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    let req = engine
+        .seed(
+            key("proj"),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    engine
+        .produce(
+            key("proj"),
+            par("architect"),
+            tyn("design"),
+            vec![req.id.clone()],
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+
+    // 两次读取 → 两条审计记录（时间正序）
+    engine
+        .read(key("proj"), par("architect"), req.id.clone())
+        .await
+        .unwrap();
+    engine
+        .read(key("proj"), par("architect"), req.id.clone())
+        .await
+        .unwrap();
+
+    let recs = engine.read_audit(key("proj"), 10).await.unwrap();
+    assert_eq!(recs.len(), 2);
+    assert_eq!(recs[0].participant, "architect");
+    assert_eq!(recs[0].token_id, req.id.0);
+    assert_eq!(recs[0].domain, "proj");
+    assert_eq!(recs[0].instance, DEFAULT_INSTANCE);
+    assert_eq!(recs[0].version, pact_store::EVENT_SCHEMA_VERSION);
+    assert_eq!(engine.read_audit(key("proj"), 1).await.unwrap().len(), 1);
+
+    // 审计不进入事件日志（仍为 DomainLoaded/Seeded/Produced 三条）
+    assert_eq!(log_lines(dir.path(), "proj").len(), 3);
+    engine.shutdown().await.unwrap();
+
+    // 独立持久化：重启后审计流仍可读
+    let engine2 = setup_with(
+        dir.path(),
+        EngineConfig {
+            read_audit: true,
+            ..EngineConfig::default()
+        },
+    )
+    .await;
+    assert_eq!(engine2.read_audit(key("proj"), 10).await.unwrap().len(), 2);
+    engine2.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn read_audit_failure_blocks_read_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup_with(
+        dir.path(),
+        EngineConfig {
+            read_audit: true,
+            ..EngineConfig::default()
+        },
+    )
+    .await;
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    let req = engine
+        .seed(
+            key("proj"),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+
+    // 制造审计写入失败：以目录占位审计文件路径
+    std::fs::create_dir_all(audit_path(dir.path(), "proj")).unwrap();
+    let err = engine
+        .read(key("proj"), par("architect"), req.id.clone())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, EngineError::Store(_)),
+        "fail-closed：审计失败即拒绝读取，实际 {err:?}"
+    );
+
+    // 未开启读审计时，同一阻断不影响读取（默认关闭）
+    let dir2 = tempfile::tempdir().unwrap();
+    let off = setup(dir2.path()).await;
+    off.load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    let req2 = off
+        .seed(
+            key("proj"),
+            par("external"),
+            tyn("requirement"),
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    std::fs::create_dir_all(audit_path(dir2.path(), "proj")).unwrap();
+    off.read(key("proj"), par("architect"), req2.id)
+        .await
+        .unwrap();
+    off.shutdown().await.unwrap();
+}

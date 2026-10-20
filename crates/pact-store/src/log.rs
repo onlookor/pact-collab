@@ -150,6 +150,12 @@ pub fn logmeta_path(data_dir: &Path, domain: &str, instance: &str) -> PathBuf {
     domain_dir(data_dir, domain).join(format!("{instance}.logmeta.json"))
 }
 
+/// 实例键 → 读审计流路径：`<data_dir>/<domain>/<instance>.read-audit.jsonl`。
+/// 与事件日志分离（D25 子项 3）：不进入 seq/重放/快照/压缩。
+pub fn read_audit_path(data_dir: &Path, domain: &str, instance: &str) -> PathBuf {
+    domain_dir(data_dir, domain).join(format!("{instance}.read-audit.jsonl"))
+}
+
 fn default_version() -> u32 {
     crate::event::EVENT_SCHEMA_VERSION
 }

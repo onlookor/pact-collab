@@ -3,7 +3,7 @@
 //! 覆盖 §6 线上格式、§9.2 端点、错误码映射、§6.4 SSE、§9.4 令牌校验。
 //! 域双键（D27）：域级端点作用于 `default` 实例；实例级端点走 `/instances/{i}`。
 
-use pact_engine::{Engine, LogicalClock, SequentialIdGen};
+use pact_engine::{Engine, EngineConfig, LogicalClock, SequentialIdGen};
 use pact_http::client::{Client, ClientError};
 use pact_http::server::{router, serve_unix, ConnTracker, ServerState};
 use pact_store::Store;
@@ -33,13 +33,24 @@ seed_authority { external: seeds requirement }
 
 /// 进程内起一个真实 daemon（临时目录 + unix socket），返回套接字路径与引擎句柄。
 async fn spawn_daemon(dir: &Path, tokens: BTreeMap<String, String>) -> (PathBuf, Engine) {
+    spawn_daemon_full(dir, tokens, BTreeMap::new(), EngineConfig::default()).await
+}
+
+/// 带 ACL / 引擎配置的 daemon（D25 子项 3 测试用）。
+async fn spawn_daemon_full(
+    dir: &Path,
+    tokens: BTreeMap<String, String>,
+    acl: BTreeMap<String, Vec<String>>,
+    config: EngineConfig,
+) -> (PathBuf, Engine) {
     let store = Store::open(dir.join("data")).await.unwrap();
-    let engine = Engine::spawn(
+    let engine = Engine::spawn_with_config(
         store,
         Arc::new(LogicalClock::new()),
         Arc::new(SequentialIdGen::new()),
+        config,
     );
-    let state = ServerState::new(engine.clone(), tokens);
+    let state = ServerState::with_acl(engine.clone(), tokens, acl);
     let app = router(state);
     let sock = dir.join("pact.sock");
     let s = sock.clone();
@@ -633,9 +644,170 @@ async fn graceful_shutdown_stops_accepting_and_drains() {
         tokio::net::UnixStream::connect(&sock).await.is_err(),
         "停机后不应再接受新连接"
     );
-    // 在途连接归零
+    // 在途连接应归零
     tokio::time::timeout(Duration::from_secs(5), tracker.wait_idle())
         .await
         .expect("在途连接应归零");
     assert_eq!(tracker.active(), 0);
+}
+
+// ============ 域级授权 ACL（D25 子项 3 / FR17） ============
+
+#[tokio::test]
+async fn acl_requires_identity_and_instance_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tokens = BTreeMap::new();
+    tokens.insert("architect".to_owned(), "tok-arch".to_owned());
+    tokens.insert("external".to_owned(), "tok-ext".to_owned());
+    tokens.insert("reviewer".to_owned(), "tok-rev".to_owned());
+    let mut acl = BTreeMap::new();
+    acl.insert("architect".to_owned(), vec!["proj/*".to_owned()]);
+    acl.insert("external".to_owned(), vec!["proj/default".to_owned()]);
+    acl.insert("reviewer".to_owned(), vec!["other/default".to_owned()]);
+    let (sock, _engine) = spawn_daemon_full(dir.path(), tokens, acl, EngineConfig::default()).await;
+
+    // 无令牌 → 401：启用 ACL 后生命周期端点同样受约束
+    let anon = Client::unix(sock.clone());
+    let err = anon
+        .load_domain("proj", DECL, None, false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ClientError::Api(d) if d.code == "Unauthorized"));
+
+    let arch = Client::unix(sock.clone()).with_bearer("tok-arch");
+    arch.load_domain("proj", DECL, None, false).await.unwrap();
+    // 通配授权覆盖新实例
+    arch.instantiate("proj", "x").await.unwrap();
+    // 未授权域 → 403
+    let err = arch
+        .load_domain("other", DECL, None, false)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ClientError::Api(d) if d.code == "Forbidden"));
+
+    // 令牌有效但无该实例授权 → 403（动作端点）
+    let ext = Client::unix(sock.clone()).with_bearer("tok-ext");
+    let err = ext
+        .seed("proj", Some("x"), "external", "requirement", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ClientError::Api(d) if d.code == "Forbidden"));
+    // 有授权 → 放行
+    ext.seed("proj", None, "external", "requirement", None)
+        .await
+        .unwrap();
+
+    // 令牌主体与 body participant 不一致 → 401（沿用参与者令牌校验）
+    let err = arch
+        .seed("proj", None, "external", "requirement", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ClientError::Api(d) if d.code == "Unauthorized"));
+
+    // 列表按 ACL 过滤（空域剔除）
+    let rev = Client::unix(sock.clone()).with_bearer("tok-rev");
+    rev.load_domain("other", DECL, None, false).await.unwrap();
+    let list = rev.list_domains().await.unwrap();
+    assert_eq!(list.domains.len(), 1);
+    assert_eq!(list.domains[0].name, "other");
+    assert_eq!(list.domains[0].instances, vec!["default"]);
+    let list = arch.list_domains().await.unwrap();
+    assert_eq!(list.domains.len(), 1);
+    assert_eq!(list.domains[0].name, "proj");
+    assert_eq!(list.domains[0].instances, vec!["default", "x"]);
+
+    // 查询端点与读审计视图同样受 ACL 约束
+    let err = rev.status("proj", None).await.unwrap_err();
+    assert!(matches!(err, ClientError::Api(d) if d.code == "Forbidden"));
+    let err = rev.read_audit("proj", None, None).await.unwrap_err();
+    assert!(matches!(err, ClientError::Api(d) if d.code == "Forbidden"));
+    let err = rev.unload_domain("proj", None).await.unwrap_err();
+    assert!(matches!(err, ClientError::Api(d) if d.code == "Forbidden"));
+
+    // 有通配授权者可卸载
+    arch.unload_domain("proj", Some("x")).await.unwrap();
+}
+
+// ============ 读审计视图（D25 子项 3） ============
+
+#[tokio::test]
+async fn read_audit_view_reports_rule_r_records() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = EngineConfig {
+        read_audit: true,
+        ..EngineConfig::default()
+    };
+    let (sock, _engine) =
+        spawn_daemon_full(dir.path(), BTreeMap::new(), BTreeMap::new(), config).await;
+    let c = Client::unix(sock);
+
+    c.load_domain("proj", DECL, None, false).await.unwrap();
+    let req = c
+        .seed("proj", None, "external", "requirement", Some("R-1"))
+        .await
+        .unwrap();
+    c.produce(
+        "proj",
+        None,
+        "architect",
+        "design",
+        vec![req.token.id.0.clone()],
+        None,
+    )
+    .await
+    .unwrap();
+    c.read_token("proj", None, "architect", &req.token.id.0)
+        .await
+        .unwrap();
+    c.read_token("proj", None, "architect", &req.token.id.0)
+        .await
+        .unwrap();
+
+    let audit = c.read_audit("proj", None, None).await.unwrap();
+    assert_eq!(audit.records.len(), 2);
+    assert_eq!(audit.records[0].participant, "architect");
+    assert_eq!(audit.records[0].token_id, req.token.id.0);
+    assert_eq!(audit.records[0].domain, "proj");
+    assert_eq!(audit.records[0].instance, "default");
+    // limit 生效
+    assert_eq!(
+        c.read_audit("proj", None, Some(1))
+            .await
+            .unwrap()
+            .records
+            .len(),
+        1
+    );
+
+    // 实例级镜像：审计流按实例隔离
+    c.instantiate("proj", "x").await.unwrap();
+    let x = c
+        .seed("proj", Some("x"), "external", "requirement", None)
+        .await
+        .unwrap();
+    c.produce(
+        "proj",
+        Some("x"),
+        "architect",
+        "design",
+        vec![x.token.id.0.clone()],
+        None,
+    )
+    .await
+    .unwrap();
+    c.read_token("proj", Some("x"), "architect", &x.token.id.0)
+        .await
+        .unwrap();
+    let audit = c.read_audit("proj", Some("x"), None).await.unwrap();
+    assert_eq!(audit.records.len(), 1);
+    assert_eq!(audit.records[0].instance, "x");
+
+    // 从未读取的实例 → 空记录（审计流独立于会话）
+    c.instantiate("proj", "y").await.unwrap();
+    assert!(c
+        .read_audit("proj", Some("y"), Some(1000))
+        .await
+        .unwrap()
+        .records
+        .is_empty());
 }

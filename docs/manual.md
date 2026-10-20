@@ -120,6 +120,7 @@ listen_unix = "./pact.sock"       # 默认监听；单机安全
 # pid_file    = "./pactd.pid"     # 可选；启动写入、退出删除（含陈旧检测）
 # compact_on_start = false        # 可选；启动恢复后自动压缩全部实例日志（D25）
 # compact_keep_last = 0           # 可选；自动压缩保留的尾部事件条数
+# read_audit = false              # 可选；持久化 Rule-R 读审计（每次成功读追加一行记录，默认关闭）
 
 [mcp]
 enabled = true
@@ -127,10 +128,13 @@ enabled = true
 [auth]                            # 可选；整段缺省 = 信任声明模式
 [auth.tokens]
 architect = "sekret"              # 参与者 → 令牌，请求头 Authorization: Bearer
+# [auth.acl]                      # 可选；域级 ACL，非空时必须同时配置 [auth.tokens]
+# architect = ["proj/*", "other/default"]  # 条目格式：domain/instance 或 domain/*
 ```
 
 缺省语义（文件不存在或字段缺省时）：`data_dir = "./data"`、`listen_unix = "./pact.sock"`、
-无 TCP、无令牌表、无 PID 文件、不自动压缩（`compact_on_start = false`、`compact_keep_last = 0`）。两个易踩点：
+无 TCP、无令牌表、无 ACL、无 PID 文件、不自动压缩（`compact_on_start = false`、`compact_keep_last = 0`）、
+不写读审计（`read_audit = false`）。两个易踩点：
 
 - 配置用 `deny_unknown_fields`，**写错键名会直接报错**，不会静默忽略。
 - `listen_unix = ""`（空串）= 禁用 unix socket；只写 `listen_tcp` 而不写 `listen_unix`，
@@ -155,7 +159,7 @@ pact daemon start --config pact.toml      # 前台运行；Ctrl-C 或 SIGTERM �
 
 ### 2.3.1 运维端点（免令牌）
 
-daemon 提供三个仅供本地/内网使用的运维端点（**不校验令牌**）。需注意认证边界：**参与者令牌只覆盖四类动作端点**（seed / produce / read / consume）；域生命周期（声明、实例化、卸载）、日志压缩（`/compact`）与下述运维端点均**不绑定参与者身份、不校验令牌**。因此 daemon 应仅监听 unix socket、回环或受信网络，**不得把 TCP 端口暴露给不可信网络**（域级 ACL 属 D25 子项 (3)，尚未实现）。
+daemon 提供三个仅供本地/内网使用的运维端点（**不校验令牌**）。认证边界：配置 `[auth.acl]` 后，域生命周期、四类动作、查询、`/compact` 与读审计视图全部按 `(domain, instance)` 授权（§2.4、§7.6）；**未配置 ACL** 时，令牌只覆盖四类动作端点，生命周期、查询与 `/compact` 不绑定身份。无论是否启用 ACL，`/health` `/ready` `/metrics` 与 `POST /validate` 都免令牌——daemon 仍应仅监听 unix socket、回环或受信网络，**不得把 TCP 端口暴露给不可信网络**。
 
 ```bash
 curl --unix-socket ./pact.sock http://localhost/health   # {"status":"ok"}（存活）
@@ -175,6 +179,8 @@ curl --unix-socket ./pact.sock http://localhost/metrics  # Prometheus 文本格�
   否则 `401 Unauthorized`。比较用恒时算法（防 CWE-208 时序侧信道）。
 
 身份在**命令进入引擎之前**由接口层校验；核心与引擎不感知认证方式（设计 §9.4，NFR5）。
+
+**域级 ACL（可选）**：`[auth.acl]` 非空时启用实例级授权（`domain/instance` 或 `domain/*`），覆盖生命周期、动作、查询、压缩与读审计视图；未配置时保持上述信任声明/令牌行为不变。配置必须同时提供 `[auth.tokens]`，否则 daemon 拒绝启动。详见 §7.6。
 
 ---
 
@@ -530,7 +536,8 @@ Terminated { seq, ts }               // Rule-T 检测结果，信息性
 ```
 
 `seq` 全局单调。**Rule-R 不持久化**（D9：读取无状态变更，重放不需要）——
-所以「谁读过什么」不在事件日志里，需要读审计得自己在外层记。
+所以「谁读过什么」不在事件日志里。需要记录时可开启 `read_audit = true`（§7.5），
+审计写入独立文件、不改事件日志；未开启时需在外层自行记录。
 
 ### 7.3 离线重放
 
@@ -563,11 +570,51 @@ pact compact --domain D --instance I --keep-last 100   # 保留最近 100 条，
   （`SnapshotRequiredForCompactedLog`），不静默丢数据。
 - **代价**：被丢弃前缀**不再可从日志审计**——审计视图退化为「快照 + 保留的尾部事件」。
   需要完整历史时保留 `keep_last` 足够大，或先备份 JSONL 再压缩。
-- **安全边界**：压缩是**破坏性**运维操作且**不校验令牌**（同域生命周期端点）——只应在 unix socket / 回环 / 受信网络暴露。另注意 `compact_on_start = true` 且 `compact_keep_last = 0` 时，**每次重启都会丢弃全部已入快照的审计前缀**；需要留存审计时务必显式设置 `compact_keep_last`（pactd 启动会打印告警）。
+- **安全边界**：压缩是**破坏性**运维操作；启用 `[auth.acl]` 时与其它实例端点一样按 `(domain, instance)` 授权，未启用 ACL 时不校验令牌（同域生命周期端点）——只应在 unix socket / 回环 / 受信网络暴露。另注意 `compact_on_start = true` 且 `compact_keep_last = 0` 时，**每次重启都会丢弃全部已入快照的审计前缀**；需要留存审计时务必显式设置 `compact_keep_last`（pactd 启动会打印告警）。
 - 可选启动自动压缩：`compact_on_start = true` + `compact_keep_last = N`；
   恢复后逐实例压缩，单个实例失败只告警、不阻断 daemon 启动。
 - REST 等价入口：`POST /domains/{d}[/instances/{i}]/compact {"keep_last": 0}`，
-  返回 `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`；MCP 为 `pact_compact`。
+  返回 `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`；MCP 为 `pact_compact`.
+
+### 7.5 读审计视图（D25）
+
+`read_audit = true` 开启后，每次 Rule-R 读取成功时会在独立审计流追加一条记录（`version/ts/domain/instance/participant/token_id`），审计流与主事件日志分离，不影响 seq / 重放 / Rule-T。
+
+查看最近 `limit` 条（默认 100，上限 1000）：
+
+```bash
+curl --unix-socket ./pact.sock http://localhost/domains/proj/read-audit?limit=20
+curl --unix-socket ./pact.sock http://localhost/domains/proj/instances/foo/read-audit?limit=100
+```
+
+响应格式：`{"records": [{"version":1,"ts":"...",...}, ...]}`。
+
+- **fail-closed**：开启审计后，如果审计写入失败，本次读取以 500 拒绝，不返回 token。
+- **ACL**：读审计视图和其它实例端点一样受 `[auth.acl]` 约束。
+- **持久化**：审计流不参与快照与压缩，运维可按需轮转归档。
+
+### 7.6 域级 ACL（D25）
+
+`[auth.acl]` 非空即启用域级授权，必须同时配置 `[auth.tokens]`。格式：
+
+```toml
+[auth.tokens]
+architect = "token-arch"
+reviewer = "token-rev"
+
+[auth.acl]
+architect = ["proj/*"]          # 通配：proj 下任意实例都允许
+reviewer = ["proj/default"]    # 仅允许 reviewer 读 proj/default
+```
+
+授权规则（除 `/health` `/ready` `/metrics` `/validate` 均生效）：
+
+- `load` / `instantiate` / `unload` / `compact` / `:analyze` / `:compose`：从 Bearer 令牌反查参与者，按 `(domain, instance)` 授权。
+- 四类动作（seed / produce / read / consume）：请求体/查询参数的 `participant` 必须与 Bearer 令牌归属一致，且参与者对实例有授权。
+- 查询（counter / archive / gates / enabled / status / events / read-audit）：从 Bearer 令牌反查参与者，按 `(domain, instance)` 授权。
+- `GET /domains`：按参与者过滤，只返回其有权访问的实例（空域剔除）。
+
+未授权返回 `403 Forbidden`（结构化错误体，含 `domain` `instance`）；无有效令牌返回 `401 Unauthorized`。未配置 `[auth.acl]` 保持原有信任声明行为（即任何人说自己是谁就是谁，不做域级授权）。
 
 ---
 
@@ -640,10 +687,13 @@ pact compact --domain D --instance I --keep-last 100   # 保留最近 100 条，
 | `GET /domains/{d}/status` | — | `200` `{counter_size, archive_size, terminated}` |
 | `POST /domains/{d}/compact` | `{keep_last?}`（缺省 0） | `200` `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`（D25） |
 | `GET /domains/{d}/events` | — | SSE 流（含 keep-alive），每条 `data:` 是 §6.4 通知 |
+| `GET /domains/{d}/read-audit?limit=` | — | `200` `{records:[...]}`（D25 子项 3；缺省 100、上限 1000） |
 
-**运维端点（D25，免令牌）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验令牌**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact` 同样不校验令牌**（破坏性运维操作，会丢弃已入快照的审计前缀），暴露边界见 §2.3.1。
+**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无令牌 `401`、越权 `403`；`GET /domains` 按授权过滤。未配置时行为不变。详见 §7.6。
 
-**实例路由（D27）**：上表 `/domains/{d}/…` 的语义 = **`default` 实例**。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events 全套同形。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。
+**运维端点（D25，免令牌）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验令牌**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不校验令牌（破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
+
+**实例路由（D27）**：上表 `/domains/{d}/…` 的语义 = **`default` 实例**。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events / read-audit 全套同形。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。
 
 实现注记：`{d}:analyze` / `{d}:compose` 因路由库不支持同段「参数 + 字面量」，
 在 `/domains/{d}` 统一入口内按段内冒号后缀分发，**对外 URL 不变**。
@@ -783,7 +833,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 3. **`compose` 语义不对称**：CLI 只打印，MCP/REST 会装载（§6.3）。
 4. **`SEED_PRODUCE_OVERLAP` 是类型级判定**，比 §1.4.3 参与者级更宽（假阳性方向，不漏报）；
    作为规范的安全超集登记于设计 D21，不回灌论文母本。
-5. **Rule-R 不入事件日志**（D9），读审计需在外层自行记录。
+5. **Rule-R 不入事件日志**（D9）。可选 `read_audit = true` 将读审计写入独立审计流（§7.5，fail-closed）；未开启时需在外层自行记录。
 6. **Archival Policy 未内置**（§3.2），需要时用一个持 `consumes` gate 的参与者表达。
 7. **无 `daemon stop`**，无 systemd unit（阶段 9 交付）；**PID 文件已提供**（`pid_file` 可选配置，
    含陈旧检测），停机靠 SIGINT/SIGTERM 优雅退出（§2.3）。

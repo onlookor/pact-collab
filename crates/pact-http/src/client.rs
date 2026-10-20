@@ -5,8 +5,8 @@
 
 use crate::dto::{
     CompactReq, ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody,
-    ErrorDetail, GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq,
-    TokenResp, ValidateReq, ValidateResp,
+    ErrorDetail, GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq,
+    ReadAuditResp, SeedReq, TokenResp, ValidateReq, ValidateResp,
 };
 use bytes::Bytes;
 use http::uri::Uri;
@@ -401,6 +401,21 @@ impl Client {
             &format!("{}/status", base_path(domain, instance)),
             None,
         )?;
+        decode(self.dispatch(req).await?).await
+    }
+
+    /// 读审计只读视图（D25 子项 3）：最近 `limit` 条 Rule-R 记录（时间正序）。
+    pub async fn read_audit(
+        &self,
+        domain: &str,
+        instance: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<ReadAuditResp, ClientError> {
+        let path = match limit {
+            Some(n) => format!("{}/read-audit?limit={n}", base_path(domain, instance)),
+            None => format!("{}/read-audit", base_path(domain, instance)),
+        };
+        let req = self.json_request::<()>(Method::GET, &path, None)?;
         decode(self.dispatch(req).await?).await
     }
 

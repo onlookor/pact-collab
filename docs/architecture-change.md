@@ -1,5 +1,13 @@
 # 架构变更记录
 
+## 2026-10-20（第 13 轮，D25 子项 3：域级 ACL 与读审计落地）
+
+- **§2.5 新增读审计与域级授权数据流**：Rule-R 成功后由引擎 actor（单写者）向 `<domain>/<instance>.read-audit.jsonl` 追加一行 + fsync；失败即 `500`（fail-closed）；审计流不产生事件、不推进 `seq`、不参与重放 / Rule-T / 快照 / 压缩。REST 入口在 ACL 非空时由 Bearer 令牌反查参与者并按 `(domain, instance)` 授权（支持 `domain/*`），覆盖生命周期 / 动作 / 查询 / compact / 审计视图，`GET /domains` 按授权过滤。
+- **组件内新增（不改变分层与依赖方向）**：`pact-store` 新增 `audit.rs`（`ReadAuditRecord`）与 `Store::append_read_audit` / `read_audit_tail`（独立文件 append + fsync；尾部读取）；`pact-engine` 新增 `EngineConfig.read_audit`、Rule-R 审计写入、`Command::QueryReadAudit` + `Engine::read_audit`；`pact-http` 新增配置 `read_audit` / `[auth.acl]` + `Config::validate`、`ServerState::with_acl` 与鉴权辅助、读审计视图路由、client 方法。`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` 零改动。
+- **§5 质量属性更新**：安全边界行改为「启用 ACL 后全端点实例授权（401/403、列表过滤、配置校验），未启用保持信任声明」；可运维性行由「子项 1+2 已实现」扩为「**子项 1+2+3 已实现**」，并登记可选读审计流与只读视图。
+- **无结构性变更**：crate 划分、依赖方向、单机单进程部署、单一状态变更通道（D6/D19）、引擎被动性（D5）、纯函数语义层均不变。本轮变化限于**接口层鉴权 / 审计旁路 + 存储新增独立文件族**。
+- **验证**：`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo test --workspace` **155 项全绿**（基线 145 + 本轮 10）。
+
 ## 2026-10-20（第 12 轮，D25 子项 1：日志压缩与 schema 版本化落地）
 
 - **组件内新增（不改变分层与依赖方向）**：`pact-store` 新增压缩能力——`WireEvent{version, #[serde(flatten)] event}`（事件与线上格式统一带顶层 `version`）、`logmeta` 水位旁路清单（`<instance>.logmeta.json`）、`rewrite_retaining`（tmp+fsync+rename 原子前缀重写）、`IndexStore::prune_events`、`Store::compact`；`Snapshot` 扩为**自足锚**（`version`/`seq`/`dl_seq`/`declaration`/`state`/`consumed_requests`）。`pact-engine` 增 `Command::Compact` + 公开 `Engine::compact` + `EngineConfig::compact_on_start/compact_keep_last` + `recover_instance` 的 `snapshot_is_anchor` 分支；`Notification` 增顶层 `version`。`pact-http` / `pact-cli` / `pact-mcp` 仅**增入口**（`POST .../compact`、`pact compact`、`pact_compact`）。`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` 零改动。

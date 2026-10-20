@@ -6,6 +6,7 @@
 //! 日志前缀压缩与 schema 版本化见设计 §7.5：`Store::compact` 以快照为提交点
 //! 原子截断前缀，事件/快照的 `version` 兼容契约由 `EVENT_SCHEMA_VERSION` 统一承载。
 
+mod audit;
 mod error;
 mod event;
 mod index;
@@ -14,6 +15,7 @@ mod log;
 mod snapshot;
 mod store;
 
+pub use audit::ReadAuditRecord;
 pub use error::{validate_domain_name, validate_instance_name, StoreError};
 pub use event::{apply_event, to_wire_json, ApplyOutcome, Event, WireEvent, EVENT_SCHEMA_VERSION};
 pub use index::{IndexStore, TokenStatus, TursoIndexStore};

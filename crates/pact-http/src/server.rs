@@ -2,11 +2,12 @@
 //!
 //! 被拒动作返回 4xx + §6.3 结构化错误体；错误码 = RuleError / Problem 变体名。
 
+use crate::config::{acl_allows, acl_allows_domain, AclMap};
 use crate::dto::{
     conflicts_detail, problem_detail, rule_error_detail, CompactReq, ComposeReq, ConsumeReq,
     DomainInfo, DomainsResp, EnabledOption, EnabledResp, EntryResp, ErrorBody, ErrorDetail,
-    GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, SeedReq, TokenResp,
-    ValidateReq, ValidateResp,
+    GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, ReadAuditResp, SeedReq,
+    TokenResp, ValidateReq, ValidateResp,
 };
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
@@ -36,17 +37,90 @@ pub struct ServerState {
     engine: Engine,
     /// 参与者 → 令牌；空表 = 信任声明模式（NFR5）。
     auth_tokens: BTreeMap<String, String>,
+    /// 域级授权表（FR17/FR19）；空表 = 不启用 ACL（向后兼容）。
+    acl: AclMap,
     /// 启动时刻（`/metrics` 的 uptime 基准）。
     started_at: std::time::Instant,
 }
 
 impl ServerState {
+    /// 无 ACL（向后兼容；等价于 `with_acl(..., BTreeMap::new())`）。
     pub fn new(engine: Engine, auth_tokens: BTreeMap<String, String>) -> Arc<Self> {
+        Self::with_acl(engine, auth_tokens, BTreeMap::new())
+    }
+
+    pub fn with_acl(
+        engine: Engine,
+        auth_tokens: BTreeMap<String, String>,
+        acl: AclMap,
+    ) -> Arc<Self> {
         Arc::new(Self {
             engine,
             auth_tokens,
+            acl,
             started_at: std::time::Instant::now(),
         })
+    }
+
+    fn acl_enabled(&self) -> bool {
+        !self.acl.is_empty()
+    }
+
+    /// 从请求头解出已认证参与者（令牌表为空 → None = 信任声明模式）。
+    ///
+    /// 恒时遍历全部令牌再判定，不按 principal 提前返回（CWE-208）。
+    fn authenticated_principal(&self, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+        if self.auth_tokens.is_empty() {
+            return Ok(None);
+        }
+        let supplied = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "));
+        let Some(supplied) = supplied else {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "缺少 Bearer 令牌".to_owned(),
+            ));
+        };
+        let mut found = None;
+        for (principal, token) in &self.auth_tokens {
+            if ct_eq(supplied, token) {
+                found = Some(principal.clone());
+            }
+        }
+        match found {
+            Some(p) => Ok(Some(p)),
+            None => Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "令牌不匹配".to_owned(),
+            )),
+        }
+    }
+
+    /// ACL 已启用时必须能确定调用者；令牌表为空属配置非法（daemon 启动已拦截）。
+    fn require_principal(&self, headers: &HeaderMap) -> Result<String, ApiError> {
+        match self.authenticated_principal(headers)? {
+            Some(p) => Ok(p),
+            None => Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "ACL 已启用但令牌表为空（配置非法）".to_owned(),
+            )),
+        }
+    }
+
+    fn forbidden(domain: &str, instance: &str) -> ApiError {
+        ApiError {
+            status: StatusCode::FORBIDDEN,
+            detail: ErrorDetail {
+                code: "Forbidden".to_owned(),
+                detail: serde_json::json!({ "domain": domain, "instance": instance }),
+                message: format!("无权访问域实例 {domain}/{instance}"),
+            },
+        }
     }
 
     /// 参与者身份校验（§9.4：命令进入引擎前完成）。
@@ -74,6 +148,45 @@ impl ServerState {
                 format!("参与者 {participant} 令牌缺失或不匹配"),
             )),
         }
+    }
+
+    /// 动作端点：令牌校验 +（启用 ACL 时）实例授权。
+    fn authorize_action(
+        &self,
+        participant: &str,
+        headers: &HeaderMap,
+        key: &InstanceKey,
+    ) -> Result<(), ApiError> {
+        self.authorize(participant, headers)?;
+        if self.acl_enabled() && !acl_allows(&self.acl, participant, &key.domain, &key.instance) {
+            return Err(Self::forbidden(&key.domain, &key.instance));
+        }
+        Ok(())
+    }
+
+    /// 实例级端点（生命周期/查询/压缩）：ACL 未启用时保持旧行为；
+    /// 启用时从令牌解出参与者并按 `(domain, instance)` 授权。
+    fn authorize_key(&self, headers: &HeaderMap, key: &InstanceKey) -> Result<(), ApiError> {
+        if !self.acl_enabled() {
+            return Ok(());
+        }
+        let principal = self.require_principal(headers)?;
+        if !acl_allows(&self.acl, &principal, &key.domain, &key.instance) {
+            return Err(Self::forbidden(&key.domain, &key.instance));
+        }
+        Ok(())
+    }
+
+    /// 定义级端点（如 analyze）：ACL 启用时要求对该域有任一授权。
+    fn authorize_domain(&self, headers: &HeaderMap, domain: &str) -> Result<(), ApiError> {
+        if !self.acl_enabled() {
+            return Ok(());
+        }
+        let principal = self.require_principal(headers)?;
+        if !acl_allows_domain(&self.acl, &principal, domain) {
+            return Err(Self::forbidden(domain, "*"));
+        }
+        Ok(())
     }
 }
 
@@ -291,6 +404,12 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/domains/{d}/enabled", get(enabled))
         .route("/domains/{d}/status", get(status))
         .route("/domains/{d}/events", get(events))
+        // 读审计只读视图（D25 子项 3；default 实例与实例级镜像）
+        .route("/domains/{d}/read-audit", get(read_audit_default))
+        .route(
+            "/domains/{d}/instances/{i}/read-audit",
+            get(read_audit_instance),
+        )
         // 日志前缀压缩（D25 子项 1；default 实例与实例级镜像）
         .route("/domains/{d}/compact", post(compact_default))
         // 实例级镜像组（D27）
@@ -448,23 +567,26 @@ async fn domain_entry(
     req: Request,
 ) -> axum::response::Response {
     let method = req.method().clone();
+    let headers = req.headers().clone();
     if let Some((name, suffix)) = d.split_once(':') {
         if name.is_empty() {
             return not_found_path(&d);
         }
         match (&method, suffix) {
             (&Method::POST, "analyze") => {
-                match analyze_domain(State(st), Path(name.to_owned())).await {
+                match analyze_domain(State(st), Path(name.to_owned()), headers).await {
                     Ok(body) => body.into_response(),
                     Err(e) => e.into_response(),
                 }
             }
             (&Method::POST, "compose") => {
                 match JsonReq::<ComposeReq>::from_request(req, &()).await {
-                    Ok(j) => match compose_domain(State(st), Path(name.to_owned()), j).await {
-                        Ok(resp) => resp.into_response(),
-                        Err(e) => e.into_response(),
-                    },
+                    Ok(j) => {
+                        match compose_domain(State(st), Path(name.to_owned()), headers, j).await {
+                            Ok(resp) => resp.into_response(),
+                            Err(e) => e.into_response(),
+                        }
+                    }
                     Err(e) => e.into_response(),
                 }
             }
@@ -478,11 +600,11 @@ async fn domain_entry(
         }
     } else {
         match method {
-            Method::GET => match domain_info(State(st), Path(d)).await {
+            Method::GET => match domain_info(State(st), Path(d), headers).await {
                 Ok(body) => body.into_response(),
                 Err(e) => e.into_response(),
             },
-            Method::DELETE => match unload_domain(State(st), Path(d)).await {
+            Method::DELETE => match unload_domain(State(st), Path(d), headers).await {
                 Ok(code) => code.into_response(),
                 Err(e) => e.into_response(),
             },
@@ -503,12 +625,13 @@ async fn instance_entry(
     req: Request,
 ) -> axum::response::Response {
     let method = req.method().clone();
+    let headers = req.headers().clone();
     match method {
-        Method::GET => match instance_info(State(st), Path((d, i))).await {
+        Method::GET => match instance_info(State(st), Path((d, i)), headers).await {
             Ok(body) => body.into_response(),
             Err(e) => e.into_response(),
         },
-        Method::DELETE => match unload_instance(State(st), Path((d, i))).await {
+        Method::DELETE => match unload_instance(State(st), Path((d, i)), headers).await {
             Ok(code) => code.into_response(),
             Err(e) => e.into_response(),
         },
@@ -538,9 +661,11 @@ fn not_found_path(path: &str) -> axum::response::Response {
 
 async fn load_domain(
     State(st): State<Arc<ServerState>>,
+    headers: HeaderMap,
     JsonReq(req): JsonReq<LoadDomainReq>,
 ) -> Result<(StatusCode, Json<pact_engine::views::DomainSummary>), ApiError> {
     let instance = req.instance.unwrap_or_else(|| DEFAULT_INSTANCE.to_owned());
+    st.authorize_key(&headers, &InstanceKey::new(&req.name, &instance))?;
     let summary = st
         .engine
         .load_domain(
@@ -557,8 +682,10 @@ async fn load_domain(
 async fn instantiate(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
     JsonReq(req): JsonReq<InstantiateReq>,
 ) -> Result<(StatusCode, Json<pact_engine::views::DomainSummary>), ApiError> {
+    st.authorize_key(&headers, &InstanceKey::new(&d, &req.instance))?;
     let summary = st.engine.instantiate(&d, &req.instance).await?;
     Ok((StatusCode::CREATED, Json(summary)))
 }
@@ -568,12 +695,12 @@ async fn instantiate(
 async fn compact_instance(
     State(st): State<Arc<ServerState>>,
     Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
     JsonReq(req): JsonReq<CompactReq>,
 ) -> Result<Json<pact_engine::views::CompactionOutcome>, ApiError> {
-    let out = st
-        .engine
-        .compact(InstanceKey::new(d, i), req.keep_last)
-        .await?;
+    let key = InstanceKey::new(d, i);
+    st.authorize_key(&headers, &key)?;
+    let out = st.engine.compact(key, req.keep_last).await?;
     Ok(Json(out))
 }
 
@@ -581,16 +708,31 @@ async fn compact_instance(
 async fn compact_default(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
     JsonReq(req): JsonReq<CompactReq>,
 ) -> Result<Json<pact_engine::views::CompactionOutcome>, ApiError> {
-    let out = st.engine.compact(default_key(&d), req.keep_last).await?;
+    let key = default_key(&d);
+    st.authorize_key(&headers, &key)?;
+    let out = st.engine.compact(key, req.keep_last).await?;
     Ok(Json(out))
 }
 
-async fn list_domains(State(st): State<Arc<ServerState>>) -> Result<Json<DomainsResp>, ApiError> {
-    Ok(Json(DomainsResp {
-        domains: st.engine.list_domains().await?,
-    }))
+/// `GET /domains`：启用 ACL 时仅返回调用者可访问的实例（空域被剔除）。
+async fn list_domains(
+    State(st): State<Arc<ServerState>>,
+    headers: HeaderMap,
+) -> Result<Json<DomainsResp>, ApiError> {
+    let mut domains = st.engine.list_domains().await?;
+    if st.acl_enabled() {
+        let principal = st.require_principal(&headers)?;
+        for listing in &mut domains {
+            listing
+                .instances
+                .retain(|i| acl_allows(&st.acl, &principal, &listing.name, i));
+        }
+        domains.retain(|l| !l.instances.is_empty());
+    }
+    Ok(Json(DomainsResp { domains }))
 }
 
 /// 校验声明文本良构（§1.4.4），不加载。
@@ -618,15 +760,21 @@ async fn validate_declaration(
 async fn domain_info(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<DomainInfo>, ApiError> {
-    domain_info_inner(&st, default_key(&d)).await
+    let key = default_key(&d);
+    st.authorize_key(&headers, &key)?;
+    domain_info_inner(&st, key).await
 }
 
 async fn instance_info(
     State(st): State<Arc<ServerState>>,
     Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Json<DomainInfo>, ApiError> {
-    domain_info_inner(&st, InstanceKey::new(d, i)).await
+    let key = InstanceKey::new(d, i);
+    st.authorize_key(&headers, &key)?;
+    domain_info_inner(&st, key).await
 }
 
 async fn domain_info_inner(
@@ -646,15 +794,21 @@ async fn domain_info_inner(
 async fn unload_domain(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    unload_inner(&st, default_key(&d)).await
+    let key = default_key(&d);
+    st.authorize_key(&headers, &key)?;
+    unload_inner(&st, key).await
 }
 
 async fn unload_instance(
     State(st): State<Arc<ServerState>>,
     Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    unload_inner(&st, InstanceKey::new(d, i)).await
+    let key = InstanceKey::new(d, i);
+    st.authorize_key(&headers, &key)?;
+    unload_inner(&st, key).await
 }
 
 async fn unload_inner(st: &Arc<ServerState>, key: InstanceKey) -> Result<StatusCode, ApiError> {
@@ -665,15 +819,19 @@ async fn unload_inner(st: &Arc<ServerState>, key: InstanceKey) -> Result<StatusC
 async fn analyze_domain(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<pact_engine::views::AnalysisReport>, ApiError> {
+    st.authorize_domain(&headers, &d)?;
     Ok(Json(st.engine.analyze_loaded(&d).await?))
 }
 
 async fn compose_domain(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
     JsonReq(req): JsonReq<ComposeReq>,
 ) -> Result<(StatusCode, Json<pact_engine::views::DomainSummary>), ApiError> {
+    st.authorize_key(&headers, &default_key(&d))?;
     let summary = st
         .engine
         .compose_and_load(&d, req.fragments, DEFAULT_INSTANCE)
@@ -705,7 +863,7 @@ async fn seed_inner(
     headers: HeaderMap,
     req: SeedReq,
 ) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
-    st.authorize(&req.participant, &headers)?;
+    st.authorize_action(&req.participant, &headers, &key)?;
     let token = st
         .engine
         .seed(
@@ -742,7 +900,7 @@ async fn produce_inner(
     headers: HeaderMap,
     req: ProduceReq,
 ) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
-    st.authorize(&req.participant, &headers)?;
+    st.authorize_action(&req.participant, &headers, &key)?;
     let predecessors = req.predecessors.into_iter().map(TokenId).collect();
     let token = st
         .engine
@@ -760,48 +918,56 @@ async fn produce_inner(
 async fn counter(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
     Query(q): Query<TypeQuery>,
 ) -> Result<Json<pact_engine::views::CounterView>, ApiError> {
-    counter_inner(&st, default_key(&d), q).await
+    counter_inner(&st, default_key(&d), headers, q).await
 }
 
 async fn counter_instance(
     State(st): State<Arc<ServerState>>,
     Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
     Query(q): Query<TypeQuery>,
 ) -> Result<Json<pact_engine::views::CounterView>, ApiError> {
-    counter_inner(&st, InstanceKey::new(d, i), q).await
+    counter_inner(&st, InstanceKey::new(d, i), headers, q).await
 }
 
 async fn counter_inner(
     st: &Arc<ServerState>,
     key: InstanceKey,
+    headers: HeaderMap,
     q: TypeQuery,
 ) -> Result<Json<pact_engine::views::CounterView>, ApiError> {
+    st.authorize_key(&headers, &key)?;
     Ok(Json(st.engine.counter(key, q.ty.map(TypeName)).await?))
 }
 
 async fn archive(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
     Query(q): Query<TypeQuery>,
 ) -> Result<Json<pact_engine::views::ArchiveView>, ApiError> {
-    archive_inner(&st, default_key(&d), q).await
+    archive_inner(&st, default_key(&d), headers, q).await
 }
 
 async fn archive_instance(
     State(st): State<Arc<ServerState>>,
     Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
     Query(q): Query<TypeQuery>,
 ) -> Result<Json<pact_engine::views::ArchiveView>, ApiError> {
-    archive_inner(&st, InstanceKey::new(d, i), q).await
+    archive_inner(&st, InstanceKey::new(d, i), headers, q).await
 }
 
 async fn archive_inner(
     st: &Arc<ServerState>,
     key: InstanceKey,
+    headers: HeaderMap,
     q: TypeQuery,
 ) -> Result<Json<pact_engine::views::ArchiveView>, ApiError> {
+    st.authorize_key(&headers, &key)?;
     Ok(Json(st.engine.archive(key, q.ty.map(TypeName)).await?))
 }
 
@@ -830,7 +996,7 @@ async fn read_inner(
     headers: HeaderMap,
     req: ParticipantReq,
 ) -> Result<Json<TokenResp>, ApiError> {
-    st.authorize(&req.participant, &headers)?;
+    st.authorize_action(&req.participant, &headers, &key)?;
     let token = st
         .engine
         .read(key, ParticipantName(req.participant), TokenId(id))
@@ -863,7 +1029,7 @@ async fn consume_inner(
     headers: HeaderMap,
     req: ConsumeReq,
 ) -> Result<Json<EntryResp>, ApiError> {
-    st.authorize(&req.participant, &headers)?;
+    st.authorize_action(&req.participant, &headers, &key)?;
     let entry = st
         .engine
         .consume(
@@ -898,7 +1064,7 @@ async fn gates_inner(
     participant: String,
     headers: HeaderMap,
 ) -> Result<Json<GatesResp>, ApiError> {
-    st.authorize(&participant, &headers)?;
+    st.authorize_action(&participant, &headers, &key)?;
     let gates = st
         .engine
         .my_gates(key, ParticipantName(participant))
@@ -930,7 +1096,7 @@ async fn enabled_inner(
     headers: HeaderMap,
     q: ParticipantQuery,
 ) -> Result<Json<EnabledResp>, ApiError> {
-    st.authorize(&q.participant, &headers)?;
+    st.authorize_action(&q.participant, &headers, &key)?;
     let options = st
         .engine
         .enabled(key, ParticipantName(q.participant))
@@ -941,24 +1107,75 @@ async fn enabled_inner(
     Ok(Json(EnabledResp { options }))
 }
 
+// ============ 读审计视图（D25 子项 3） ============
+
+/// 读审计查询参数：`limit` 缺省 100，夹取到 `[1, 1000]`。
+#[derive(Debug, Deserialize)]
+struct ReadAuditQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+const READ_AUDIT_DEFAULT_LIMIT: usize = 100;
+const READ_AUDIT_MAX_LIMIT: usize = 1000;
+
+fn audit_limit(q: &ReadAuditQuery) -> usize {
+    q.limit
+        .unwrap_or(READ_AUDIT_DEFAULT_LIMIT)
+        .clamp(1, READ_AUDIT_MAX_LIMIT)
+}
+
+async fn read_audit_default(
+    State(st): State<Arc<ServerState>>,
+    Path(d): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<ReadAuditQuery>,
+) -> Result<Json<ReadAuditResp>, ApiError> {
+    read_audit_inner(&st, default_key(&d), headers, q).await
+}
+
+async fn read_audit_instance(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(q): Query<ReadAuditQuery>,
+) -> Result<Json<ReadAuditResp>, ApiError> {
+    read_audit_inner(&st, InstanceKey::new(d, i), headers, q).await
+}
+
+async fn read_audit_inner(
+    st: &Arc<ServerState>,
+    key: InstanceKey,
+    headers: HeaderMap,
+    q: ReadAuditQuery,
+) -> Result<Json<ReadAuditResp>, ApiError> {
+    st.authorize_key(&headers, &key)?;
+    let records = st.engine.read_audit(key, audit_limit(&q)).await?;
+    Ok(Json(ReadAuditResp { records }))
+}
+
 async fn status(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<StatusView>, ApiError> {
-    status_inner(&st, default_key(&d)).await
+    status_inner(&st, default_key(&d), headers).await
 }
 
 async fn status_instance(
     State(st): State<Arc<ServerState>>,
     Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Json<StatusView>, ApiError> {
-    status_inner(&st, InstanceKey::new(d, i)).await
+    status_inner(&st, InstanceKey::new(d, i), headers).await
 }
 
 async fn status_inner(
     st: &Arc<ServerState>,
     key: InstanceKey,
+    headers: HeaderMap,
 ) -> Result<Json<StatusView>, ApiError> {
+    st.authorize_key(&headers, &key)?;
     Ok(Json(st.engine.status(key).await?))
 }
 
@@ -966,21 +1183,25 @@ async fn status_inner(
 async fn events(
     State(st): State<Arc<ServerState>>,
     Path(d): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    events_inner(&st, default_key(&d)).await
+    events_inner(&st, default_key(&d), headers).await
 }
 
 async fn events_instance(
     State(st): State<Arc<ServerState>>,
     Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    events_inner(&st, InstanceKey::new(d, i)).await
+    events_inner(&st, InstanceKey::new(d, i), headers).await
 }
 
 async fn events_inner(
     st: &Arc<ServerState>,
     key: InstanceKey,
+    headers: HeaderMap,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    st.authorize_key(&headers, &key)?;
     let rx = st.engine.subscribe(key).await?;
     let stream = BroadcastStream::new(rx).filter_map(|r| async move {
         r.ok().map(|n| {

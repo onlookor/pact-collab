@@ -1,5 +1,16 @@
 # 设计变更记录
 
+## 2026-10-20（第 26 轮，D25 子项 3：域级 ACL 与读审计视图实施）
+
+- **四项设计取舍（用户裁决，均选推荐项）**：ACL 粒度 = 实例级条目 `domain/instance` + `domain/*` 通配；ACL 范围 = 生命周期（load / instantiate / unload / compact / `:analyze` / `:compose`）+ 四类动作 + 查询 + 读审计视图，未配置时保持既有行为；读审计 = 独立 `<instance>.read-audit.jsonl`（append + fsync），不进入主事件日志；审计语义 = fail-closed + REST 只读视图。
+- **配置（pact-http）**：`Config.read_audit: Option<bool>`（缺省 false）；`AuthConfig.acl: BTreeMap<String, Vec<String>>`；新增 `Config::{acl(), read_audit(), validate()}`。`validate()` 拒绝「ACL 非空 + 令牌表为空」及非法条目（只接受 `domain/instance` / `domain/*`），daemon 启动前调用。匹配函数 `acl_allows` / `acl_allows_domain` 仅做字符串比较。
+- **鉴权（§9.6）**：`ServerState` 增 `acl` 字段与 `with_acl`（`new` 保持无 ACL 兼容）。`authenticated_principal` 恒时遍历令牌反查参与者；`authorize_action`（动作端点：令牌归属 + 实例授权）、`authorize_key`（生命周期 / 查询 / compact / 读审计）、`authorize_domain`（`:analyze` 该域任一授权）。`GET /domains` 逐实例过滤并剔除空域。无令牌 `401`、越权 `403`（结构化错误体含 `domain` / `instance`）。覆盖端点：load / instantiate / unload / compact / `:analyze` / `:compose`、seed / produce / read / consume / gates / enabled、counter / archive / status / events、read-audit。
+- **读审计（pact-store + pact-engine）**：`ReadAuditRecord{version, ts, domain, instance, participant, token_id}`；`Store::{append_read_audit, read_audit_tail}`（append + `sync_all`；尾部 N 条按时间正序；文件不存在 → 空；仅容忍末尾无换行的崩溃半行，其余坏行 fail-fast）。`EngineConfig.read_audit`；Rule-R 成功后写审计，`Store` 错误经 `EngineError::Store` 上抛 → REST `500`（fail-closed）。新增 `Command::QueryReadAudit` + `Engine::read_audit(key, limit)`。
+- **接口面**：`GET /domains/{d}[/instances/{i}]/read-audit?limit=`（缺省 100、夹取 `[1, 1000]`）→ `{records:[...]}`；`pact_http::client::Client::read_audit(...)`。审计流不产生事件、不推进 `seq`、不参与重放 / Rule-T / 快照 / 压缩；实例未加载也可查询。
+- **测试**：新增 10 项——config 3（ACL 无令牌拒绝、条目格式校验、通配/实例匹配）、store 3（append+tail 且独立于事件日志、末尾半行容忍、跨块反向扫描）、engine 2（Rule-R 审计字段 / limit / 重启持久化 / 不改事件日志、审计写失败 fail-closed 且关闭时不阻断）、http e2e 2（401/403/通配/列表过滤/查询与审计视图受控/卸载；审计视图记录 / limit / 实例隔离）。全仓 **155 项**全绿（基线 145 + 10）；fmt/clippy 清零。
+- **形式层不变**：`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` 零改动；`docs/pact*` 母本未动。CLI/MCP 未新增子命令（只读视图走 REST/client）。
+- **安全审视待办**：提交/推送前按流程做一次全面安全审视。
+
 ## 2026-10-20（第 25 轮，推送前全面安全审视）
 
 - **审查范围**：本轮全部改动（`pact-store` 版本化与压缩、`pact-engine` 快照锚与 Compact、`pact-http` 端点与压缩配置、`pact-cli`/`pact-mcp` 入口、文档）。

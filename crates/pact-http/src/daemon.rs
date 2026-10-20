@@ -17,6 +17,8 @@ use tokio::sync::watch;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
+    // 配置语义校验：ACL 非空但无令牌 → 启动失败（无法确定调用者身份）。
+    cfg.validate()?;
     // data_dir 独占锁（D27）：单权威是**进程级**保证，两进程共用同一 data_dir
     // 会各自扫描/重建索引并交叉写入，故启动即取 flock。锁随进程存活持有。
     let _lock = acquire_data_dir_lock(&cfg.data_dir())?;
@@ -25,10 +27,11 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
 
     let store = Store::open(cfg.data_dir()).await?;
     // 引擎启动即自动恢复（actor run loop 内重放全部域日志）；
-    // 压缩配置（D25 子项 1）随 `pact.toml` 传入。
+    // 压缩配置（D25 子项 1）与读审计配置（D25 子项 3）随 `pact.toml` 传入。
     let engine_config = EngineConfig {
         compact_on_start: cfg.compact_on_start(),
         compact_keep_last: cfg.compact_keep_last(),
+        read_audit: cfg.read_audit(),
         ..EngineConfig::default()
     };
     if engine_config.compact_on_start && engine_config.compact_keep_last == 0 {
@@ -43,7 +46,7 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(UlidGen),
         engine_config,
     );
-    let state = ServerState::new(engine.clone(), cfg.auth_tokens());
+    let state = ServerState::with_acl(engine.clone(), cfg.auth_tokens(), cfg.acl());
     let app = router(state);
 
     let unix = cfg.listen_unix();

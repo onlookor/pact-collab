@@ -633,11 +633,12 @@ GET    /domains/{d}/enabled?participant=
 GET    /domains/{d}/status
 POST   /domains/{d}/compact           {keep_last?}   日志前缀压缩（D25 子项 1）
 GET    /domains/{d}/events            SSE 订阅（Rule-W 唤醒）
+GET    /domains/{d}/read-audit?limit= 读审计视图（D25 子项 3；default 实例）
 ```
 
 被拒动作返回 4xx + §6.3 结构化错误体（错误码 = RuleError 变体名）。
 
-**实例路由（D27，阶段 10，已实现）**：上表 `/domains/{d}/…` 语义 = `default` 实例。实例级为 `/domains/{d}/instances/{i}/…` 镜像组（seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events 全套同形），另加实例管理端点：
+**实例路由（D27，阶段 10，已实现）**：上表 `/domains/{d}/…` 语义 = `default` 实例。实例级为 `/domains/{d}/instances/{i}/…` 镜像组（seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events / read-audit 全套同形），另加实例管理端点：
 
 ```
 POST   /domains                       {name, declaration[, instance][, force]}   declare + instantiate（默认 default）
@@ -650,6 +651,7 @@ GET    /domains                       域清单（Vec<DomainListing{name, instan
 - 键名谓词 `[A-Za-z0-9_-]{1,128}`（`validate_domain_name` / `validate_instance_name`）在 `engine.instantiate` / `load_domain`（唯一触盘入口）强制，防路径穿越；未实例化键的动作端点返回 `InstanceNotFound`(404)，不触盘。
 - 错误码扩展：`InstanceNotFound`(404) / `DomainNotDeclared`(404) / `InstanceExists`(409) / `DomainBusy`(409)（非空实例再加载未带 `force`）/ `InvalidDomainName`(400) / `InvalidInstanceName`(400)。
 - 认证：实例级与默认级共享同一 `*_inner` handler，`authorize` 统一在 `*_inner` 内完成，实例路由同样受令牌约束。
+- **域级 ACL（D25 子项 3，已实现）**：`[auth.acl]` 非空即启用。实例级端点（生命周期、四类动作、查询、compact、读审计视图）按 `(domain, instance)` 校验；定义级 `:analyze` 要求对该域任一授权；`GET /domains` 按授权过滤（空域剔除）。无令牌 `401`，越权 `403`；ACL 空表时全部检查短路（既有行为不变）。
 
 ### 9.3 pact-cli（人类接口，已实现）
 
@@ -671,14 +673,18 @@ data_dir = "./data"
 listen_unix = "./pact.sock"        # 默认；listen_tcp 可选
 compact_on_start = false           # 可选：恢复后自动压缩全部实例日志（D25 子项 1）
 compact_keep_last = 0              # 可选：自动压缩保留的尾部事件条数
+read_audit = false                 # 可选：持久化 Rule-R 读审计（D25 子项 3；fail-closed）
 [mcp] enabled = true
 [auth]
 # 可选：参与者令牌表；缺省 = 信任声明模式
 [auth.tokens]
 architect = "…"   # Authorization: Bearer
+# 可选：域级授权（D25 子项 3）；非空时必须同时配置令牌表
+[auth.acl]
+architect = ["proj/*", "other/default"]
 ```
 
-接口层在命令进入引擎前完成参与者身份校验；核心与引擎不感知认证方式（联网版只换此层）。
+接口层在命令进入引擎前完成参与者身份校验；核心与引擎不感知认证方式（联网版只换此层）。ACL 启用后的身份来源：动作端点 = body/query 的 `participant`（须与 Bearer 令牌归属一致）；生命周期与查询端点 = Bearer 令牌反查的参与者。`Config::validate()` 在 daemon 启动前拒绝「ACL 非空 + 令牌表为空」及非法条目。
 
 ### 9.5 运维接口（D25 子项 2，已实现）
 
@@ -695,6 +701,31 @@ daemon 在域端点之外暴露三个**免令牌**运维端点（仅本地/内�
 **PID 文件（可选）**：配置 `pid_file` 缺省不写；启动写入自身 PID、退出（正常与信号停机）删除；启动时若发现陈旧文件且其 PID 仍存活 → 拒绝启动（`AlreadyExists`），避免两个 pactd 争同一 pid 文件。存活判定 Linux 下以 `/proc/<pid>` 存在为准（PID 复用可能假阳性 → 保守拒绝），其他平台交由 `pactd.lock` flock 兜底。
 
 **优雅停机**：SIGINT 或 SIGTERM 均走同一路径——广播停机 → 各监听循环停止接受新连接 → **有界（10s）**等待在途连接归零 → `engine.shutdown()`（终态快照）→ 清理 PID 文件与套接字。SSE 长连接会占满宽限窗口，故必须设有界超时（超时后强制进入终态快照，不阻塞退出）。
+
+### 9.6 域级 ACL 与读审计（D25 子项 3，已实现）
+
+**ACL 模型**：`[auth.acl] principal = ["domain/instance", "domain/*"]`。匹配仅限两种形态（拒绝 `proj`、`proj/*/x`、路径穿越等）；启用后所有域作用域端点先鉴权再进引擎：
+
+| 端点类别 | 身份来源 | 授权键 |
+|----------|----------|--------|
+| load / instantiate / unload / compact / compose | Bearer 令牌反查参与者 | `(domain, instance)`（compose/默认路径 = `default`） |
+| seed / produce / read / consume / gates / enabled | body/query `participant`（令牌归属须一致） | `(domain, instance)` |
+| counter / archive / status / events / read-audit | Bearer 令牌反查参与者 | `(domain, instance)` |
+| `:analyze`（定义级） | Bearer 令牌反查参与者 | 该域任一授权 |
+| `GET /domains` | Bearer 令牌反查参与者 | 逐实例过滤，空域剔除 |
+
+无令牌 → `401 Unauthorized`；令牌有效但无该键授权 → `403 Forbidden`（结构化 §6.3 错误体）。ACL 空表时上述检查全部短路，保持既有信任声明行为。daemon 启动前 `Config::validate()` 拒绝「ACL 非空 + 令牌表为空」（无法判定身份）及非法条目。`/health` `/ready` `/metrics` `/validate` 不属于域作用域，保持免令牌。
+
+**读审计流**（FR17，默认关闭）：`read_audit = true` 时，每次 Rule-R 成功读取后由引擎 actor（单写者）向 `<data_dir>/<domain>/<instance>.read-audit.jsonl` 追加一行并 `fsync`：
+
+```json
+{"version":1,"ts":"…","domain":"proj","instance":"default","participant":"architect","token_id":"…"}
+```
+
+- **fail-closed**：写审计失败 → `EngineError::Store` → REST `500`，本次读取不返回 token；杜绝「读成功但无审计」。
+- **与核心语义隔离**：审计流不产生事件、不推进 `seq`、不参与重放/Rule-T/快照/压缩；实例未加载也可查询历史审计。
+- **读取**：`Store::read_audit_tail` 按写入顺序取末尾 N 条（缺省 100、上限 1000）；仅当文件末尾无换行（崩溃残留半行）时容忍末行解析失败，其余损坏行 fail-fast（不静默跳过，避免掩盖篡改）。
+- **视图**：`GET /domains/{d}[/instances/{i}]/read-audit?limit=N` → `{"records":[…]}`，受 ACL 约束。
 
 ## 10. 测试策略（FR13，四层）
 
@@ -717,7 +748,7 @@ daemon 在域端点之外暴露三个**免令牌**运维端点（仅本地/内�
 | 6（可选） | pact-cpn：CPN 编码生成（正片段直出，not 条件走互补库所编码）；**按实例独立编码**（论文 §4.5/§B.2 单实例作用域：每实例各自编码，库所/迁移不跨实例共享，跨实例协同不入 `N(D)`；源域为域声明、实例划分属运行期，见 G1/D27） | CPN Tools 可加载验证；单实例作用域符合 §4.5/§B.2 | 未开始 |
 | 重构（2026-09-09） | 论文 rev2 对齐：良构约束六项化（新增 LHS Uniqueness / Non-Empty LHS / PosNat 解析期与声明期强制）、A.5 重构为 precondition_wf 三元报告（D21）、DomainError 自有 String | rev2 专项测试（`{A+A}→B` / `{ }→B` / count 0 / 前导零拒绝、自环接受、EmptyPrecondLhs / ZeroCountLiteral / SeedProduceOverlap 用例）+ 三接口 e2e 断言更新全绿 | **已完成**：workspace 103 项测试全绿（净增 6 项）；fmt/clippy 清零 |
 | 7 | pact-runtime：参与者驱动运行时（D24，设备生产化） | 可复用自驱循环：给定参与者名 + 门，实现 P1/P2/P3 策略并驱动至 Terminated；多 agent 编排可拉起 N 个真实 MCP/HTTP 客户端；外部副作用执行器消费 `Consumed` 并追加补偿事实 | **已完成（2026-10-19）**：新增 crate `pact-runtime`（lib + bin `pact-runtime`）——传输层抽象（`ParticipantClient` trait / `RestClient` 包装 `pact_http::client` / `McpClient` rmcp stdio 子进程）+ 驱动循环 `drive()`（P1 生产优先/P2 汇消费/P3 等待；订阅推送 + 轮询兜底；`pristine` 守卫 + 500ms 终止宽限，与 `unattended_e2e` 逐条同构）+ 编排 `Orchestrator`（每 agent `tokio::spawn`，REST/MCP 两具体 client 装箱统一、不引入 dyn）+ 执行器 `SideEffectExecutor`（archive 游标增量、失败以 Rule-S 追加补偿事实）+ TOML 配置驱动 bin。集成 1 项（单 `#[tokio::test]` 内 in-process daemon 上顺序跑 REST 编排 SE 生命周期 / ReAct 循环 / 副作用执行器）+ 单元 4 项；workspace **110 项**测试全绿（基线 105 + 本轮 5），fmt/clippy 清零。修复两处（见 design-change 第 17 轮）：①执行器与编排并发启动下域未就绪 → 执行器增域发现轮询；②驱动 P1 需 `read` 产出见证前驱 → 测试域 `worker` 补 `reads task` 门 |
-| 8 | 引擎生产化三项（D25） | 事件日志压缩与 schema 版本化；health/ready + metrics + PID 文件 + 信号化优雅停机；域级 ACL + 可选审计读视图（默认关闭）。**验收项与 D27 实例化耦合**：(1) 的压缩部分与 (3) 全部须按双键重述，`:compact` 路由须随实例段重设计 | **子项 (2) 运维接口已完成（2026-10-20，见 §9.5）**：`/health` `/ready` `/metrics`（Prometheus 文本）+ 可选 `pid_file`（陈旧检测）+ SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → 终态快照）；workspace **131 项**测试全绿（基线 123 + 本轮 8）。**子项 (1) 日志压缩与 schema 版本化已完成（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version`（+ `Notification` 顶层 `version`）+ 旧日志/快照缺省按 v1 兼容、更高版本 fail-fast；前缀压缩（全量自足快照 → `logmeta` 水位 → 原子重写 → 裁剪索引）、快照承载 `declaration`/`dl_seq`/`consumed_requests`（幂等表随快照存活）、恢复 `snapshot_is_anchor` 分支与 `SnapshotRequiredForCompactedLog` 护栏；REST `POST /domains/{d}[/instances/{i}]/compact`、CLI `pact compact`、MCP `pact_compact`、`pact.toml` 可选 `compact_on_start`/`compact_keep_last`；workspace **145 项**测试全绿（基线 131 + 本轮 14）。**子项 (3) 域级 ACL 与审计读视图 未开始** |
+| 8 | 引擎生产化三项（D25） | 事件日志压缩与 schema 版本化；health/ready + metrics + PID 文件 + 信号化优雅停机；域级 ACL + 可选审计读视图（默认关闭）。**验收项与 D27 实例化耦合**：(1) 的压缩部分与 (3) 全部须按双键重述，`:compact` 路由须随实例段重设计 | **子项 (2) 运维接口已完成（2026-10-20，见 §9.5）**：`/health` `/ready` `/metrics`（Prometheus 文本）+ 可选 `pid_file`（陈旧检测）+ SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → 终态快照）；workspace **131 项**测试全绿（基线 123 + 本轮 8）。**子项 (1) 日志压缩与 schema 版本化已完成（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version`（+ `Notification` 顶层 `version`）+ 旧日志/快照缺省按 v1 兼容、更高版本 fail-fast；前缀压缩（全量自足快照 → `logmeta` 水位 → 原子重写 → 裁剪索引）、快照承载 `declaration`/`dl_seq`/`consumed_requests`（幂等表随快照存活）、恢复 `snapshot_is_anchor` 分支与 `SnapshotRequiredForCompactedLog` 护栏；REST `POST /domains/{d}[/instances/{i}]/compact`、CLI `pact compact`、MCP `pact_compact`、`pact.toml` 可选 `compact_on_start`/`compact_keep_last`；workspace **145 项**测试全绿（基线 131 + 本轮 14）。**子项 (3) 域级 ACL 与审计读视图 已完成（2026-10-20，见 §9.6）**：`[auth.acl]` 实例级条目（`domain/instance` / `domain/*`）覆盖生命周期、四类动作、查询、compact 与读审计视图，`GET /domains` 按授权过滤；ACL 非空而令牌表为空 ⇒ 拒绝启动；可选 `read_audit = true` 写独立审计流（`<instance>.read-audit.jsonl`，append+fsync，fail-closed）并提供 `GET .../read-audit?limit=` 只读视图；workspace **155 项**测试全绿（基线 145 + 本轮 10） |
 | 9 | 分发产物 `dist/`（D26） | Dockerfile、systemd unit、musl 静态二进制打包脚本，可构建可运行 | 未开始 |
 | 10 | 域双键实例化（D27，路径 β） | 定义键/实例键落地：存储 `(domain, instance)` 双列 + 域子目录布局 + 引擎声明注册表（`declare` / `instantiate` 分离，实例创建时快照声明）+ 接口全链（REST / CLI / MCP / `pact-runtime`）+ 默认实例 `default` + 旧日志 fail-fast + 通用护栏（`data_dir` flock 独占锁、非空实例 load 默认拒绝）；阶段 8 的耦合项随之一并完成 | **已完成（2026-10-20，路径 β）**：`pact-store` `InstanceKey{domain,instance}` + 域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、声明原文 `declaration.pact`）+ 索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键，`open()` 自愈重建）；`pact-engine` 声明注册表（`declarations` / `instances` 两表，`declare` / `instantiate` 私有方法 + 公开命令 `LoadDomain` / `Instantiate`，`InstanceSession.is_occupied = last_seq > dl_seq`）——错误码 `InstanceNotFound` / `DomainNotDeclared` / `InstanceExists` / `DomainBusy`；接口全链：REST 默认族 + 实例镜像族（`/domains/{d}/instances/{i}/…`）+ `InstantiateReq` + `DomainListing`，CLI `--instance`/`--force`/`instantiate`/`instances`，MCP 16 工具（新增 `pact_domain_instantiate`），`pact-runtime` 实例透传（`ParticipantClient::instance` + `bound_ready`）；护栏 `flock`（`fs4`，`<data_dir>/pactd.lock`）+ `DomainBusy`；键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` **零改动**（形式语义不变）。workspace **123 项**测试全绿（基线 110 + β 专项），fmt/clippy 清零 |
 
