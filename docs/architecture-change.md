@@ -1,5 +1,50 @@
 # 架构变更记录
 
+## 2026-10-21（第 21 轮，D32：新增 `pact-engine-kernel`，原生与 WASM 共用实例会话语义）
+
+- **新增组件**：`pact-engine-kernel`（纯 crate，无 IO/async）承载**实例会话语义**——声明快照、Counter 状态、seq 分配、Rule-S/P/R/E 准备、Rule-T 终止判定、Rule-E 幂等表、恢复锚点与查询视图。它是语义层与编排层之间的共用内核，不持有存储、网络、时钟或通知能力。
+- **依赖边**：`pact-engine-kernel → pact-core + pact-parser + pact-analysis + pact-store-model + pact-views`；`pact-engine → pact-engine-kernel`（另加 store/tokio）；`pact-wasm → pact-engine-kernel`（另加纯模型层 + wasm-bindgen）。依赖仍单向，无环。
+- **组件角色调整**：原生 `pact-engine` 的 `InstanceSession` 与 `pact-wasm` 的 `InstanceSession` 均通过 `Deref` 嵌入同一个 `pact_engine_kernel::Session`；原生只保留 `events_since_snapshot`/`notify`，WASM 只保留 `events`。二者差异收敛到持久化时机、通知/审计与错误映射。
+- **一致性**：事件 schema、JSONL 行、快照结构、seq 连续性与对外错误码均不变；原生与 WASM 的实例行为由同一份内核代码保证，消除约 300 行双实现漂移（R1）。
+- **稳定化前置**：Q7 CI、金标扩面、`pact-engine-kernel` 抽取均已完成；仅余推送/发布前宿主边界安全审视。
+- **未变**：crate 拓扑其余部分、单一状态变更通道（D6/D19）、引擎被动性（D5）、权威边界（原生 daemon 唯一权威）、部署拓扑与 `dist/` 产物。
+
+## 2026-10-21（第 20 轮，P6 裁决 A：WASM 本地分发形态的组件边界登记（D31））
+
+- **角色登记**：`pact-wasm` 由「spike S2」转为**实验性本地分发形态**——可嵌入 Node/桌面宿主的进程内单用户引擎；**权威仍是原生 daemon**，两者不并存于同一实例（宿主 lockfile 单写者）。
+- **边界收紧**：WASM 形态不提供 MCP/HTTP 服务、不承担身份认证/ACL/读审计、不做 turso 索引与压缩、不进入 `dist/` 生产分发；多用户与远端能力仍归原生 daemon（FR17）与 NFR6 v2。
+- **依赖与环境边界不变**：依赖方向仍为 `wasm → core + parser + analysis + compose + store-model + views`（`wasm-bindgen` 仅 wasm32）；`pact-engine`/`pact-store` 仅 dev-dependencies 用于原生对账，不进入产物。持久化与单写者由宿主适配层承担，磁盘布局与原生共用。
+- **稳定化前置**：Q7 CI（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）→ 金标扩面（多实例、组合域、条件分支、压缩恢复）→ 抽取 `pact-engine-kernel` 消除双实现 → 宿主边界安全审视；未完成前按实验性登记。
+- **未变**：crate 划分、依赖图其他边、单一状态变更通道（D6/D19）、引擎被动性（D5）、线上格式、部署拓扑与 `dist/` 产物。本轮仅登记组件角色与边界，未改代码（配套：design-change 第 33 轮、requirements-change 第 18 轮）。
+
+## 2026-10-21（第 19 轮，P4/S2：Node 宿主适配层）
+
+- **新增层**：`crates/pact-wasm/js/` 作为 WASM 内核之外的**宿主适配层**（Node）：文件存储（JSONL/快照）、单写者 lockfile、日志优先的 `prepare → append+fsync → commit` 编排、最小 demo 与 `node:test`。它不改变 crate 依赖图，不进入 WASM 产物。
+- **一致性**：磁盘布局、JSONL 行与快照结构与原生 `pact-store` 完全共用；已验证原生 daemon 与 WASM 宿主可交替打开同一日志（原生→WASM→原生→WASM）。
+- **能力边界**：Node lockfile 为进程级近似单写者，不提供 `flock` 的内核级互斥；浏览器持久化（OPFS/SharedWorker）不在本轮。
+- **未变**：crate 清单与依赖边、原生 API、需求与论文母本。验证：Rust 177 项 + Node 7 项全绿。
+
+## 2026-10-21（第 18 轮，P3/S1：WASM 门面升级为内存引擎）
+
+- **组件角色**：`pact-wasm` 从「无状态门面（解析/分析/组合）」升级为「内存引擎门面」——持有声明注册表、多实例会话、事件序列与幂等表，提供两阶段提交与日志/快照导出恢复；仍不承担磁盘、网络、线程与进程能力。
+- **依赖边界**：生产依赖不变（`pact-core`/`pact-parser`/`pact-analysis`/`pact-compose`/`pact-store-model`/`pact-views`，`wasm-bindgen` 仅 wasm32）；新增 `pact-engine`/`pact-store`/`tokio`/`tempfile` 仅为 **dev-dependencies**，用于原生对账测试，不进入 WASM 产物。
+- **一致性约束**：事件 schema、JSONL 行、快照结构与 seq 连续性仍以 `pact-store-model` + 原生 `Store` 校验为唯一权威；WASM 日志可被原生 daemon 直接打开，原生日志可被 WASM `restore` 读入（已验证）。
+- **未变**：crate 清单、依赖图的其他边、原生 API、磁盘布局、需求与论文母本。验证：176 项测试全绿、fmt/clippy（native + wasm32）清零（详见 design-change 第 31 轮）。
+
+## 2026-10-21（第 17 轮，P2/S0：WASM 门面组件（D30））
+
+- **组件集新增**：`pact-wasm`（`cdylib + rlib`）。依赖方向 `wasm → core + parser + analysis + compose + store-model + views`，不依赖 `store`/`engine`/`http`/tokio，保持单向无回指。
+- **边界**：spike S0 仅验证编译、wasm-bindgen 导出、体积与静态分析对账；不承担事件写入、持久化、`prepare/commit`，不进入生产分发与 CI（Q6/Q7）。
+- **接口零变化**：原生 `pact-store`/`pact-engine`/HTTP/MCP 的类型与流程不变；新增组件只读取纯模型与视图。
+- **验证**：171 项测试全绿、fmt/clippy（host + wasm）清零；wasm 产物 267 KiB / gzip 87 KiB，静态分析结果与原生 CLI 深度相等（详见 design-change 第 30 轮）。
+
+## 2026-10-21（第 16 轮，P1：WASM 纯类型层拆分（D29））
+
+- **组件集新增**：`pact-store-model`（事件/快照/实例键纯模型）与 `pact-views`（查询/分析视图纯类型）。依赖方向：`store-model → core`、`store → core + store-model`、`views → core + analysis`、`engine → core + store + views`，仍为单向、无回指。
+- **接口与数据流零变化**：`pact-store`/`pact-engine` 通过 re-export 保持既有类型路径；磁盘布局、JSONL/线上格式、索引 schema、恢复与压缩流程、单一状态变更通道（D6/D19）、引擎被动性（D5）均不变。
+- **新增可移植边界**：两个新 crate 不依赖 IO/async/tokio，可编译到 `wasm32-unknown-unknown`，为 WASM 本地 spike 提供共用模型层。
+- **验证**：全量 166 项测试全绿、fmt/clippy 清零、两个新 crate wasm check 通过（详见 design-change 第 29 轮）。
+
 ## 2026-10-21（第 15 轮，阶段 6：CPN 编码生成离线组件）
 
 - **§2.6 新增 CPN 编码生成数据流**：`.pact → pact-parser（解析 + A.5 校验）→ Domain → pact-cpn::generate（纯函数、零 IO）→ CPN Tools XML → pact cpn --out → model.cpn`。

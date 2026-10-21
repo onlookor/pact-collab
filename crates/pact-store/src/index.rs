@@ -6,10 +6,9 @@
 //! 旧单列 schema 由 `open` 自愈（缺 `instance` 列 → DROP 后按新 schema 重建）。
 
 use crate::error::StoreError;
-use crate::event::{apply_event, Event};
-use crate::key::InstanceKey;
 use async_trait::async_trait;
 use pact_core::{CounterState, ParticipantName, ThingRef, Timestamp, Token};
+use pact_store_model::{apply_event, to_wire_json, Event, InstanceKey};
 use std::path::Path;
 use std::sync::Arc;
 use turso::{Builder, Connection, Value};
@@ -123,7 +122,7 @@ impl IndexStore for TursoIndexStore {
     }
 
     async fn upsert_event(&self, key: &InstanceKey, ev: &Event) -> Result<(), StoreError> {
-        let payload = crate::event::to_wire_json(ev)?;
+        let payload = to_wire_json(ev)?;
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO events(domain, instance, seq, kind, ts, payload)
@@ -267,8 +266,8 @@ fn _thing_ref_column(_r: &ThingRef) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::Event;
     use pact_core::{TokenId, TypeName};
+    use pact_store_model::Event;
 
     fn key(domain: &str) -> InstanceKey {
         InstanceKey::new(domain, "default")

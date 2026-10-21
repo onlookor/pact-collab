@@ -7,6 +7,7 @@ description = "PACT 事件溯源存储：JSONL 真相源、快照、turso 派生
 
 [dependencies]
 pact-core = { path = "../pact-core" }
+pact-store-model = { path = "../pact-store-model" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 async-trait = { workspace = true }

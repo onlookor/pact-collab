@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 fn default_version() -> u32 {
-    crate::event::EVENT_SCHEMA_VERSION
+    pact_store_model::EVENT_SCHEMA_VERSION
 }
 
 /// 单条读审计记录（一行 JSON）。字段自足：时间、实例键、参与者、目标 token。

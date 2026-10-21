@@ -1,7 +1,7 @@
 //! 事件模型（真相源，设计 §7.1；实现偏差见 docs/design-change.md：
 //! DomainLoaded 也携带 seq/ts，使"逐行 +1 单调"不变量对所有行统一）。
 
-use crate::error::StoreError;
+use crate::error::ModelError;
 use pact_core::{CounterState, Effect, ParticipantName, Timestamp, Token, TokenId};
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// 兼容契约（设计 §7.5）：
 /// - 写入方恒发当前版本（`EVENT_SCHEMA_VERSION`）；
 /// - 缺失 `version` 字段的历史日志行按 **v1** 解析（`serde` 缺省）；
-/// - 版本高于本实现支持上限 → `StoreError::UnsupportedSchemaVersion`（fail-fast，
+/// - 版本高于本实现支持上限 → `ModelError::UnsupportedSchemaVersion`（fail-fast，
 ///   不静默降级，避免把未知语义当 v1 重放）。
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
@@ -131,9 +131,9 @@ impl WireEvent {
     }
 
     /// 解封装并校验版本：高于支持上限 → `UnsupportedSchemaVersion`（fail-fast）。
-    pub fn into_event(self) -> Result<Event, StoreError> {
+    pub fn into_event(self) -> Result<Event, ModelError> {
         if self.version > EVENT_SCHEMA_VERSION {
-            return Err(StoreError::UnsupportedSchemaVersion {
+            return Err(ModelError::UnsupportedSchemaVersion {
                 found: self.version,
                 supported: EVENT_SCHEMA_VERSION,
             });
@@ -143,8 +143,8 @@ impl WireEvent {
 }
 
 /// 事件 → 日志行 JSON（含顶层 `version`）。
-pub fn to_wire_json(ev: &Event) -> Result<String, StoreError> {
-    serde_json::to_string(&WireEvent::current(ev.clone())).map_err(|e| StoreError::Json {
+pub fn to_wire_json(ev: &Event) -> Result<String, ModelError> {
+    serde_json::to_string(&WireEvent::current(ev.clone())).map_err(|e| ModelError::Json {
         context: "事件序列化",
         source: e,
     })
@@ -164,9 +164,9 @@ pub enum ApplyOutcome {
 /// 把单个事件应用到 Counter 状态（重放路径，与在线路径共用 `Effect`/`apply`，
 /// 保证重放与在线行为一致）。
 ///
-/// Consumed 事件只记录 token_id：ArchiveEntry 的 token 全量从当前 Counter 取
-/// （该 token 必然在 Counter 上——日志由串行引擎产生，消费先于事件落盘）。
-pub fn apply_event(state: &mut CounterState, ev: &Event) -> Result<ApplyOutcome, StoreError> {
+/// Consumed 事件自带 token 全量快照：ArchiveEntry 不再从当前 Counter 反查，
+/// 因此单行日志即可重放（含压缩后只剩尾部事件的情形）。
+pub fn apply_event(state: &mut CounterState, ev: &Event) -> Result<ApplyOutcome, ModelError> {
     match ev {
         Event::DomainLoaded {
             name, declaration, ..

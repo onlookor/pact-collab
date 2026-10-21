@@ -1,0 +1,11 @@
+[package]
+name = "pact-views"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT 查询/分析视图纯类型：无 IO，原生引擎与 WASM 门面共用"
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+pact-analysis = { path = "../pact-analysis" }
+serde = { workspace = true }

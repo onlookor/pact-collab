@@ -150,6 +150,15 @@
 - **输出与验收**：CPN Tools XML（`format='6'`）；生成结果须通过 CPN DTD 校验、XML 良构与结构断言（库所/迁移/弧计数、test arc、互补不变量、单实例前缀）。CPN Tools GUI 内的交互式加载与状态空间实验由人工验收，不纳入 CI（沙箱无 GUI）。
 - **实现状态**：已实现（2026-10-21）；`pact-cpn` 11 项测试 + CLI 离线 e2e 覆盖结构与错误路径。
 
+### FR21 WASM 本地分发形态（实验性，D31）
+
+- **定位**：WASM 构建是 `pactd` 之外的**可选本地分发形态**，供 Node/桌面宿主内嵌运行；**权威仍是原生引擎**，NFR4 的单一静态二进制形态不变，WASM 不替代 `pactd`、不承担服务端角色。
+- **能力范围（S2 已实现，2026-10-21）**：语义核心（解析/良构校验/静态分析/片段组合/CPN 投影）、内存多实例会话（`(domain, instance)` 键）、Rule-S/P/R/E 与 Rule-T、两阶段提交（`prepare → 宿主持久化 → commit` / `abort`）、事件日志 JSONL 导出、自足快照导出与 `restore`、查询视图；事件 schema、快照结构与磁盘布局与原生共用（`pact-store-model` / `pact-views`）。
+- **宿主职责**：持久化（JSONL append + fsync、快照 tmp+rename）、崩溃恢复（日志优先、末尾半行截断）、单写者（lockfile）由宿主适配层承担；WASM 内核不假定拥有 fsync、flock、socket 或进程能力。Node 适配层已交付（`crates/pact-wasm/js/`）。
+- **能力边界**：不含浏览器 OPFS/SharedWorker、多用户 ACL/读审计、MCP/HTTP 服务、TLS、turso 索引、日志压缩与 `pactd` 运维接口；DSH `govern` 与 NFR6 v2 无硬依赖（见范围外）。**安全边界为本地单用户**，不得视为多用户安全边界。
+- **ABI 策略**：`pact-wasm/0.x`，全部方法使用 JSON 字符串；破坏性变更须提升 ABI 版本并记入 `docs/design-change.md`；版本探测入口为 `abi_version`。
+- **准入与工程顺序**：稳定化（去除“实验性”标记）前置条件为 (1) Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）——**已实现（2026-10-21，`ci.yml` 的 `wasm` job）**；(2) 金标覆盖扩展（多实例、组合域、条件分支、压缩后恢复）——**已实现（2026-10-21，`crates/pact-wasm/tests/parity.rs` 7 项金标）**；(3) 抽取 `pact-engine-kernel` 消除原生/WASM 双实现漂移风险——**已实现（2026-10-21，原生 `pact-engine` 与 `pact-wasm` 共用实例会话语义）**；(4) 推送/发布前完成宿主边界安全审视。在 (4) 完成前 WASM 形态按**实验性**登记，不进入生产分发承诺（FR18）。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。
@@ -167,3 +176,4 @@
 - 多机分布式 Counter、OR 分支、时间约束、概率行为（范式本身不可表达）。
 - 分布式事务 / 2PC / 共识协议，以及由引擎执行的外部副作用：引擎不执行副作用（FR10/FR15）；单写者 actor + 事件日志已满足线性化与崩溃一致性，引入这些机制只增复杂度（决策 D23）。
 - 示例接入 CI 回归：`examples/**/*.pact` 不由 cargo test 遍历校验；示例脚本为教学资产，其正确性由人工执行与录制轨迹对照保证（决策 D22）。
+- WASM 浏览器本地运行时（OPFS/SharedWorker）、多用户 ACL/读审计、DSH loop 治理与 NFR6 v2 远端模式：实验性 WASM 形态只覆盖本地单用户 Node/桌面宿主（FR21）；上述能力待触发条件满足后另立范围。

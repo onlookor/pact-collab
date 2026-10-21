@@ -10,15 +10,14 @@ use crate::views::{
     AnalysisReport, ArchiveView, CompactionOutcome, CounterView, DomainListing, DomainSummary,
     GateClause, StatusView,
 };
-use pact_analysis as analysis;
 use pact_compose::{compose as compose_fragments, Conflict};
 use pact_core::{
-    enabled_productions, rule_e, rule_p, rule_r, rule_s, termination_holds, ArchiveEntry,
-    CounterState, Domain, Effect, ParticipantName, ProductionOption, RuleError, ThingRef, Token,
-    TokenId, TypeName,
+    ArchiveEntry, Domain, ParticipantName, ProductionOption, RuleError, ThingRef, Token, TokenId,
+    TypeName,
 };
+use pact_engine_kernel::{analysis_report, ConsumePreparation, KernelError, Session};
 use pact_parser::{emit_domain, load_domain, Problem};
-use pact_store::{apply_event, Event, InstanceKey, ReadAuditRecord, Snapshot, Store, StoreError};
+use pact_store::{Event, InstanceKey, ModelError, ReadAuditRecord, Snapshot, Store, StoreError};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -113,9 +112,35 @@ impl From<StoreError> for EngineError {
     }
 }
 
+impl From<ModelError> for EngineError {
+    fn from(e: ModelError) -> Self {
+        EngineError::Store(e.into())
+    }
+}
+
 impl From<RuleError> for EngineError {
     fn from(e: RuleError) -> Self {
         EngineError::Rule(e)
+    }
+}
+
+impl From<KernelError> for EngineError {
+    fn from(e: KernelError) -> Self {
+        match e {
+            KernelError::Parse(p) => EngineError::Parse(p),
+            KernelError::Rule(r) => EngineError::Rule(r),
+            KernelError::Model(m) => EngineError::Store(m.into()),
+            KernelError::Recovery(msg) => EngineError::Recovery(msg),
+            KernelError::IdempotencyConflict {
+                request_id,
+                existing,
+                requested,
+            } => EngineError::IdempotencyConflict {
+                request_id,
+                existing,
+                requested,
+            },
+        }
     }
 }
 
@@ -342,29 +367,26 @@ struct DeclarationEntry {
     domain: Domain,
 }
 
-/// 实例会话（**实例键** `InstanceKey`）；`declaration` = 实例创建时的声明快照。
+/// 实例会话（**实例键** `InstanceKey`）：公共内核 + 原生运行态
+/// （事件追加计数用于快照频率、广播通道用于 Rule-W）。
 struct InstanceSession {
-    /// 实例创建（或最近一次域重置）时的声明原文。日志前缀被压缩后，
-    /// 该字段随快照持久化，成为重放恢复的唯一声明来源（D25 子项 1）。
-    declaration: String,
-    domain: Domain,
-    state: CounterState,
-    last_seq: u64,
-    /// 本实例最近一次 `DomainLoaded` 的 seq（「实例非空」判据基线，R5）。
-    dl_seq: u64,
+    /// 与 WASM 宿主共用的纯内核（声明快照、状态、seq、幂等表、终止判定）。
+    core: Session,
     events_since_snapshot: u64,
-    /// 当前 Rule-T 判定（信息性，不锁定域实例——种子仍可注入）。
-    terminated: bool,
-    /// Rule-E 幂等表：request_id → (目标 token id, 首次归档结果)。
-    /// 随事件日志持久化（Consumed 事件的 request_id 字段），启动时重建。
-    consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)>,
     notify: broadcast::Sender<Notification>,
 }
 
-impl InstanceSession {
-    /// 「实例非空」：最后一次 DomainLoaded 之后已有事件（R5）。
-    fn is_occupied(&self) -> bool {
-        self.last_seq > self.dl_seq
+impl std::ops::Deref for InstanceSession {
+    type Target = Session;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for InstanceSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
     }
 }
 
@@ -455,109 +477,18 @@ impl EngineActor {
         Ok(())
     }
 
-    /// 单实例恢复：优先用日志最后一个 `DomainLoaded` 解析声明；日志前缀被压缩
-    /// （无 `DomainLoaded`）时改用快照锚（快照承载声明原文、域重置基线与幂等表）→
-    /// 快照快速路径（`snapshot.seq ≥ DomainLoaded.seq` 且不超日志末尾才有效）→ 尾部重放。
+    /// 单实例恢复：委托 `pact-engine-kernel::Session::recover`（日志最后一个
+    /// `DomainLoaded` 优先；前缀被压缩时以快照为锚，再重放尾部事件）。
     fn recover_instance(&mut self, ri: pact_store::RecoveredInstance) -> Result<(), EngineError> {
         let key = ri.key;
-        let events = ri.events;
         let snap = self.store.load_snapshot(&key)?;
-        let snap_seq = snap.as_ref().map(|s| s.seq).unwrap_or(0);
-        // 续接点：日志末尾 / 压缩水位 / 快照三者最大（压缩后日志可能为空）
-        let last_seq = events
-            .last()
-            .map(|e| e.seq())
-            .unwrap_or(0)
-            .max(ri.base_seq)
-            .max(snap_seq);
-
-        let dl_idx = events
-            .iter()
-            .rposition(|e| matches!(e, Event::DomainLoaded { .. }));
-
-        // 声明与域重置基线
-        let (declaration, dl_seq, snapshot_is_anchor) = match dl_idx {
-            Some(idx) => match &events[idx] {
-                Event::DomainLoaded {
-                    declaration, seq, ..
-                } => (declaration.clone(), *seq, false),
-                _ => unreachable!(),
-            },
-            // 前缀已被压缩：日志已无 DomainLoaded，快照是唯一的历史载体
-            None => match &snap {
-                Some(s) => (s.declaration.clone(), s.dl_seq, true),
-                None => {
-                    return Err(EngineError::Recovery(format!(
-                        "实例 {key} 的日志无 DomainLoaded 且无可用快照：历史状态不可恢复"
-                    )))
-                }
-            },
-        };
-        let domain = load_domain(&declaration).map_err(EngineError::Parse)?;
-
-        let (mut state, base_seq) = match (&snap, snapshot_is_anchor) {
-            // 快照锚：状态直接取快照（压缩已丢弃其后之前缀）
-            (Some(s), true) => (s.state.clone(), s.seq),
-            // 快照快速路径：须晚于最后一次域重置且不超日志末尾
-            (Some(s), false) if s.seq >= dl_seq && s.seq <= last_seq => (s.state.clone(), s.seq),
-            _ => (CounterState::new(), dl_seq),
-        };
-        for ev in events.iter().filter(|e| e.seq() > base_seq) {
-            apply_event(&mut state, ev)?;
-        }
-
-        // Rule-E 幂等表：
-        // - 日志有 DomainLoaded（未压缩或重置后）：从该重置之后的全部 Consumed 事件重建；
-        // - 快照锚（前缀已压缩）：以快照承载的表为基，补上快照之后的事件。
-        let idem_floor = if snapshot_is_anchor { base_seq } else { dl_seq };
-        let from_log = events
-            .iter()
-            .filter(|e| e.seq() > idem_floor)
-            .filter_map(|e| match e {
-                Event::Consumed {
-                    token,
-                    by,
-                    ts,
-                    request_id: Some(rid),
-                    ..
-                } => Some((
-                    rid.clone(),
-                    (
-                        token.id.clone(),
-                        ArchiveEntry {
-                            token: token.clone(),
-                            exhausted_by: by.clone(),
-                            exhausted_at: ts.clone(),
-                        },
-                    ),
-                )),
-                _ => None,
-            });
-        let mut consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)> = if snapshot_is_anchor
-        {
-            snap.as_ref()
-                .map(|s| s.consumed_requests.clone())
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-        for (rid, entry) in from_log {
-            consumed_requests.insert(rid, entry);
-        }
-
-        let terminated = termination_holds(&domain, &state);
+        let core = Session::recover(&ri.events, snap.as_ref(), ri.base_seq)?;
         let (notify, _) = broadcast::channel(self.config.notify_capacity);
         self.instances.insert(
             key,
             InstanceSession {
-                declaration,
-                domain,
-                state,
-                last_seq,
-                dl_seq,
+                core,
                 events_since_snapshot: 0,
-                terminated,
-                consumed_requests,
                 notify,
             },
         );
@@ -735,36 +666,16 @@ impl EngineActor {
                 name: name.to_owned(),
             })?;
         let declaration = entry.declaration.clone();
-        let domain = entry.domain.clone();
         let next_seq = self.store.last_seq(&key) + 1;
-        let ev = Event::DomainLoaded {
-            seq: next_seq,
-            ts: self.clock.now(),
-            name: name.to_owned(),
-            declaration: declaration.clone(),
-        };
-        self.store.append(&key, &ev).await?;
-        let summary = DomainSummary {
-            name: name.to_owned(),
-            instance: instance.to_owned(),
-            types: domain.types.len(),
-            gates: domain.gates.len(),
-            seed_authority: domain.seed_authority.len(),
-            last_seq: next_seq,
-        };
-        let terminated = termination_holds(&domain, &CounterState::new());
+        let fresh = Session::fresh(name, &declaration, &self.clock.now(), next_seq)?;
+        self.store.append(&key, &fresh.event).await?;
+        let summary = fresh.session.summary(name, instance);
         let (notify, _) = broadcast::channel(self.config.notify_capacity);
         self.instances.insert(
             key,
             InstanceSession {
-                declaration,
-                domain,
-                state: CounterState::new(),
-                last_seq: next_seq,
-                dl_seq: next_seq,
+                core: fresh.session,
                 events_since_snapshot: 0,
-                terminated,
-                consumed_requests: BTreeMap::new(),
                 notify,
             },
         );
@@ -794,36 +705,16 @@ impl EngineActor {
             // 已存在（空或已 force）：重置语义 —— 清快照、状态清零、seq 续接
             Some(s) => {
                 let next_seq = s.last_seq + 1;
-                let ev = Event::DomainLoaded {
-                    seq: next_seq,
-                    ts: self.clock.now(),
-                    name: name.to_owned(),
-                    declaration: declaration.to_owned(),
-                };
-                self.store.append(&key, &ev).await?;
+                let fresh = Session::fresh(name, declaration, &self.clock.now(), next_seq)?;
+                self.store.append(&key, &fresh.event).await?;
                 let _ = self.store.remove_snapshot(&key);
-                let domain = load_domain(declaration).map_err(EngineError::Parse)?;
-                let summary = DomainSummary {
-                    name: name.to_owned(),
-                    instance: instance.to_owned(),
-                    types: domain.types.len(),
-                    gates: domain.gates.len(),
-                    seed_authority: domain.seed_authority.len(),
-                    last_seq: next_seq,
-                };
-                let terminated = termination_holds(&domain, &CounterState::new());
+                let summary = fresh.session.summary(name, instance);
                 let (notify, _) = broadcast::channel(self.config.notify_capacity);
                 self.instances.insert(
                     key,
                     InstanceSession {
-                        declaration: declaration.to_owned(),
-                        domain,
-                        state: CounterState::new(),
-                        last_seq: next_seq,
-                        dl_seq: next_seq,
+                        core: fresh.session,
                         events_since_snapshot: 0,
-                        terminated,
-                        consumed_requests: BTreeMap::new(),
                         notify,
                     },
                 );
@@ -865,16 +756,13 @@ impl EngineActor {
             .instances
             .get_mut(key)
             .ok_or_else(|| instance_not_found(key))?;
-        let token = rule_s(&session.domain, participant, ty, thing_ref, id, now.clone())?;
-        let seq = session.last_seq + 1;
-        let ev = Event::Seeded {
-            seq,
-            ts: now.clone(),
-            token: token.clone(),
-        };
-        self.store.append(key, &ev).await?;
-        session.state.apply(Effect::Seeded(token.clone()));
-        session.last_seq = seq;
+        let prepared = session
+            .core
+            .prepare_seed(participant, ty, thing_ref, id, &now)?;
+        let seq = prepared.event.seq();
+        let token = prepared.result.clone();
+        self.store.append(key, &prepared.event).await?;
+        let outcome = session.core.commit(&prepared.event)?;
         notify_state_change(
             session,
             key,
@@ -883,7 +771,15 @@ impl EngineActor {
             &now,
             Some(token.id.clone()),
         );
-        post_commit(&self.store, self.clock.as_ref(), &self.config, key, session).await;
+        post_commit(
+            &self.store,
+            self.clock.as_ref(),
+            &self.config,
+            key,
+            session,
+            outcome.terminated_seq,
+        )
+        .await;
         Ok(token)
     }
 
@@ -901,25 +797,14 @@ impl EngineActor {
             .instances
             .get_mut(key)
             .ok_or_else(|| instance_not_found(key))?;
-        let token = rule_p(
-            &session.domain,
-            &session.state,
-            participant,
-            ty,
-            predecessors,
-            thing_ref,
-            id,
-            now.clone(),
-        )?;
-        let seq = session.last_seq + 1;
-        let ev = Event::Produced {
-            seq,
-            ts: now.clone(),
-            token: token.clone(),
-        };
-        self.store.append(key, &ev).await?;
-        session.state.apply(Effect::Produced(token.clone()));
-        session.last_seq = seq;
+        let prepared =
+            session
+                .core
+                .prepare_produce(participant, ty, predecessors, thing_ref, id, &now)?;
+        let seq = prepared.event.seq();
+        let token = prepared.result.clone();
+        self.store.append(key, &prepared.event).await?;
+        let outcome = session.core.commit(&prepared.event)?;
         notify_state_change(
             session,
             key,
@@ -928,7 +813,15 @@ impl EngineActor {
             &now,
             Some(token.id.clone()),
         );
-        post_commit(&self.store, self.clock.as_ref(), &self.config, key, session).await;
+        post_commit(
+            &self.store,
+            self.clock.as_ref(),
+            &self.config,
+            key,
+            session,
+            outcome.terminated_seq,
+        )
+        .await;
         Ok(token)
     }
 
@@ -942,8 +835,7 @@ impl EngineActor {
     ) -> Result<Token, EngineError> {
         let token = {
             let session = self.session(key)?;
-            rule_r(&session.domain, &session.state, participant, token_id)
-                .map_err(EngineError::Rule)?
+            session.core.read(participant, token_id)?
         };
         if self.config.read_audit {
             let rec = ReadAuditRecord {
@@ -973,42 +865,19 @@ impl EngineActor {
             .ok_or_else(|| instance_not_found(key))?;
         // 幂等命中：同一 request_id 的重复请求直接返回首次结果，不重复消费。
         // 首次结果随 Consumed 事件持久化，跨重启仍生效（恢复时重建幂等表）。
-        if let Some(rid) = &request_id {
-            if let Some((existing, entry)) = session.consumed_requests.get(rid) {
-                if existing == token_id {
-                    return Ok(entry.clone());
-                }
-                return Err(EngineError::IdempotencyConflict {
-                    request_id: rid.clone(),
-                    existing: existing.clone(),
-                    requested: token_id.clone(),
-                });
-            }
-        }
-        let entry = rule_e(
-            &session.domain,
-            &session.state,
+        let prepared = match session.core.prepare_consume(
             participant,
             token_id,
-            now.clone(),
-        )?;
-        let seq = session.last_seq + 1;
-        let ev = Event::Consumed {
-            seq,
-            ts: now.clone(),
-            token: entry.token.clone(),
-            by: participant.clone(),
-            request_id: request_id.clone(),
+            request_id.as_deref(),
+            &now,
+        )? {
+            ConsumePreparation::Replayed(entry) => return Ok(entry),
+            ConsumePreparation::Prepared(prepared) => *prepared,
         };
+        let seq = prepared.event.seq();
         // 提交点 = 日志落盘（store.append 内部 fsync）。其后步骤均不可失败（见 post_commit）。
-        self.store.append(key, &ev).await?;
-        session.state.apply(Effect::Consumed(entry.clone()));
-        session.last_seq = seq;
-        if let Some(rid) = request_id {
-            session
-                .consumed_requests
-                .insert(rid, (token_id.clone(), entry.clone()));
-        }
+        self.store.append(key, &prepared.event).await?;
+        let outcome = session.core.commit(&prepared.event)?;
         notify_state_change(
             session,
             key,
@@ -1017,8 +886,16 @@ impl EngineActor {
             &now,
             Some(token_id.clone()),
         );
-        post_commit(&self.store, self.clock.as_ref(), &self.config, key, session).await;
-        Ok(entry)
+        post_commit(
+            &self.store,
+            self.clock.as_ref(),
+            &self.config,
+            key,
+            session,
+            outcome.terminated_seq,
+        )
+        .await;
+        Ok(prepared.result)
     }
 
     // —— 查询 ——
@@ -1028,16 +905,7 @@ impl EngineActor {
         key: &InstanceKey,
         filter: Option<&TypeName>,
     ) -> Result<CounterView, EngineError> {
-        let s = self.session(key)?;
-        let tokens: Vec<Token> = s
-            .state
-            .counter
-            .values()
-            .filter(|t| filter.is_none_or(|f| t.ty == *f))
-            .cloned()
-            .collect();
-        let size = tokens.len();
-        Ok(CounterView { tokens, size })
+        Ok(self.session(key)?.core.counter(filter))
     }
 
     fn query_archive(
@@ -1045,16 +913,7 @@ impl EngineActor {
         key: &InstanceKey,
         filter: Option<&TypeName>,
     ) -> Result<ArchiveView, EngineError> {
-        let s = self.session(key)?;
-        let entries: Vec<ArchiveEntry> = s
-            .state
-            .archive
-            .iter()
-            .filter(|e| filter.is_none_or(|f| e.token.ty == *f))
-            .cloned()
-            .collect();
-        let size = entries.len();
-        Ok(ArchiveView { entries, size })
+        Ok(self.session(key)?.core.archive(filter))
     }
 
     fn query_gates(
@@ -1062,17 +921,7 @@ impl EngineActor {
         key: &InstanceKey,
         participant: &ParticipantName,
     ) -> Result<Vec<GateClause>, EngineError> {
-        let s = self.session(key)?;
-        Ok(s.domain
-            .gates
-            .iter()
-            .filter(|((p, _, _), _)| p == participant)
-            .map(|((_, action, ty), cond)| GateClause {
-                action: *action,
-                ty: ty.clone(),
-                condition: cond.clone(),
-            })
-            .collect())
+        Ok(self.session(key)?.core.gates(participant))
     }
 
     fn query_enabled(
@@ -1080,17 +929,11 @@ impl EngineActor {
         key: &InstanceKey,
         participant: &ParticipantName,
     ) -> Result<Vec<ProductionOption>, EngineError> {
-        let s = self.session(key)?;
-        Ok(enabled_productions(&s.domain, &s.state, participant))
+        Ok(self.session(key)?.core.enabled(participant))
     }
 
     fn query_status(&self, key: &InstanceKey) -> Result<StatusView, EngineError> {
-        let s = self.session(key)?;
-        Ok(StatusView {
-            counter_size: s.state.counter.len(),
-            archive_size: s.state.archive.len(),
-            terminated: s.terminated,
-        })
+        Ok(self.session(key)?.core.status())
     }
 
     /// 读审计视图（D25 子项 3）：独立审计流，实例未加载也可查看历史记录。
@@ -1111,7 +954,7 @@ impl EngineActor {
 
     fn analyze(&self, text: &str) -> Result<AnalysisReport, EngineError> {
         let domain = load_domain(text).map_err(EngineError::Parse)?;
-        Ok(report_of(&domain))
+        Ok(analysis_report(&domain))
     }
 
     /// 分析已登记声明（定义级，无需实例）。
@@ -1120,7 +963,7 @@ impl EngineActor {
             .declarations
             .get(name)
             .ok_or_else(|| domain_not_declared(name))?;
-        Ok(report_of(&entry.domain))
+        Ok(analysis_report(&entry.domain))
     }
 
     /// 卸载实例：仅移除内存会话；日志/快照保留，重启后自动恢复（设计 §9.2）。
@@ -1224,6 +1067,7 @@ async fn post_commit(
     config: &EngineConfig,
     key: &InstanceKey,
     session: &mut InstanceSession,
+    terminated_seq: Option<u64>,
 ) {
     // 定期快照（尽力而为）
     session.events_since_snapshot += 1;
@@ -1234,10 +1078,8 @@ async fn post_commit(
         session.events_since_snapshot = 0;
     }
 
-    // Rule-T 惰性求值（D14：转调 core）
-    let now_terminated = termination_holds(&session.domain, &session.state);
-    if now_terminated && !session.terminated {
-        let seq = session.last_seq + 1;
+    // Rule-T 惰性求值：候选由内核 `commit` 给出（D14）
+    if let Some(seq) = terminated_seq {
         let ts = clock.now();
         if store
             .append(
@@ -1250,7 +1092,7 @@ async fn post_commit(
             .await
             .is_ok()
         {
-            session.last_seq = seq;
+            session.core.record_terminated(seq);
             let _ = session.notify.send(Notification {
                 version: pact_store::EVENT_SCHEMA_VERSION,
                 event: NotificationKind::Terminated,
@@ -1265,7 +1107,6 @@ async fn post_commit(
             });
         }
     }
-    session.terminated = now_terminated;
 }
 
 /// 实例最后一次 `DomainLoaded` 的声明原文（恢复回填用）。
@@ -1278,19 +1119,6 @@ fn last_declaration(events: &[Event]) -> Option<String> {
 
 fn respond<T>(resp: oneshot::Sender<Result<T, EngineError>>, result: Result<T, EngineError>) {
     let _ = resp.send(result);
-}
-
-/// 六项静态分析聚合（论文 Appendix A.1–A.6）。
-fn report_of(domain: &Domain) -> AnalysisReport {
-    AnalysisReport {
-        // A.5 先算（Appendix D：它是其余分析的前提）
-        precondition_wf: analysis::precondition_wf(domain),
-        reachability: analysis::reachability(domain),
-        gate_coverage: analysis::gate_coverage(domain),
-        consumption_reachability: analysis::consumption_reachability(domain),
-        structural_deadlock: analysis::structural_deadlock(domain),
-        stranding_risk: analysis::stranding_risk(domain),
-    }
 }
 
 fn instance_not_found(key: &InstanceKey) -> EngineError {

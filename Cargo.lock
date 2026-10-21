@@ -1721,13 +1721,26 @@ dependencies = [
  "pact-analysis",
  "pact-compose",
  "pact-core",
+ "pact-engine-kernel",
  "pact-parser",
  "pact-store",
+ "pact-views",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "ulid",
+]
+
+[[package]]
+name = "pact-engine-kernel"
+version = "0.1.0"
+dependencies = [
+ "pact-analysis",
+ "pact-core",
+ "pact-parser",
+ "pact-store-model",
+ "pact-views",
 ]
 
 [[package]]
@@ -1807,11 +1820,50 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "pact-core",
+ "pact-store-model",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "turso",
+]
+
+[[package]]
+name = "pact-store-model"
+version = "0.1.0"
+dependencies = [
+ "pact-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pact-views"
+version = "0.1.0"
+dependencies = [
+ "pact-analysis",
+ "pact-core",
+ "serde",
+]
+
+[[package]]
+name = "pact-wasm"
+version = "0.1.0"
+dependencies = [
+ "pact-analysis",
+ "pact-compose",
+ "pact-core",
+ "pact-engine",
+ "pact-engine-kernel",
+ "pact-parser",
+ "pact-store",
+ "pact-store-model",
+ "pact-views",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "wasm-bindgen",
 ]
 
 [[package]]

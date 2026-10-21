@@ -9,11 +9,10 @@
 
 use crate::audit::ReadAuditRecord;
 use crate::error::{validate_domain_name, validate_instance_name, StoreError};
-use crate::event::Event;
 use crate::index::{IndexStore, TokenStatus, TursoIndexStore};
-use crate::key::InstanceKey;
 use crate::log::{self, EventLog, ReadOutcome};
-use crate::snapshot::{self, Snapshot};
+use crate::snapshot;
+use pact_store_model::{Event, InstanceKey, Snapshot};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};

@@ -54,6 +54,7 @@
 - **单一状态变更通道**：pact-http daemon 的 REST API 是通往引擎的唯一路径——pact-mcp 与 pact-cli（在线命令）都是其客户端（不内嵌引擎），三接口能力等价由构造保证；pact-cli 的离线命令（analyze/compose/replay/cpn）只依赖纯函数层，不触状态。
 - **语义集中在纯函数层**：pact-core 的规则函数是范式的唯一权威实现；引擎只做编排（查域、调用、应用效果、持久化、通知），不含任何语义判断。
 - **零隐式动作的编译期保障**：规则函数签名以 `&CounterState` 为入参、效果为返回值——接口层无法绕过规则直接改状态（Rust 所有权强制，见 design.md D1）。
+- **纯模型可移植**：`pact-store-model`（事件/快照/实例键）、`pact-views`（查询/分析视图）与 `pact-engine-kernel`（实例会话语义）只依赖纯 crate（`pact-core`/`pact-parser`/`pact-analysis`/`serde`），可编译到 `wasm32-unknown-unknown`；`pact-store`/`pact-engine` 通过 re-export 保持既有 API（D29）。原生 `pact-engine` 与 `pact-wasm` 的实例会话均通过 `Deref` 嵌入同一个 `pact_engine_kernel::Session`，仅在持久化、通知、审计与错误映射等外围不同（D32）。`pact-wasm` 在其上提供 **WASM 本地分发形态（实验性，D31）**：内存实例会话 + 两阶段提交 + 日志/快照导出恢复；Node 宿主适配层（`crates/pact-wasm/js/`）负责 JSONL+fsync、快照 tmp/rename 与 lockfile 单写者，磁盘布局与原生共用。**权威仍是原生 daemon**——WASM 为进程内单用户嵌入形态，不提供 MCP/HTTP 服务、不承担 ACL/审计与多用户边界，不进入 `dist/` 生产分发；稳定化前置中 Q7 CI、金标扩面与 `pact-engine-kernel` 抽取已完成（2026-10-21），仅剩宿主边界安全审视。浏览器持久化（OPFS/SharedWorker）与 DSH/v2 集成仍未接入（FR21）。
 
 ## 2. 关键数据流
 

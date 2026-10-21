@@ -1,5 +1,88 @@
 # 设计变更记录
 
+## 2026-10-21（第 36 轮，D32：抽取 `pact-engine-kernel`，原生与 WASM 共用实例会话语义）
+
+- **新增纯内核 crate `pact-engine-kernel`**（无 IO、无 tokio；依赖 `pact-core`/`pact-parser`/`pact-analysis`/`pact-store-model`/`pact-views`）：
+  - `Session` 统一持有 `declaration`/`domain`/`state`/`last_seq`/`next_seq`/`dl_seq`/`terminated`/`consumed_requests`；
+  - 提供 `fresh`、`recover`（快照锚点 + 日志重放 + 幂等表 + 终止态）、`prepare_seed`/`prepare_produce`/`prepare_consume`/`read`、`mark_prepared`/`abort_prepared`（WASM 两阶段提交）、`commit`/`record_terminated`、`counter`/`archive`/`gates`/`enabled`/`status`/`snapshot`/`summary` 与 `analysis_report`；
+  - `KernelError` 聚合 Parse/Rule/Model/Recovery/IdempotencyConflict，由原生与 WASM 各自映射到既有错误码（对外错误码不变）。
+- **原生迁移**：`pact-engine` 的 `InstanceSession` 改为 `{ core: Session, events_since_snapshot, notify }`，经 `Deref`/`DerefMut` 复用内核方法；`recover_instance`、`instantiate`/`load_domain` 重置、`seed`/`produce`/`consume`/`read`、查询视图与 `analyze` 全部委托内核；`post_commit` 接收 `terminated_seq` 并在追加 `Terminated` 后调用 `record_terminated`。
+- **WASM 迁移**：`pact-wasm` 的 `InstanceSession` 改为 `{ core: Session, events }`，删除约 500 行重复状态逻辑；`prepare_*`/`commit`/`abort`/`restore`/视图/分析全部委托内核。
+- **行为契约不变**：DomainLoaded seq 从 1 起；失败命令仍推进时钟；Rule-T 终止 `seq = last_seq + 1` 且只报告一次；压缩水位 `base_seq` 恢复；Rule-E 幂等表跨快照恢复；`ConsumePreparation::Prepared` 以 `Box` 承载完整事件（控制枚举尺寸）。
+- **前置进度**：FR21 稳定化前置 (3) 标记完成；仅余 (4) 推送/发布前宿主边界安全审视。
+- **验证**：`cargo test --workspace` 184 项全绿（含 kernel 3 项单测、parity 7 项）；`cargo fmt --all --check` 通过；原生 `clippy --workspace --all-targets -D warnings` 与 wasm32 `clippy -p pact-wasm -D warnings` 均零告警；wasm-release 构建 + bindgen + `ci-smoke`（raw 455,929 B / gzip 142,236 B）+ Node 7 项测试通过。
+- **未变**：事件 schema、磁盘布局、ABI `pact-wasm/0.2`、原生接口与错误码、依赖方向、`dist/` 产物。
+
+## 2026-10-21（第 35 轮，金标扩面：多实例 / 组合域 / 条件分支 / 压缩恢复）
+
+- **测试覆盖扩展**（`crates/pact-wasm/tests/parity.rs`，新增 4 项，共 7 项 parity）：
+  1. `multi_instance_isolation_matches_native`：同一域声明并发两实例，各自独立 `DomainLoaded`/seq/idempotency；逐实例事件日志与原生逐行相等，Counter/Archive 隔离，`list_domains` 实例清单一致。
+  2. `composed_domain_matches_native`：两片段经 §1.8 组合后 `DomainSummary` 完全相等；种子/生产事件日志逐行相等；四个参与者的 `my_gates` 逐项相等。
+  3. `conditional_gate_branches_match_native`：`count T >= 2`、`count T >= 1`、`not exists T` 三种 GateExpr 分支的放行与 `GateConditionFailed` 拒绝逐项对账，含失败命令后的时钟推进差异。
+  4. `compacted_log_recovery_matches_native`：原生 `compact(keep_last=0)` 后「快照 + 空日志」由 WASM `restore` 恢复，视图相等；WASM 续写 seq 接续快照水位（尾部仅 1 行），原生 daemon 可再打开该尾部日志并得到一致视图。
+- **前置进度**：FR21 稳定化前置 (2) 金标扩面标记完成；(3) `pact-engine-kernel` 抽取与 (4) 安全审视仍待办。
+- **验证**：`cargo test -p pact-wasm` 15 项全绿（8 单测 + 7 parity）；`cargo clippy -p pact-wasm --all-targets -D warnings` 零告警；`cargo test --workspace --locked` 全绿。
+- **未变**：实现代码、事件/磁盘格式、ABI、CI 门禁；本轮仅扩展测试与文档。
+
+## 2026-10-21（第 34 轮，Q7：WASM 独立 CI job）
+
+- **新增 CI job `wasm`**（`.github/workflows/ci.yml`）：安装 stable + `wasm32-unknown-unknown` → wasm 目标 `clippy -D warnings`（仅 lib，避免 `--all-targets` 拉入 `pact-engine`/`tokio` 等原生 dev-deps）→ `cargo build -p pact-wasm --profile wasm-release` → `wasm-bindgen --target nodejs` → ABI/语义/体积门禁 → Node 持久化测试。
+- **wasm-bindgen CLI 版本锁定**：`0.2.127`（须与 crate 版本一致），经 `actions/cache` 缓存 `~/.cargo/bin/wasm-bindgen`；未命中时才 `cargo install wasm-bindgen-cli --version … --locked`。
+- **新增门禁脚本** `crates/pact-wasm/js/ci-smoke.js`：断言 `abi_version() === "pact-wasm/0.2"`；`validate`/`analyze` 最小语义路径（类型 2、gate 子句 4、seed_authority 1、A.5 良构、源类型可达）；体积上限 raw ≤ 600 KiB、gzip ≤ 200 KiB（基线 450,190 B / gzip ~140 KiB，留约 30% 余量）。
+- **设计 §10 测试策略**新增「WASM 门禁」行。需求 FR21 的稳定化前置 (1) 标记为已实现，其余 (2)–(4) 不变。
+- **本地实测**：wasm32 clippy 清零；wasm-release 构建与 bindgen 通过；`ci-smoke` 通过（raw 450,190 B / gzip 140,289 B）；Node 7 项持久化测试全绿。
+- **未变**：crate 代码、事件/磁盘格式、原生 CI `check` job；本轮只加 CI 与门禁脚本。
+
+## 2026-10-21（第 33 轮，P6 裁决 A：WASM 本地分发形态条件立项（D31））
+
+- **新增决策 D31**：WASM 本地运行登记为**实验性可选分发形态**（Node/桌面宿主），权威仍是原生引擎；`pactd`、NFR4 单静态二进制与 FR18 生产分发承诺不变。
+- **新增 §16「WASM 本地分发形态（实验性）」**：16.1 定位与权威边界（本地单用户、无 ACL/审计、不提供 MCP/HTTP）；16.2 组件与宿主职责（`pact-wasm` 内核 / JS 宿主适配层 / 原生 store+engine 三方边界）；16.3 ABI `pact-wasm/0.x` + JSON 字符串与 `prepare → append+fsync → commit` 唯一写路径（abort 回收 seq、`Terminated` 派生追加、ID/ts 宿主注入）；16.4 稳定化前置（Q7 CI → 金标扩面 → `pact-engine-kernel` 抽取 → 安全审视）与不纳入项（浏览器 OPFS/SharedWorker、多用户、压缩/索引、DSH `govern`、NFR6 v2）。
+- **crate 清单注释**：`pact-wasm` 由「spike S1」改为「WASM 本地分发形态（实验性，D30/D31）」。
+- **未变**：事件 schema、磁盘布局、原生 API、依赖方向、`dist/` 产物；本轮仅登记立项、分发形态与 ABI 策略，未改代码。
+- **配套**：需求侧新增 FR21（`docs/requirements-change.md` 第 18 轮），架构侧新增组件边界（`docs/architecture-change.md` 第 20 轮），可行性报告状态改为已条件立项。
+
+## 2026-10-21（第 32 轮，P4/S2：Node 持久化宿主）
+
+- **JS 存储适配器**（`crates/pact-wasm/js/pact-store.js`）：与原生同布局（`<root>/<domain>/<instance>.{events.jsonl,snapshot.json,lock}`）；`append` = `open('a') + write + fsync + close`；`writeSnapshot` = tmp + `fsync` + `rename` + 目录 `fsync`；`readEvents` 用字节级 `lastIndexOf('\n')` 截断崩溃残留半行并 `fsync`；域名/实例名以 `[A-Za-z0-9_-]{1,128}` 校验，杜绝路径穿越。
+- **单写者**：`.lock` 以 `O_EXCL` 创建并写 pid；冲突时若持有者进程不存在（`kill(pid,0)` 失败）则回收一次，否则抛 `InstanceLocked`；`close` 删除锁。仅进程级近似，不等价于原生 `flock`（已在文档标注）。
+- **最小宿主**（`pact-host.js`）：`PactHost.open` 获取锁后按「日志/快照优先」恢复，空日志且无快照才新建并追加 `DomainLoaded`；`_finish` 严格 `prepare → append+fsync → commit`，追加失败 `abort`；`commit` 返回的 `Terminated` 事件随后追加（信息性，失败不回滚状态）。
+- **demo**（`js/demo.js`）：生命周期 + 快照 + 重启校验，便于人工观察。
+- **测试**：Node `node:test` 7 项（重启一致、append 后未 commit 的崩溃恢复、半行截断、单写者、快照自足、幂等跨重启、Rule-T 终止落盘）；Rust 新增 `parity.rs::native_and_wasm_alternate_on_shared_log`（原生→WASM→原生→WASM 交替打开同一日志，视图一致）。全仓 **177 项测试全绿**，fmt/clippy（native + wasm32）清零。
+- **边界**：浏览器 OPFS/SharedWorker 不做（Q6）；WASM CI job 不做（Q7 待决策）；不改需求、不动原生磁盘格式。
+
+## 2026-10-21（第 31 轮，P3/S1：WASM 内存语义与原生对账）
+
+- **实例会话**：`PactHost` 由「声明缓存」升级为「声明注册表 + `(domain, instance)` 会话表 + 待提交事务表」；每会话持有声明快照、`CounterState`、完整事件序列、`last_seq`/`next_seq`、`dl_seq`、`terminated` 与 Rule-E 幂等表。`is_occupied = last_seq > dl_seq` 与原生一致。
+- **生命周期对齐原生**：`load_domain` 空实例可重置（seq 续接）、非空实例返回 `DomainBusy`；新增 `load_domain_with(..., force)` 显式替换；`instantiate` 从已登记声明创建额外实例；`load_domain_at` 注入确定性时间戳（`DomainLoaded` 现参与事件序列，P2 的 `last_seq = 0` 由此变为真实值）。
+- **两阶段提交**：`prepare_seed/produce/consume` 校验并分配 seq，返回 `Prepared { tx_id, seq, event(JSONL 行), result, replayed }`；`commit(tx_id, terminated_ts)` 应用事件、写入幂等表、按原生 `post_commit` 顺序追加 Rule-T `Terminated`（可选独立时间戳）；`abort` 丢弃事务并回收未被后续分配占用的 seq，保证 JSONL 连续、可被原生 `Store` 的 `seq == last+1` 校验接受。`prepare_consume` 幂等命中返回 `tx_id = None`、`replayed = true`，不产生事件。
+- **查询**：`read`（Rule-R）与 `counter`/`archive`/`gates`/`enabled`/`status`，直接复用 `pact-views` 类型与 `pact-core` 规则，字段顺序与原生一致。
+- **导出/恢复**：`export_events` 逐行 `to_wire_json`（顶层 `version`）；`export_snapshot` 复用 `Snapshot::new`（自足）；`restore` 复刻 `recover_instance` 的锚点选择（最后一个 `DomainLoaded` 优先，否则快照锚）、`base_seq` 重放、幂等表重建与终止态计算。
+- **错误码**：`FacadeError.code` 由自造小写改为与原生接口层同名（`InstanceNotFound`/`DomainBusy`/`InstanceExists`/`DomainNotDeclared`/`IdempotencyConflict`/`SeedAuthorityDenied`/`PredecessorNotOnCounter`/`TokenNotOnCounter`/`InvalidDomainName`/`InvalidInstanceName`/`Syntax`/`WellFormedness`）；`FacadeError.code` 类型改为 `String`。
+- **ABI**：`abi_version` 升至 `pact-wasm/0.2`。新增导出 `load_domain_at`/`load_domain_with`/`instantiate`/`prepare_seed`/`prepare_produce`/`prepare_consume`/`commit`/`abort`/`read`/`counter`/`archive`/`gates`/`enabled`/`status`/`export_events`/`export_snapshot`/`restore`。
+- **测试**：`crates/pact-wasm/tests/parity.rs` 两项（金标事件/视图/双向互通、错误码对账）——固定 `T0–T8` + `seq-0..2`，**8 条事件与原生 JSONL 逐行相等**（含 `Terminated`），视图与错误码逐项相等，WASM 日志+快照可被原生 daemon 恢复，原生日志可被 WASM 恢复。`pact-wasm` dev-dependencies 新增 `pact-engine`/`pact-store`/`tokio`/`tempfile`（仅测试）。全仓 **176 项测试全绿**（P2 的 171 + 5），fmt/clippy（native + wasm32）清零。
+- **体积**：`wasm-release` 产物 bindgen 后 450,190 B（440 KiB）、gzip 140,457 B（137 KiB），较 S0 的 267 KiB 增加 173 KiB，登记为新基线。
+- **边界**：仍不落盘（P4 的 JS `PactStore` 负责 append/fsync/崩溃恢复）；不接 CI（Q7 待 P3 退出后再议）；浏览器 OPFS/SharedWorker 不做（Q6）。
+
+## 2026-10-21（第 30 轮，P2/S0：WASM 门面 `pact-wasm`（D30））
+
+- **新增 `pact-wasm`**（`crate-type = ["cdylib", "rlib"]`）：宿主无关的 `PactHost` 承载解析/校验/静态分析/片段组合；`wasm-bindgen` 包装仅编译到 `wasm32`，原生构建不拉入该依赖。
+- **ABI（Q2 冻结）**：全部方法使用 JSON 字符串；导出 `new`、`load_domain(name, declaration, instance)`、`validate(declaration)`、`analyze(declaration)`、`compose(name, fragments_json, instance)`、`list_domains`，另有 `abi_version` 探针；错误以 `{"code","message"}` JSON 字符串抛出。
+- **构建配置**：根 `Cargo.toml` 新增 `wasm-release` profile（`opt-level="z"`、LTO、`codegen-units=1`、`panic="abort"`、`strip`）；`wasm-bindgen 0.2.127` 仅作为 wasm32 目标依赖。
+- **实测**：release `.wasm` 273,394 B（267 KiB），gzip 89,054 B（87 KiB）；Node 22 模块加载 1.71 ms、构造 0.35 ms、首次 `analyze` 3.24 ms。
+- **语义对账**：`react_loop.pact` 与 `cross_harness.pact` 的 `analyze` JSON 与原生 `pact --json analyze` 深度相等。
+- **边界**：S0 不写事件、不落盘、无 `prepare/commit`（P3/P4）；浏览器绑定、OPFS、wasm-pack 与独立 CI job 均未纳入（Q6/Q7）。
+- **验证**：`cargo fmt --all --check`、host 与 wasm 目标 `clippy -D warnings` 均干净；全仓 **171 项测试全绿**（P1 的 166 + `pact-wasm` 5）。
+
+## 2026-10-21（第 29 轮，P1：WASM 纯类型层拆分（D29））
+
+- **新增 `pact-store-model`**：承载 `Event`（五变体）、`WireEvent`（顶层 `version` + `flatten`）、`EVENT_SCHEMA_VERSION`、`apply_event`/`ApplyOutcome`、`to_wire_json`、`Snapshot` 数据结构、`InstanceKey` 与 `ModelError`；依赖仅 `pact-core + serde + serde_json`，无 IO/tokio/unsafe，可编译到 `wasm32-unknown-unknown`。
+- **新增 `pact-views`**：承载 `CounterView`、`ArchiveView`、`StatusView`、`GateClause`、`DomainSummary`、`DomainListing`、`CompactionOutcome`、`AnalysisReport`；依赖仅 `pact-core + pact-analysis + serde`，无 tokio，可编译到 wasm。
+- **原生 API 保持**：`pact-store/src/event.rs` 与 `key.rs` 删除，`lib.rs` 从模型 crate 原样 re-export（`Event`/`WireEvent`/`InstanceKey`/`Snapshot`/`apply_event`/`EVENT_SCHEMA_VERSION` 等）；`pact-store::snapshot` 只保留原子读写与版本校验。`pact-engine/src/views.rs` 改为 `pub use pact_views::*`，`pact_engine::views::*` 路径不变。
+- **错误边界**：`ModelError`（JSON/非法域名/非法实例名/不支持的 schema 版本）为纯模型错误；`StoreError` 保留全部既有变体并新增 `From<ModelError>` 一一映射；`EngineError` 新增 `From<ModelError>`（转 `Store`），调用方匹配路径不变。
+- **零格式变化**：`Event`/`Snapshot` 的 serde 属性逐字迁移，JSONL 与线上 JSON 字段、默认值、`skip_serializing_if` 均未改；磁盘布局、索引 schema、压缩水位均未改。
+- **测试**：事件/快照模型的原测试随类型迁入 `pact-store-model`；全仓 `cargo test --workspace` **166 项全绿**（与拆分前基线一致）；`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零警告；`cargo check --target wasm32-unknown-unknown -p pact-store-model -p pact-views` 通过。
+- **未执行**：`pact-wasm` 门面、JS 存储适配、`prepare/commit` 实现仍属 P2/P3；本轮不接线、不改 `docs/pact*` 母本。
+
 ## 2026-10-21（第 28 轮，阶段 6：CPN 编码生成 pact-cpn（D28））
 
 - **D28 新增**：`pact-cpn` 纯函数生成器 + CLI `pact cpn`；输出 CPN Tools XML（`generator format='6'`）；单实例作用域命名空间 `i_<instance>__`；颜色 `PACT_TOKEN = TokenId × Participant × ThingRef × PrecondRefs × Timestamp`、`PACT_ARCHIVE = PACT_TOKEN × Participant × Timestamp`、`PACT_COMPL = int`。

@@ -1,0 +1,13 @@
+[package]
+name = "pact-engine-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT 纯内核：实例会话、Rule-S/P/R/E 准备、Rule-T 终止判定、恢复与视图（无 IO / 无异步）"
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+pact-parser = { path = "../pact-parser" }
+pact-analysis = { path = "../pact-analysis" }
+pact-store-model = { path = "../pact-store-model" }
+pact-views = { path = "../pact-views" }

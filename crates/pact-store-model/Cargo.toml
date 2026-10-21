@@ -1,0 +1,11 @@
+[package]
+name = "pact-store-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PACT 事件与快照纯模型：无 IO，可与原生存储及 WASM 共用"
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

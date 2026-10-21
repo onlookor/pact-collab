@@ -13,7 +13,7 @@
 //!   恢复看到的都是「未截断（超集，安全）」或「已截断（需快照覆盖）」之一。
 
 use crate::error::StoreError;
-use crate::event::{to_wire_json, Event, WireEvent};
+use pact_store_model::{to_wire_json, Event, WireEvent, EVENT_SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -157,7 +157,7 @@ pub fn read_audit_path(data_dir: &Path, domain: &str, instance: &str) -> PathBuf
 }
 
 fn default_version() -> u32 {
-    crate::event::EVENT_SCHEMA_VERSION
+    EVENT_SCHEMA_VERSION
 }
 
 /// 压缩清单（旁路，`<instance>.logmeta.json`）：日志前缀压缩的水位与审计信息。
@@ -178,7 +178,7 @@ pub struct LogMeta {
 impl Default for LogMeta {
     fn default() -> Self {
         Self {
-            version: crate::event::EVENT_SCHEMA_VERSION,
+            version: EVENT_SCHEMA_VERSION,
             base_seq: 0,
             compacted_at: None,
         }
@@ -195,10 +195,10 @@ pub fn load_logmeta(path: &Path) -> Result<Option<LogMeta>, StoreError> {
             source: e,
         }),
         Ok(bytes) => match serde_json::from_slice::<LogMeta>(&bytes) {
-            Ok(m) if m.version > crate::event::EVENT_SCHEMA_VERSION => {
+            Ok(m) if m.version > EVENT_SCHEMA_VERSION => {
                 Err(StoreError::UnsupportedSchemaVersion {
                     found: m.version,
-                    supported: crate::event::EVENT_SCHEMA_VERSION,
+                    supported: EVENT_SCHEMA_VERSION,
                 })
             }
             Ok(m) => Ok(Some(m)),

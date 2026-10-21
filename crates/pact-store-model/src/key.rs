@@ -4,7 +4,7 @@
 //! `instance` 是 **Counter instance**（实现自由的运行实例划分）。
 //! 工程侧**禁用** `domain instance` 指运行实例。
 
-use crate::error::{validate_domain_name, validate_instance_name, StoreError};
+use crate::error::{validate_domain_name, validate_instance_name, ModelError};
 
 /// 实例键：同一域声明可并发承载多个 Counter 实例。
 ///
@@ -24,7 +24,7 @@ impl InstanceKey {
     }
 
     /// 两段各自校验（域名/实例名同谓词：非空、`[A-Za-z0-9_-]`、≤128）。
-    pub fn validate(&self) -> Result<(), StoreError> {
+    pub fn validate(&self) -> Result<(), ModelError> {
         validate_domain_name(&self.domain)?;
         validate_instance_name(&self.instance)
     }

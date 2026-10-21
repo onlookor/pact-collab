@@ -34,6 +34,10 @@
 | D26 | 分发产物归属（2026-10-19，用户裁决） | 本仓库 `dist/`：Dockerfile、systemd unit、musl 静态二进制打包脚本；不接入 CI 语义测试（同 D22） | 与源码同仓库保证版本一致；registry 推送、k8s 编排模板等外部细节不属本仓库 |
 | D27 | 域双键实例化与形式层裁定（2026-10-20，领域专家裁定 + 用户裁决） | **立项**：把「域」拆为**定义键 domain + 实例键 instance**，同一域声明可并发承载多个 Counter 实例；实现走**路径 β**（`pact-store`/索引显式 `(domain, instance)` 双列 + 引擎**声明注册表**，`declare` 与 `instantiate` 分离）。**论文母本 rev2 → rev3**（用户破例授权），5 处改动：§1.3 增列「**Counter instantiation and partitioning**」条款、§1.4.1 TokenId 作用域措辞、Rule-T 增补 scope note、§4.5 与 §B.2 增补 CPN 作用域、§1.8 及 §4.1–4.3 术语 `domain instance` → `domain declaration`——**零文法变化、零语义变化**（`diff` 已核，9 处增补/替换；G3 就地修订 §1.4.1 Rationale 追加 1 处，**累计 10 处**，见 `docs/design-change.md` 第 20 轮）。**术语登记**：定义键 = 论文 `domain declaration`；实例键 = 论文 `Counter instance`（§1.3 描述性短语，非正式原语）；**中文文档/注释用「域实例」指该实例键**（即论文 `Counter instance`，与论文已废弃的英文 `domain instance` 无关，亦不替代论文术语）。**细节定案（2026-10-20，用户裁决）**：存储布局 = **域子目录** `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `<domain>/<instance>.snapshot.json`、审计流 `<domain>/<instance>.read-audit.jsonl` 同目录）；默认实例名 = **`default`**（不指定实例段 ⇒ 落到 `default` 实例）；声明绑定 = **实例创建时快照声明**（`DomainLoaded` 携声明原文，后续 `declare` 覆盖**不影响已运行实例**，重放自封闭、确定性优先，与 NFR2「日志即完整审计」一致）。**派生细节定案（2026-10-20，用户裁决，阶段 10 实施前置）**：旧日志**不兼容**——双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`，顶层遗留单层文件启动恢复时 **fail-fast**（`StoreError::LegacyLayoutDetected`），须人工迁移；实例键以**路径段**承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` 等价 `default` 实例）；`DomainLoaded` **不新增 `instance` 字段**（实例由文件路径承载）；声明原文另存 `<data_dir>/<domain>/declaration.pact`（`declare` 时写入、`recover` 回填注册表）；**护栏**：`data_dir` 独占 flock（`<data_dir>/pactd.lock`）+ 非空实例（`last_seq > DomainLoaded.seq`）再加载默认拒绝（`DomainBusy`），须 `force`。**已实现（2026-10-20，阶段 10 路径 β，见 §11 阶段 10）** | 触发：两个并行项目共用同一域声明时，既有替换语义会销毁对方 Counter 与快照。专家裁定 Q1(a) 概念承认（以 §1.3 实现自由形式落地）、Q2(a) 术语消歧、Q3(a+c) 限定重述、Q4 保留「globally unique」但作用域收窄至该 Counter（实现以 ULID 加强为跨实例唯一）、Q5 确认**无任何论文级不变量依赖「一个域名至多一本 Counter」**、Q6 确认 CPN 编码需加单实例作用域、Q7 不新增正式术语。据 §1.3「Physical implementation of the Counter」，实例划分属**实现自由**，不触 §13 边界判据 (4)。评估与执行序、咨询简报与答复为**过程产物**，阶段 10 交付后已按用户指示移除（其结论已并入本条与 §11） |
 | D28 | CPN 编码生成器（2026-10-21，用户选定阶段 6） | 新增 `pact-cpn` + CLI `pact cpn <FILE> --out PATH [--instance I] [--bound T=N]…`；输出 CPN Tools XML（`format='6'`）；单实例作用域以实例名命名空间化；颜色 `PACT_TOKEN = TokenId × Participant × ThingRef × PrecondRefs × Timestamp`，Archive 另加 Participant × Timestamp；生产前驱 test arc、读自环、消费归档、种子无输入弧；GateExpr → NNF → DNF，`or` 展开多迁移、`not` 下推为 `count T <= k` 并以互补库所编码（须显式上界）；`not via` 显式拒绝；条件恒假保留迁移 `guard=false`；DNF 上限 1024、count 展开上限 1024；输出经 CPN DTD 校验 + XML 良构/结构测试，CPN Tools GUI 加载人工验收 | 论文 §4.5/§B 只对正片段直出，负条件需已知上界；上界由运行期并发决定、不可从声明推导，故必须由调用方显式提供并承担正确性。`or` 用 DNF 多迁移而非 guard 近似，保持结构等价；`not via` 是实例级依赖关系而非计数，无法用互补库所表达，宁失败不生成错模型。生成器零 IO、零运行时依赖，不进入引擎/存储路径 |
+| D29 | WASM 复用与纯类型层（2026-10-21，用户批准 P1） | 新增 `pact-store-model`（`Event`/`WireEvent`/`Snapshot`/`InstanceKey`/`ModelError`，无 IO）与 `pact-views`（查询/分析视图，无 tokio）；`pact-store`/`pact-engine` 通过 re-export 保持既有 API；磁盘格式与线上格式零变化 | 为 WASM 本地 spike 提供可编译到 `wasm32-unknown-unknown` 的共用模型层，事件 schema 与视图定义只保留一份，避免原生与 WASM 漂移。拆分边界：model 仅 `core + serde + serde_json`；views 为 `core + analysis + serde` |
+| D30 | WASM 门面 crate（2026-10-21，用户批准 P2） | 新增 `pact-wasm`（`cdylib + rlib`）：可原生测试的 `PactHost` + 仅 wasm32 启用的 `wasm-bindgen` 包装；v0 导出 `new`/`load_domain`/`validate`/`analyze`/`compose`/`list_domains`，JSON 字符串 ABI；新增 `wasm-release` 体积优先 profile；暂不接 CI、分发与持久化 | 以最小门面验证 wasm-bindgen 导出、体积与静态分析对账；宿主核心与 wasm 包装分离，使原生测试无需 wasm 运行时。S0 不承担事件写入与存储适配（P3/P4），浏览器绑定与 OPFS 仍按 Q6 暂不做。**P3/S1 增补（2026-10-21）**：`PactHost` 增 `(domain, instance)` 会话表（每实例独立声明快照、事件序列、`last_seq`/`next_seq`、Rule-E 幂等表、`terminated`）与 `prepare_seed/produce/consume → commit/abort` 两阶段提交（prepare 分配 seq、abort 回收以保持日志连续；commit 应用状态并按原生顺序产出 Rule-T `Terminated`）；新增 `read`/`counter`/`archive`/`gates`/`enabled`/`status`、`export_events`（JSONL）、`export_snapshot`、`restore`（复刻 `recover_instance`）；ABI 升至 `pact-wasm/0.2`，错误码与原生接口层同名。固定 ID/ts 金标语料与原生日志逐行相等，JSONL 双向互通。**P4/S2 增补（2026-10-21）**：新增 Node 宿主适配层 `crates/pact-wasm/js/`（`FileStore` + `PactHost` + demo + `node:test`）：日志追加 `fsync`、末尾半行按字节截断修复、快照 tmp+rename+目录 `fsync`、`.lock` O_EXCL 单写者（含陈旧 pid 回收）；写路径 `prepare → append+fsync → commit`（失败 abort），打开优先日志/快照恢复；原生与 WASM 可交替打开同一日志 |
+| D31 | WASM 本地分发形态条件立项（2026-10-21，P6 裁决 A） | 把 WASM 本地运行登记为**实验性可选分发形态**（Node/桌面宿主），权威仍是原生引擎；`pactd`、NFR4 单静态二进制与 FR18 生产分发承诺不变。ABI 固定 `pact-wasm/0.x` + JSON 字符串，`abi_version` 为探测入口，破坏性变更须升版并记入本变更文档。稳定化前置：Q7 CI → 金标扩面（多实例/组合域/条件分支/压缩恢复）→ 抽取 `pact-engine-kernel` → 宿主边界安全审视。不纳入：浏览器 OPFS/SharedWorker、多用户 ACL/审计、DSH `govern`、NFR6 v2 | P0–P4 证据表明语义与持久化行为可与原生对账（事件逐行相等、日志双向互通、崩溃恢复与单写者测试通过）；但双实现重叠约 300 行、金标覆盖窄，若长期保留必须用 CI 与 kernel 抽取防漂移。选项 B 会让 wasm target/bindgen 随工具链腐烂，选项 C 无需求证据且引入浏览器弱持久化与 v2 安全面，故取条件立项。详见 `docs/wasm-local-spike-feasibility.md` §11 |
+| D32 | 抽取 `pact-engine-kernel`（2026-10-21，用户选定） | 新增纯内核 crate `pact-engine-kernel`（仅依赖 `pact-core`/`pact-parser`/`pact-analysis`/`pact-store-model`/`pact-views`，无 IO、无 tokio）：`Session` 统一持有 `declaration`/`domain`/`state`/`last_seq`/`next_seq`/`dl_seq`/`terminated`/`consumed_requests`，并提供 `fresh`、`recover`（锚点/快照/幂等表/终止态）、`prepare_seed`/`prepare_produce`/`prepare_consume`/`read`、`mark_prepared`/`abort_prepared`、`commit`/`record_terminated`、视图与 `snapshot`/`summary`，以及 `analysis_report`；`KernelError` 由调用方映射为各自错误类型。原生 `InstanceSession` 与 WASM `InstanceSession` 改为通过 `Deref` 嵌入同一 `Session`，各自仅保留自有字段（原生：`events_since_snapshot`/`notify`；WASM：`events`）。行为契约不变：DomainLoaded seq 从 1 起、失败命令仍推进时钟、Rule-T 终止 `seq = last_seq + 1`、压缩水位 `base_seq`、幂等表跨快照恢复 | P3 已量化双实现在 seq 分配、幂等表、Rule-T 终止、恢复锚点四处重复，长期保留会漂移（R1）。抽取把“语义会话”与“IO/actor/宿主编排”分离：内核保持纯函数式状态机，原生与 WASM 仅在错误映射、持久化时机与通知/审计等外围不同。`ConsumePreparation::Prepared` 以 `Box` 承载完整事件以控制枚举尺寸 |
 
 ## 1. 总体结构
 
@@ -45,8 +49,12 @@ crates/
   pact-parser    # .pact 域声明文法解析 -> pact_core::Domain（含良构校验）
   pact-analysis  # 六项静态分析（论文 Appendix A.1–A.6；依赖 pact-core + petgraph）
   pact-compose   # 片段并行组合 + 四条件一致性检查（论文 §1.8）
+  pact-store-model # 事件/快照/实例键纯模型（无 IO；原生存储与 WASM 共用，D29）
   pact-store     # 事件溯源：JSONL 追加日志、快照、turso 派生索引、重放
-  pact-engine    # 引擎 actor：命令处理、订阅总线、Rule-T 检测、多域/多域实例会话
+  pact-views     # 查询/分析视图纯类型（无 IO/tokio；原生引擎与 WASM 共用，D29）
+  pact-engine-kernel # 实例会话语义纯内核（无 IO/tokio，D32）：Rule-S/P/R/E 准备、Rule-T 终止、恢复、视图；原生引擎与 WASM 共用
+  pact-engine    # 引擎 actor：命令处理、订阅总线、Rule-T 检测、多域/多域实例会话；状态语义委托 kernel
+  pact-wasm      # WASM 本地分发形态（实验性，D30/D31）：内存会话 + 两阶段提交 + 导出/恢复 + wasm-bindgen 导出 + Node 宿主适配层；未接 CI/生产分发
   pact-mcp       # MCP server（rmcp 实现），工具经 pact-http client 映射到引擎命令
   pact-http      # axum REST + SSE，路由映射到引擎命令；含类型化 client 与 pactd bin（裸 daemon）
   pact-cli       # clap 命令行（daemon 控制 + 领域操作 + 离线分析），单二进制 `pact`
@@ -58,8 +66,11 @@ crates/
 
 ```
 parser / analysis / compose ──> core
-store ──> core
-engine ──> core, store
+store-model ──> core
+store ──> core, store-model
+views ──> core, analysis
+engine ──> core, store, views
+wasm ──> core, parser, analysis, compose, store-model, views（不依赖 store/engine/tokio）
 http ──> engine
 mcp ──> http（client，经 REST 接入 daemon）
 cli ──> http（在线命令经 client；daemon start 复用其运行时）
@@ -436,6 +447,8 @@ Rule-E 的请求体只带参与者，并可选一个幂等键：
 
 ### 7.1 事件类型（真相源）
 
+事件、线上封装（`WireEvent`）与 `apply_event` 定义在纯模型 crate `pact-store-model`（D29），`pact-store` 原样 re-export；原生存储与 WASM 门面共用该定义。
+
 ```rust
 pub enum Event {
     DomainLoaded { name: String, declaration: String }, // 原文存档，可复现解析
@@ -464,6 +477,8 @@ JSONL：**每域实例**一个 `<domain>/<instance>.events.jsonl`，逐行 JSON 
   index.tursodb                    # 全部实例共用：events 与 tokens 的查询索引（(domain, instance) 双列）
   pactd.lock                       # data_dir 独占 flock（单写者护栏，D27）
 ```
+
+快照数据结构 `Snapshot` 定义在 `pact-store-model`（D29）；`pact-store::snapshot` 只保留原子读写、损坏兜底与版本 fail-fast。
 
 ### 7.3 IndexStore trait（D13 隔离层）
 
@@ -524,6 +539,8 @@ CREATE INDEX idx_tokens_domain_type ON tokens(domain, type, status);
 **固有取舍（须记入文档）**：压缩后被丢弃前缀不再可查——审计视图退化为「快照 + 保留尾部事件」，`events` 索引行被裁剪（`tokens` 投影行保留）。压缩是**运维显式动作**，不做自动周期性轮转（v1）。
 
 ## 8. pact-engine：引擎 actor（阶段 3）
+
+查询/分析视图类型（`CounterView`、`ArchiveView`、`StatusView`、`GateClause`、`DomainSummary`、`DomainListing`、`CompactionOutcome`、`AnalysisReport`）定义在纯 crate `pact-views`（D29），`pact_engine::views` 原样 re-export。
 
 ### 8.1 执行模型
 
@@ -738,6 +755,7 @@ daemon 在域端点之外暴露三个**免令牌**运维端点（仅本地/内�
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
 | 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程 | 阶段 4/5 的 e2e 测试 |
+| WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试 | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |
 
 ## 11. 实现阶段
 
@@ -838,3 +856,35 @@ PACT_COMPL   = int          // 互补库所只承载计数不变量
 - 测试：结构计数（库所/迁移/弧/互补/禁用的迁移）、test arc、互补初值与不变量、guard 形状、单实例命名空间、错误路径；CLI e2e 覆盖成功/缺上界/JSON 输出。
 - 额外人工校验：`examples/domains/*.pact` 生成物以 `xmllint --dtdvalid` 对照 CPN DTD 全部通过；CPN Tools GUI 内的加载/状态空间实验为人工验收项（沙箱无 GUI）。
 - 已知限制：TokenId 生成器依赖 CPN ML `ref` 副作用，状态空间工具可能将其视为非纯表达式；上界由用户保证；不编码跨实例协同。
+
+## 16. WASM 本地分发形态（实验性，D31）
+
+### 16.1 定位与权威边界
+
+- `pact-wasm` 是 `pactd` 之外的**可选本地分发形态**，嵌入 Node/桌面宿主进程；**原生 daemon 仍是 Counter 的唯一权威**，两者不并存于同一实例（同一实例由宿主 lockfile 单写者约束）。
+- NFR4 的单一静态二进制与 FR18 的 `dist/` 分发产物不变；WASM 不替代 `pactd`、不提供 MCP/HTTP 服务、不承担多用户与远端接入。
+- 安全边界为**本地单用户**：WASM 内核不做身份认证、ACL 与读审计；这些能力只在原生 daemon（FR17）。宿主不得把 WASM 形态暴露为多用户服务。
+
+### 16.2 组件与宿主职责
+
+| 层 | 责任 | 已交付 |
+|---|---|---|
+| `pact-engine-kernel`（Rust，纯） | 实例会话语义：声明快照、Counter 状态、seq 分配、Rule-S/P/R/E 准备、Rule-T 终止判定、Rule-E 幂等表、恢复锚点、查询视图；无 IO/tokio | D32 |
+| `pact-wasm`（Rust，wasm32） | 声明注册表、`(domain, instance)` 会话（嵌入 kernel `Session`）、两阶段提交、JSONL/快照导出与 `restore`、ABI 包装 | S2 |
+| JS 宿主适配层（`crates/pact-wasm/js/`） | JSONL 追加 + fsync、末尾半行截断、快照 tmp+rename+目录 fsync、`.lock` 单写者、日志优先恢复、`prepare → append → commit` 编排 | S2（Node） |
+| 原生 `pact-store` / `pact-engine` | 真相源布局、事件 schema、快照结构、索引、压缩、ACL/审计；`pact-engine` 会话同样嵌入 kernel `Session` | 不变 |
+
+- 磁盘布局 `<root>/<domain>/<instance>.{events.jsonl,snapshot.json,lock}` 与原生 `<data_dir>/<domain>/<instance>.*` 同构，原生 daemon 与 WASM 宿主已验证可**交替打开同一日志**。
+- 宿主 lockfile 是**进程级近似**单写者，不等价于原生 `flock`；不承诺多进程/多 tab 的内核级互斥。
+
+### 16.3 ABI 与写协议
+
+- ABI 为 `pact-wasm/0.x`，全部方法以 JSON 字符串收发；`abi_version` 为版本探测入口。破坏性变更须提升版本号并记入 `docs/design-change.md`。
+- 唯一写路径为 `prepare_* → 宿主持久化（append + fsync）→ commit`；持久化失败调用 `abort` 回收未占用 seq，保证日志 seq 连续（原生 `Store` 的 `seq == last+1` 校验可直接接受该日志）。
+- `commit` 返回的 Rule-T `Terminated` 事件由宿主按原生顺序追加；该追加为派生动作，失败不回滚已提交状态（与 D23 一致）。
+- `token_id` 与 `ts` 由宿主注入（ULID/ISO-8601），内核不读系统时钟、不依赖 `getrandom`，保证与原生金标逐行对账可复现。
+
+### 16.4 稳定化前置与不纳入项
+
+- 去除“实验性”标记前须完成：Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）→ 金标扩面（多实例、组合域、条件分支、压缩后恢复）→ 抽取 `pact-engine-kernel` 消除双实现 → 宿主边界安全审视。前三项**已完成（2026-10-21）**；仅剩推送/发布前的宿主边界安全审视。
+- 不纳入：浏览器 OPFS/SharedWorker（Q6）、多用户 ACL/读审计、turso 索引与压缩、DSH `govern`（Q5）、NFR6 v2 远端模式。触发条件见 `docs/wasm-local-spike-feasibility.md` §11.2。

@@ -1,5 +1,6 @@
 //! pact-store 错误类型。
 
+use pact_store_model::ModelError;
 use std::path::PathBuf;
 
 #[derive(Debug)]
@@ -129,33 +130,27 @@ impl From<serde_json::Error> for StoreError {
     }
 }
 
-/// 键名公共谓词：非空、仅 [A-Za-z0-9_-]、长度 ≤ 128（天然禁 `..` 与分隔符注入）。
-fn valid_key_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 128
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+/// 纯模型错误 → 存储错误：变体一一对应，调用方仍可匹配既有 `StoreError`。
+impl From<ModelError> for StoreError {
+    fn from(e: ModelError) -> Self {
+        match e {
+            ModelError::Json { context, source } => StoreError::Json { context, source },
+            ModelError::InvalidDomainName { name } => StoreError::InvalidDomainName { name },
+            ModelError::InvalidInstanceName { name } => StoreError::InvalidInstanceName { name },
+            ModelError::UnsupportedSchemaVersion { found, supported } => {
+                StoreError::UnsupportedSchemaVersion { found, supported }
+            }
+        }
+    }
 }
 
 /// 域名校验：防路径穿越 / 保留名（store 域名直接映射为目录名）。
 /// 规则：非空，仅 [A-Za-z0-9_-]，长度 ≤ 128。
 pub fn validate_domain_name(name: &str) -> Result<(), StoreError> {
-    if valid_key_name(name) {
-        Ok(())
-    } else {
-        Err(StoreError::InvalidDomainName {
-            name: name.to_owned(),
-        })
-    }
+    pact_store_model::validate_domain_name(name).map_err(Into::into)
 }
 
 /// 实例名校验（与域名同谓词；store 实例名直接映射为文件名）。
 pub fn validate_instance_name(name: &str) -> Result<(), StoreError> {
-    if valid_key_name(name) {
-        Ok(())
-    } else {
-        Err(StoreError::InvalidInstanceName {
-            name: name.to_owned(),
-        })
-    }
+    pact_store_model::validate_instance_name(name).map_err(Into::into)
 }

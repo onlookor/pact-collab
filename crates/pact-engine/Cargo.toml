@@ -10,7 +10,9 @@ pact-core = { path = "../pact-core" }
 pact-parser = { path = "../pact-parser" }
 pact-analysis = { path = "../pact-analysis" }
 pact-compose = { path = "../pact-compose" }
+pact-engine-kernel = { path = "../pact-engine-kernel" }
 pact-store = { path = "../pact-store" }
+pact-views = { path = "../pact-views" }
 serde = { workspace = true }
 tokio = { workspace = true }
 ulid = { workspace = true }

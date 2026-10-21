@@ -37,3 +37,49 @@ jobs:
 
       - name: 全量测试
         run: cargo test --workspace --locked
+
+  wasm:
+    name: wasm32 构建 / ABI 与体积门禁 / Node 冒烟
+    runs-on: ubuntu-latest
+    env:
+      WASM_BINDGEN_VERSION: 0.2.127
+      PACT_WASM_PKG: ${{ runner.temp }}/pact-wasm-pkg
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链（stable + wasm32-unknown-unknown）
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: 依赖缓存
+        uses: Swatinem/rust-cache@v2
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 缓存 wasm-bindgen CLI
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-${{ env.WASM_BINDGEN_VERSION }}
+
+      - name: 安装 wasm-bindgen CLI（版本须与 wasm-bindgen crate 一致）
+        run: command -v wasm-bindgen >/dev/null || cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked
+
+      - name: wasm32 目标 Lint（clippy，警告即失败；仅 lib，不拉入原生 dev-deps）
+        run: cargo clippy -p pact-wasm --target wasm32-unknown-unknown --locked -- -D warnings
+
+      - name: 构建 wasm32 release 产物
+        run: cargo build --locked -p pact-wasm --target wasm32-unknown-unknown --profile wasm-release
+
+      - name: 生成 Node 绑定
+        run: wasm-bindgen --target nodejs --out-dir "$PACT_WASM_PKG" target/wasm32-unknown-unknown/wasm-release/pact_wasm.wasm
+
+      - name: ABI / 语义 / 体积门禁
+        run: node crates/pact-wasm/js/ci-smoke.js
+
+      - name: Node 持久化测试
+        run: node --test crates/pact-wasm/js/test/*.test.js
