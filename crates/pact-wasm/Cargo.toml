@@ -3,7 +3,7 @@ name = "pact-wasm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "PACT WASM 本地分发形态（实验性）：无 IO 语义层 + 内存引擎 + JS 宿主存储"
+description = "PACT WASM 本地分发形态（受支持）：无 IO 语义层 + 内存引擎 + JS 宿主存储"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

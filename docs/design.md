@@ -38,6 +38,7 @@
 | D30 | WASM 门面 crate（2026-10-21，用户批准 P2） | 新增 `pact-wasm`（`cdylib + rlib`）：可原生测试的 `PactHost` + 仅 wasm32 启用的 `wasm-bindgen` 包装；v0 导出 `new`/`load_domain`/`validate`/`analyze`/`compose`/`list_domains`，JSON 字符串 ABI；新增 `wasm-release` 体积优先 profile；暂不接 CI、分发与持久化 | 以最小门面验证 wasm-bindgen 导出、体积与静态分析对账；宿主核心与 wasm 包装分离，使原生测试无需 wasm 运行时。S0 不承担事件写入与存储适配（P3/P4），浏览器绑定与 OPFS 仍按 Q6 暂不做。**P3/S1 增补（2026-10-21）**：`PactHost` 增 `(domain, instance)` 会话表（每实例独立声明快照、事件序列、`last_seq`/`next_seq`、Rule-E 幂等表、`terminated`）与 `prepare_seed/produce/consume → commit/abort` 两阶段提交（prepare 分配 seq、abort 回收以保持日志连续；commit 应用状态并按原生顺序产出 Rule-T `Terminated`）；新增 `read`/`counter`/`archive`/`gates`/`enabled`/`status`、`export_events`（JSONL）、`export_snapshot`、`restore`（复刻 `recover_instance`）；ABI 升至 `pact-wasm/0.2`，错误码与原生接口层同名。固定 ID/ts 金标语料与原生日志逐行相等，JSONL 双向互通。**P4/S2 增补（2026-10-21）**：新增 Node 宿主适配层 `crates/pact-wasm/js/`（`FileStore` + `PactHost` + demo + `node:test`）：日志追加 `fsync`、末尾半行按字节截断修复、快照 tmp+rename+目录 `fsync`、`.lock` O_EXCL 单写者（含陈旧 pid 回收）；写路径 `prepare → append+fsync → commit`（失败 abort），打开优先日志/快照恢复；原生与 WASM 可交替打开同一日志 |
 | D31 | WASM 本地分发形态条件立项（2026-10-21，P6 裁决 A） | 把 WASM 本地运行登记为**实验性可选分发形态**（Node/桌面宿主），权威仍是原生引擎；`pactd`、NFR4 单静态二进制与 FR18 生产分发承诺不变。ABI 固定 `pact-wasm/0.x` + JSON 字符串，`abi_version` 为探测入口，破坏性变更须升版并记入本变更文档。稳定化前置：Q7 CI → 金标扩面（多实例/组合域/条件分支/压缩恢复）→ 抽取 `pact-engine-kernel` → 宿主边界安全审视。不纳入：浏览器 OPFS/SharedWorker、多用户 ACL/审计、DSH `govern`、NFR6 v2 | P0–P4 证据表明语义与持久化行为可与原生对账（事件逐行相等、日志双向互通、崩溃恢复与单写者测试通过）；但双实现重叠约 300 行、金标覆盖窄，若长期保留必须用 CI 与 kernel 抽取防漂移。选项 B 会让 wasm target/bindgen 随工具链腐烂，选项 C 无需求证据且引入浏览器弱持久化与 v2 安全面，故取条件立项。详见 `docs/wasm-local-spike-feasibility.md` §11 |
 | D32 | 抽取 `pact-engine-kernel`（2026-10-21，用户选定） | 新增纯内核 crate `pact-engine-kernel`（仅依赖 `pact-core`/`pact-parser`/`pact-analysis`/`pact-store-model`/`pact-views`，无 IO、无 tokio）：`Session` 统一持有 `declaration`/`domain`/`state`/`last_seq`/`next_seq`/`dl_seq`/`terminated`/`consumed_requests`，并提供 `fresh`、`recover`（锚点/快照/幂等表/终止态）、`prepare_seed`/`prepare_produce`/`prepare_consume`/`read`、`mark_prepared`/`abort_prepared`、`commit`/`record_terminated`、视图与 `snapshot`/`summary`，以及 `analysis_report`；`KernelError` 由调用方映射为各自错误类型。原生 `InstanceSession` 与 WASM `InstanceSession` 改为通过 `Deref` 嵌入同一 `Session`，各自仅保留自有字段（原生：`events_since_snapshot`/`notify`；WASM：`events`）。行为契约不变：DomainLoaded seq 从 1 起、失败命令仍推进时钟、Rule-T 终止 `seq = last_seq + 1`、压缩水位 `base_seq`、幂等表跨快照恢复 | P3 已量化双实现在 seq 分配、幂等表、Rule-T 终止、恢复锚点四处重复，长期保留会漂移（R1）。抽取把“语义会话”与“IO/actor/宿主编排”分离：内核保持纯函数式状态机，原生与 WASM 仅在错误映射、持久化时机与通知/审计等外围不同。`ConsumePreparation::Prepared` 以 `Box` 承载完整事件以控制枚举尺寸 |
+| D33 | 去除 WASM “实验性”标记（2026-10-21，用户裁决） | `pact-wasm` 由“实验性可选分发形态”转为**受支持的本地分发形态**：稳定化前置 (1) Q7 CI、(2) 金标扩面、(3) `pact-engine-kernel` 抽取、(4) 宿主边界安全审视均已完成。定位与边界不变：权威仍是原生 daemon；仅 Node/桌面本地单用户嵌入；不提供 MCP/HTTP、ACL/审计、浏览器 OPFS/SharedWorker、DSH `govern` 与 NFR6 v2；不进入 `dist/` 产物集，不替代 `pactd`。ABI 仍为 `pact-wasm/0.x` + JSON 字符串，破坏性变更照旧升版记录 | 四项稳定化验收全部完成且 CI 持续约束（wasm32 构建/clippy、Node 冒烟、体积/ABI 断言、7 项金标对账）；继续保留“实验性”会与实际维护承诺不符。去除标记不扩大能力范围，只确认既有 Node/桌面形态可被依赖 |
 
 ## 1. 总体结构
 
@@ -54,7 +55,7 @@ crates/
   pact-views     # 查询/分析视图纯类型（无 IO/tokio；原生引擎与 WASM 共用，D29）
   pact-engine-kernel # 实例会话语义纯内核（无 IO/tokio，D32）：Rule-S/P/R/E 准备、Rule-T 终止、恢复、视图；原生引擎与 WASM 共用
   pact-engine    # 引擎 actor：命令处理、订阅总线、Rule-T 检测、多域/多域实例会话；状态语义委托 kernel
-  pact-wasm      # WASM 本地分发形态（实验性，D30/D31）：内存会话 + 两阶段提交 + 导出/恢复 + wasm-bindgen 导出 + Node 宿主适配层；未接 CI/生产分发
+  pact-wasm      # WASM 本地分发形态（受支持，D30/D31/D33）：内存会话 + 两阶段提交 + 导出/恢复 + wasm-bindgen 导出 + Node 宿主适配层；wasm CI 门禁，非 dist/ 产物
   pact-mcp       # MCP server（rmcp 实现），工具经 pact-http client 映射到引擎命令
   pact-http      # axum REST + SSE，路由映射到引擎命令；含类型化 client 与 pactd bin（裸 daemon）
   pact-cli       # clap 命令行（daemon 控制 + 领域操作 + 离线分析），单二进制 `pact`
@@ -857,12 +858,13 @@ PACT_COMPL   = int          // 互补库所只承载计数不变量
 - 额外人工校验：`examples/domains/*.pact` 生成物以 `xmllint --dtdvalid` 对照 CPN DTD 全部通过；CPN Tools GUI 内的加载/状态空间实验为人工验收项（沙箱无 GUI）。
 - 已知限制：TokenId 生成器依赖 CPN ML `ref` 副作用，状态空间工具可能将其视为非纯表达式；上界由用户保证；不编码跨实例协同。
 
-## 16. WASM 本地分发形态（实验性，D31）
+## 16. WASM 本地分发形态（D31/D33）
 
 ### 16.1 定位与权威边界
 
-- `pact-wasm` 是 `pactd` 之外的**可选本地分发形态**，嵌入 Node/桌面宿主进程；**原生 daemon 仍是 Counter 的唯一权威**，两者不并存于同一实例（同一实例由宿主 lockfile 单写者约束）。
-- NFR4 的单一静态二进制与 FR18 的 `dist/` 分发产物不变；WASM 不替代 `pactd`、不提供 MCP/HTTP 服务、不承担多用户与远端接入。
+- `pact-wasm` 是 `pactd` 之外的**受支持本地分发形态**，嵌入 Node/桌面宿主进程；**原生 daemon 仍是 Counter 的唯一权威**，两者不并存于同一实例（同一实例由宿主 lockfile 单写者约束）。
+- 2026-10-21（D33）起去除“实验性”标记：四项稳定化验收（Q7 CI、金标扩面、kernel 抽取、宿主边界安全审视）均已通过，WASM 形态可被 Node/桌面宿主依赖；该项变更不扩大能力范围。
+- NFR4 的单一静态二进制与 FR18 的 `dist/` 分发产物不变；WASM 不替代 `pactd`、不提供 MCP/HTTP 服务、不承担多用户与远端接入，也不进入 `dist/`。
 - 安全边界为**本地单用户**：WASM 内核不做身份认证、ACL 与读审计；这些能力只在原生 daemon（FR17）。宿主不得把 WASM 形态暴露为多用户服务。
 
 ### 16.2 组件与宿主职责
@@ -884,7 +886,8 @@ PACT_COMPL   = int          // 互补库所只承载计数不变量
 - `commit` 返回的 Rule-T `Terminated` 事件由宿主按原生顺序追加；该追加为派生动作，失败不回滚已提交状态（与 D23 一致）。
 - `token_id` 与 `ts` 由宿主注入（ULID/ISO-8601），内核不读系统时钟、不依赖 `getrandom`，保证与原生金标逐行对账可复现。
 
-### 16.4 稳定化前置与不纳入项
+### 16.4 稳定化验收与不纳入项
 
-- 去除“实验性”标记前须完成：Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）→ 金标扩面（多实例、组合域、条件分支、压缩后恢复）→ 抽取 `pact-engine-kernel` 消除双实现 → 宿主边界安全审视。前三项**已完成（2026-10-21）**；仅剩推送/发布前的宿主边界安全审视。
-- 不纳入：浏览器 OPFS/SharedWorker（Q6）、多用户 ACL/读审计、turso 索引与压缩、DSH `govern`（Q5）、NFR6 v2 远端模式。触发条件见 `docs/wasm-local-spike-feasibility.md` §11.2。
+- 稳定化验收（**全部完成，2026-10-21**）：Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）→ 金标扩面（多实例、组合域、条件分支、压缩后恢复）→ 抽取 `pact-engine-kernel` 消除双实现 → 宿主边界安全审视。四项通过后按 D33 去除“实验性”标记。
+- 维护约束：`wasm` CI job 持续执行 wasm32 clippy/build、bindgen、`ci-smoke` 与 Node 7 项测试；任何语义改动必须同时通过原生与 WASM 金标对账。
+- 不纳入：浏览器 OPFS/SharedWorker（Q6；兼容性评估已完成，未实现）、多用户 ACL/读审计、turso 索引与压缩、DSH `govern`（Q5）、NFR6 v2 远端模式。触发条件见 `docs/wasm-local-spike-feasibility.md` §11.2。

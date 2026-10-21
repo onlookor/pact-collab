@@ -1,5 +1,18 @@
 # 设计变更记录
 
+## 2026-10-21（第 37 轮，D33：去除 WASM “实验性”标记，转为受支持本地分发形态）
+
+- **触发**：FR21 稳定化验收 (1) Q7 CI、(2) 金标扩面、(3) `pact-engine-kernel` 抽取、(4) 宿主边界安全审视全部完成；用户裁决去除“实验性”标记。
+- **决策 D33**：`pact-wasm` 由“实验性可选分发形态”转为**受支持本地分发形态**。定位与边界不变：权威仍是原生 daemon；仅 Node/桌面本地单用户嵌入；不提供 MCP/HTTP、ACL/审计、浏览器 OPFS/SharedWorker、DSH `govern` 与 NFR6 v2；不进入 `dist/` 产物集，不替代 `pactd`。
+- **文档同步**：
+  - `design.md` 新增 D33；crate 清单与 §16 标题/16.1/16.4 去除“实验性”，并登记稳定化验收完成与维护约束（wasm CI 持续执行、语义改动须通过原生/WASM 金标对账）。
+  - `requirements.md` FR21 改为“已稳定（D33）”，保留四项验收与能力边界；§6 范围外表述同步。
+  - `architecture.md` §1 改为“受支持（D31/D33）”。
+  - `wasm-local-spike-feasibility.md` 状态、§10、§11.2–11.4 同步。
+  - `crates/pact-wasm/Cargo.toml` description 去除“实验性”。
+- **不变**：ABI `pact-wasm/0.2`、事件 schema、磁盘布局、依赖方向、错误码、CI 门禁与 `dist/` 产物。
+- **验证**：仅文档/描述变更，无代码行为变化；`cargo check -p pact-wasm` 通过。
+
 ## 2026-10-21（第 36 轮，D32：抽取 `pact-engine-kernel`，原生与 WASM 共用实例会话语义）
 
 - **新增纯内核 crate `pact-engine-kernel`**（无 IO、无 tokio；依赖 `pact-core`/`pact-parser`/`pact-analysis`/`pact-store-model`/`pact-views`）：

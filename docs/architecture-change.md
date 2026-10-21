@@ -1,5 +1,12 @@
 # 架构变更记录
 
+## 2026-10-21（第 22 轮，D33：WASM 本地分发形态去除“实验性”标记）
+
+- **组件状态**：`pact-wasm` 由“实验性本地分发形态”转为**受支持的本地分发形态**（D33）。组件职责、依赖边与运行边界不变：仍是进程内、本地单用户、Node/桌面嵌入；权威仍是原生 daemon。
+- **边界不变**：不提供 MCP/HTTP、ACL/审计、浏览器 OPFS/SharedWorker、DSH `govern` 与 NFR6 v2；不进入 `dist/` 产物集，不替代 `pactd`。
+- **一致性保障**：`pact-engine-kernel` 共用 `Session`（D32）；wasm CI job 持续执行 wasm32 clippy/build、bindgen、`ci-smoke` 与 Node 7 项测试；语义改动须同时通过原生与 WASM 金标对账。
+- **未变**：crate 拓扑、依赖方向、部署拓扑、事件/快照格式与 `dist/` 产物。
+
 ## 2026-10-21（第 21 轮，D32：新增 `pact-engine-kernel`，原生与 WASM 共用实例会话语义）
 
 - **新增组件**：`pact-engine-kernel`（纯 crate，无 IO/async）承载**实例会话语义**——声明快照、Counter 状态、seq 分配、Rule-S/P/R/E 准备、Rule-T 终止判定、Rule-E 幂等表、恢复锚点与查询视图。它是语义层与编排层之间的共用内核，不持有存储、网络、时钟或通知能力。
