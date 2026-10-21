@@ -1,0 +1,13 @@
+[package]
+name = "pact-cpn"
+description = "PACT 域声明到 CPN Tools 彩色 Petri 网的编码生成（论文 §4.5 / 附录 B）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+pact-core = { path = "../pact-core" }
+serde = { workspace = true }
+
+[dev-dependencies]
+pact-parser = { path = "../pact-parser" }

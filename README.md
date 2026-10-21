@@ -106,6 +106,7 @@ pact status --domain proj
 | §3.1 Declaration grammar | `crates/pact-parser` |
 | Appendix A Static analyses (A.1–A.6) | `crates/pact-analysis` |
 | A.5 / Appendix D report ordering | `crates/pact-engine/src/engine.rs` |
+| §4.5 / Appendix B CPN encoding (single-instance scope) | `crates/pact-cpn` (offline `pact cpn`) |
 
 ## Project layout
 
@@ -119,7 +120,8 @@ pact status --domain proj
 | `pact-engine` | Session runtime, notifications, deterministic clock/id |
 | `pact-http` | Axum REST daemon (unix socket / TCP + bearer, SSE) and typed client |
 | `pact-mcp` | MCP stdio server (15 `pact_*` tools, backed by REST) |
-| `pact-cli` | Single `pact` binary: daemon control, online operations, offline validate/analyze/compose/replay |
+| `pact-cpn` | CPN Tools XML encoding of a declaration (positive fragment + complementary places; offline, no I/O) |
+| `pact-cli` | Single `pact` binary: daemon control, online operations, offline validate/analyze/compose/replay/cpn |
 
 ## Testing
 
@@ -127,13 +129,14 @@ pact status --domain proj
 cargo test --workspace
 ```
 
-100+ tests across the workspace, covering:
+166 tests across the workspace, covering:
 
 - **Golden traces** for the paper's four example domains — the software lifecycle above, a healthcare pathway (fan-in preconditions, `via` provenance), a ReAct loop (cyclic topology), and a discriminating deadlock scenario.
 - **Property-based tests** — declaration round-trip identity and execution invariants (512 cases each).
 - **Unit tests** per crate, including well-formedness rejections (duplicate LHS, empty LHS, zero/leading-zero count literals) and all three enforcement layers of source-production legality.
 - **End-to-end over all three interfaces** — HTTP daemon full lifecycle (error mapping, SSE, compose/unload), CLI against a real subprocess daemon, MCP stdio with all 15 tools.
 - **Unattended multi-agent scenarios** — real `pact-mcp` subprocesses autonomously driving domains to `Terminated` with zero human intervention: a ReAct loop and five concurrent workers on the lifecycle domain.
+- **CPN encoding** — structural assertions for test arcs, complementary places, DNF expansion, instance namespacing, and error paths; generated models validate against the CPN DTD.
 
 CI runs `cargo fmt --check`, `cargo clippy -D warnings`, and the full test suite on every push and pull request.
 

@@ -11,6 +11,7 @@ members = [
     "crates/pact-cli",
     "crates/pact-mcp",
     "crates/pact-runtime",
+    "crates/pact-cpn",
 ]
 
 [workspace.package]

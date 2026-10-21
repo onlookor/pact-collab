@@ -1,5 +1,17 @@
 # 需求变更记录
 
+## 2026-10-21（第 17 轮，阶段 6 CPN 编码生成转正式范围）
+
+- **触发**：阶段 1–5、7–10 均已完成；用户在剩余候选（阶段 6 CPN / NFR6 v2 联网演进 / 加固收尾）中选定**阶段 6 pact-cpn**，将其从「范围外/可选」转为正式交付。
+- **新增 FR20 CPN 编码生成**：新 crate `pact-cpn` + CLI 离线命令 `pact cpn <FILE> --out PATH [--instance I] [--bound T=N]…`；只依赖 `pact-core`，不进入 daemon/存储/引擎/运行时路径。
+  - 单实例作用域（G1/D27）：一次生成只编码一个 `Counter instance`，库所/迁移以 `i_<instance>__` 命名空间化，不跨实例共享。
+  - 结构映射：每类型库所 + Archive；`PACT_TOKEN = TokenId × Participant × ThingRef × PrecondRefs × Timestamp`；生产前驱 test arc、读自环、消费归档、种子无输入弧。
+  - 条件：`and`/`or`/`not` → NNF → DNF；`or` 展开多迁移；`not` 下推为 `count T <= k` 并以互补库所编码（须显式 `--bound T=N` 真实上界）；`not via` 显式拒绝；恒假条件保留 `guard=false` 迁移；DNF 上限 1024。
+  - 输出 CPN Tools XML（`format='6'`），通过 CPN DTD 校验与 XML 良构/结构测试；CPN Tools GUI 加载与状态空间实验为人工验收（沙箱无 GUI）。
+- **§6 范围外收窄**：删除「CPN 编码生成器」整条，改为只排除「CPN 图形布局美化与 CPN Tools GUI 内交互式状态空间实验的自动化」；编码生成本身已属 FR20。
+- **实现状态**：`pact-cpn` 11 项测试 + CLI 离线 e2e（成功/缺上界/JSON/实例前缀）；全量 **166 项**测试全绿；示例域生成物全部通过 CPN DTD 校验。
+- 既有 FR1–FR19、NFR1–NFR7 无实质变更。
+
 ## 2026-10-20（第 16 轮，D25 子项 3 域级 ACL 与审计读视图落地）
 
 - **触发**：用户裁决实施 D25 子项 (3)，四项取舍均选推荐项（实例级 ACL + 通配；覆盖生命周期 / 四类动作 / 查询；独立读审计流；fail-closed + REST 视图）。

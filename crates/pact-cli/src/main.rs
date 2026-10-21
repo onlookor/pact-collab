@@ -164,6 +164,20 @@ enum Command {
         /// <domain>/<instance>.events.jsonl
         file: PathBuf,
     },
+    /// 离线：生成 CPN Tools 模型（论文 §4.5 / 附录 B）
+    Cpn {
+        /// .pact 声明文件
+        file: PathBuf,
+        /// 输出 .cpn 路径
+        #[arg(long)]
+        out: PathBuf,
+        /// 实例键（缺省 default）；仅作单实例命名空间前缀
+        #[arg(long, default_value = "default")]
+        instance: String,
+        /// 类型上界（可重复）：T=N，`not`/`count =` 编码所需
+        #[arg(long = "bound", value_name = "TYPE=N")]
+        bounds: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -674,6 +688,12 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Analyze { file } => offline_analyze(json, &file),
         Command::Compose { files } => offline_compose(json, &files),
         Command::Replay { file } => offline_replay(json, &file),
+        Command::Cpn {
+            file,
+            out,
+            instance,
+            bounds,
+        } => offline_cpn(json, &file, &out, &instance, &bounds),
     }
 }
 
@@ -809,6 +829,93 @@ fn offline_analyze(json: bool, file: &PathBuf) -> ExitCode {
             report.structural_deadlock.len()
         );
         println!("stranding_risk: {} 处滞留风险", report.stranding_risk.len());
+    }
+    ExitCode::SUCCESS
+}
+
+fn offline_cpn(
+    json: bool,
+    file: &PathBuf,
+    out: &PathBuf,
+    instance: &str,
+    bounds: &[String],
+) -> ExitCode {
+    let text = match read_file(file, json) {
+        Ok(t) => t,
+        Err(c) => return c,
+    };
+    let domain = match pact_parser::load_domain(&text) {
+        Ok(d) => d,
+        Err(p) => return fail(json, problem_detail(&p)),
+    };
+    let mut bound_map = std::collections::BTreeMap::new();
+    for spec in bounds {
+        let Some((ty, value)) = spec.split_once('=') else {
+            return fail(
+                json,
+                ErrorDetail {
+                    code: "Usage".into(),
+                    detail: serde_json::Value::Null,
+                    message: format!("--bound 须为 TYPE=N，收到 {spec:?}"),
+                },
+            );
+        };
+        let Ok(value) = value.parse::<u64>() else {
+            return fail(
+                json,
+                ErrorDetail {
+                    code: "Usage".into(),
+                    detail: serde_json::Value::Null,
+                    message: format!("--bound {ty} 的上界须为非负整数，收到 {value:?}"),
+                },
+            );
+        };
+        bound_map.insert(pact_core::TypeName(ty.to_string()), value);
+    }
+    let options = pact_cpn::CpnOptions {
+        instance: instance.to_string(),
+        bounds: bound_map,
+        page_name: None,
+    };
+    let model = match pact_cpn::generate(&domain, &options) {
+        Ok(m) => m,
+        Err(e) => {
+            return fail(
+                json,
+                ErrorDetail {
+                    code: "Cpn".into(),
+                    detail: serde_json::Value::Null,
+                    message: e.to_string(),
+                },
+            )
+        }
+    };
+    if let Err(e) = std::fs::write(out, &model.xml) {
+        return fail(
+            json,
+            ErrorDetail {
+                code: "Io".into(),
+                detail: serde_json::Value::Null,
+                message: format!("写入 {} 失败：{e}", out.display()),
+            },
+        );
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&model.stats).unwrap());
+    } else {
+        println!(
+            "cpn: {} 库所（{} 互补）/ {} 迁移（生产 {}、读 {}、消费 {}、种子 {}、恒假 {}）/ {} 弧 → {}",
+            model.stats.places,
+            model.stats.complementary_places,
+            model.stats.transitions,
+            model.stats.production_transitions,
+            model.stats.read_transitions,
+            model.stats.consume_transitions,
+            model.stats.seed_transitions,
+            model.stats.disabled_transitions,
+            model.stats.arcs,
+            out.display()
+        );
     }
     ExitCode::SUCCESS
 }

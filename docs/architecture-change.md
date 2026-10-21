@@ -1,5 +1,13 @@
 # 架构变更记录
 
+## 2026-10-21（第 15 轮，阶段 6：CPN 编码生成离线组件）
+
+- **§2.6 新增 CPN 编码生成数据流**：`.pact → pact-parser（解析 + A.5 校验）→ Domain → pact-cpn::generate（纯函数、零 IO）→ CPN Tools XML → pact cpn --out → model.cpn`。
+- **组件集新增**：`pact-cpn` 仅依赖 `pact-core`；与 daemon、store、engine、http、mcp、runtime 完全解耦；CLI 离线命令新增 `cpn`，仍不触状态。
+- **单实例作用域**：一次生成只编码一个 `Counter instance`，库所/迁移以 `i_<instance>__` 命名，跨实例无共享；符合论文 §4.5/§B.2 Scope 与 D27/G1。
+- **无结构性变更**：crate 依赖方向仍单向（`cli → cpn → core`）、单一状态变更通道（D6/D19）、引擎被动性（D5）、纯函数语义层、进程/部署拓扑、线上格式均不变；本轮新增的是**离线只读生成器**，不进入任何运行时数据流。
+- **验证**：生成物通过 CPN DTD 校验；全量 166 项测试全绿（详见 design-change 第 28 轮）。
+
 ## 2026-10-20（第 14 轮，阶段 9：分发产物落地）
 
 - **§6 新增「分发形态（阶段 9 已完成）」**：`dist/` 提供三条部署路径——容器（多阶段 musl 构建、非 root uid 10001、`/var/lib/pact` 卷、`EXPOSE 8787`、`HEALTHCHECK`）、systemd（`pact` 用户、`StateDirectory`/`RuntimeDirectory`、20s 停机窗口、`ProtectSystem=strict` 等加固）、静态包（`x86_64-unknown-linux-musl` tar.gz + `SHA256SUMS`）。三者载荷为同一批静态二进制（`pact`/`pactd`/`pact-mcp`/`pact-runtime`）。

@@ -17,6 +17,7 @@ pact-compose = { path = "../pact-compose" }
 pact-store = { path = "../pact-store" }
 pact-engine = { path = "../pact-engine" }
 pact-http = { path = "../pact-http" }
+pact-cpn = { path = "../pact-cpn" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 clap = { workspace = true }

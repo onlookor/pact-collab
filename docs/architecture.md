@@ -51,7 +51,7 @@
 核心约束：
 
 - **依赖单向**：接口层 → 引擎 → （core/store）；core 不依赖 IO 与 async。
-- **单一状态变更通道**：pact-http daemon 的 REST API 是通往引擎的唯一路径——pact-mcp 与 pact-cli（在线命令）都是其客户端（不内嵌引擎），三接口能力等价由构造保证；pact-cli 的离线命令（analyze/compose/replay）只依赖纯函数层，不触状态。
+- **单一状态变更通道**：pact-http daemon 的 REST API 是通往引擎的唯一路径——pact-mcp 与 pact-cli（在线命令）都是其客户端（不内嵌引擎），三接口能力等价由构造保证；pact-cli 的离线命令（analyze/compose/replay/cpn）只依赖纯函数层，不触状态。
 - **语义集中在纯函数层**：pact-core 的规则函数是范式的唯一权威实现；引擎只做编排（查域、调用、应用效果、持久化、通知），不含任何语义判断。
 - **零隐式动作的编译期保障**：规则函数签名以 `&CounterState` 为入参、效果为返回值——接口层无法绕过规则直接改状态（Rust 所有权强制，见 design.md D1）。
 
@@ -125,6 +125,27 @@ REST 入口（除 /health|/ready|/metrics|/validate 外）
 ```
 
 ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；`/compact` 在启用 ACL 后与其它实例端点同等受 `(domain, instance)` 约束。
+
+### 2.6 CPN 编码生成（阶段 6，离线）
+
+```
+.pact 文件 ──► pact-parser（解析 + A.5 良构校验）──► Domain
+                                                    │
+                                                    ▼
+                                   pact-cpn::generate(domain, CpnOptions)
+                                                    │  （纯函数，零 IO）
+                                                    ▼
+                                            CPN Tools XML
+                                                    │
+                                       pact-cli `pact cpn --out`
+                                                    ▼
+                                              model.cpn
+```
+
+- 只依赖 `pact-core`；与 daemon、store、engine、MCP 完全解耦，不改变任何线上格式。
+- 单实例作用域：每次生成只编码一个 `Counter instance`，库所/迁移以 `i_<instance>__` 前缀命名，跨实例不共享。
+- 负条件（`not`/`count =`）需调用方提供 `--bound T=N` 的并发上界；`not via` 显式拒绝而非生成错误模型。
+- 输出为 CPN Tools XML format 6，经 CPN DTD 校验；GUI 加载与状态空间实验属人工验收（D28）。
 
 ## 3. 进程与部署视图
 

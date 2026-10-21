@@ -140,6 +140,16 @@
 - **归属**：`pact-store` + `pact-engine` + 接口层（`pact-http` / `pact-cli` / `pact-mcp` / `pact-runtime`）；`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` 零改动（形式语义不变）。
 - **实现状态**：已实现（阶段 10，路径 β）。存储 `(domain, instance)` 双列 + 域子目录布局；引擎声明注册表（`declare` / `instantiate` 分离）；接口全链（REST 默认族 + 实例镜像族、CLI `--instance`/`--force`/`instantiate`/`instances`、MCP 16 工具含 `pact_domain_instantiate`、`pact-runtime` 实例透传）；键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。
 
+### FR20 CPN 编码生成（阶段 6，D12/D28）
+
+- **目标**：把一份良构域声明离线编码为 CPN Tools 彩色 Petri 网模型（论文 §4.5/附录 B），供形式验证与可视化检查；**不进入**引擎、存储、接口运行时路径。
+- **入口**：新 crate `pact-cpn`（lib）+ CLI 离线命令 `pact cpn <FILE> --out PATH [--instance I] [--bound T=N]…`；不依赖 daemon。
+- **单实例作用域（G1/D27）**：一次生成只编码**一个 Counter 实例**，库所/迁移以实例名命名空间化，不跨实例共享；跨实例协同不进入 `N(D)`。
+- **编码映射**：每类型一个库所 + 一个 Archive 库所；token 颜色 = `TokenId × Participant × ThingRef × PrecondRefs × Timestamp`；生产迁移对前驱使用 test arc（输入绑定 + 同变量输出，不消费）；读迁移自环；消费迁移消耗目标并输出到 Archive；种子迁移无输入弧。
+- **条件编码**：`and`/`or`/`not` 先化 NNF 再化 DNF；`or` 展开为多条迁移；`not` 下推为 `count T <= k`，用互补库所编码（调用方须为涉及类型提供 `--bound T=N` 的**真实并发上界**）；`not via` 无法用计数互补表达，显式拒绝；条件恒假的迁移保留并置 `guard=false`；DNF 项数与 `count >= n` 的展开规模各设 1024 上限，超限显式失败。
+- **输出与验收**：CPN Tools XML（`format='6'`）；生成结果须通过 CPN DTD 校验、XML 良构与结构断言（库所/迁移/弧计数、test arc、互补不变量、单实例前缀）。CPN Tools GUI 内的交互式加载与状态空间实验由人工验收，不纳入 CI（沙箱无 GUI）。
+- **实现状态**：已实现（2026-10-21）；`pact-cpn` 11 项测试 + CLI 离线 e2e 覆盖结构与错误路径。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。
@@ -152,7 +162,7 @@
 
 ## 6. 范围外（显式排除）
 
-- CPN 编码生成器（论文 §4.5/附录 B）：列入后期可选阶段（决策 D12）。**实现约束（G1）**：须遵论文 §4.5/§B.2 的**单实例作用域**——每个 Counter 实例独立编码，库所与迁移不跨实例共享，跨实例协同不入 `N(D)`；CPN 编码的「域」为域声明，实例划分属运行期（D27）。
+- CPN 模型的图形布局美化、CPN Tools GUI 内交互式状态空间实验的自动化：生成器只负责**结构等价编码 + 可加载性**（FR20）；CPN Tools 内的探索/可视化操作不纳入仓库自动化与 CI。
 - Archival Policy（论文 §2.2 可选第五注入点）：引擎不内置；域内可由持有 `consumes` gate 的系统参与者以正常 Rule-E 承担。
 - 多机分布式 Counter、OR 分支、时间约束、概率行为（范式本身不可表达）。
 - 分布式事务 / 2PC / 共识协议，以及由引擎执行的外部副作用：引擎不执行副作用（FR10/FR15）；单写者 actor + 事件日志已满足线性化与崩溃一致性，引入这些机制只增复杂度（决策 D23）。

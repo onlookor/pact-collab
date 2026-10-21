@@ -1677,6 +1677,7 @@ dependencies = [
  "pact-analysis",
  "pact-compose",
  "pact-core",
+ "pact-cpn",
  "pact-engine",
  "pact-http",
  "pact-parser",
@@ -1702,6 +1703,15 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "pact-cpn"
+version = "0.1.0"
+dependencies = [
+ "pact-core",
+ "pact-parser",
+ "serde",
 ]
 
 [[package]]

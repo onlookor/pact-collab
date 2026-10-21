@@ -695,6 +695,23 @@ reviewer = ["proj/default"]    # 仅允许 reviewer 读 proj/default
 
 未授权返回 `403 Forbidden`（结构化错误体，含 `domain` `instance`）；无有效令牌返回 `401 Unauthorized`。未配置 `[auth.acl]` 保持原有信任声明行为（即任何人说自己是谁就是谁，不做域级授权）。
 
+### 7.7 CPN 模型生成（离线，阶段 6）
+
+把声明文件编码为 CPN Tools 可加载的彩色 Petri 网，用于可视化与形式验证：
+
+```bash
+pact cpn examples/domains/se_lifecycle.pact --out se_lifecycle.cpn
+pact cpn my.pact --out my.cpn --instance project_a
+pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
+```
+
+- **单实例作用域**：一次只编码一个 Counter 实例；库所/迁移统一带 `i_<instance>__` 前缀，不同实例的模型互不共享。`--instance` 只影响命名，不读取运行期状态。
+- **结构映射**：每个类型一个库所 + Archive；token 颜色含 `TokenId / Participant / ThingRef / PrecondRefs / Timestamp`；生产迁移用 test arc 保留前驱，读迁移自环，消费迁移把 token 移入 Archive，种子迁移无输入弧。
+- **条件**：`and` / `or` / `not` 会展开；`or` 生成多条迁移（名称 `_c1/_c2…`）；`not` 与 `count T = n` 需要互补库所，因此必须为涉及的每个类型提供真实并发上界 `--bound T=N`。上界不能从声明自动推导；给错会导致模型行为不等价。缺上界时命令失败并提示类型。
+- **不支持**：`not via T`（见证是依赖关系而非计数，无法用互补库所表达）会显式报错；请改写条件或人工建模。
+- **恒假条件**：仍保留迁移并置 `guard=false`，便于和声明条目逐一对账。
+- **验证**：输出为 CPN Tools XML（format 6），已通过 CPN DTD 校验与结构化测试。CPN Tools GUI 的加载与状态空间实验需人工验收；沙箱内只做 XML/DTD 校验。
+
 ---
 
 ## 8. 接口参考
@@ -735,6 +752,7 @@ reviewer = ["proj/default"]    # 仅允许 reviewer 读 proj/default
 | `analyze <FILE>` | **离线** | 六项静态分析 |
 | `compose <FILES…>` | **离线** | 片段组合（≥2 个），打印合并文本 |
 | `replay <FILE>` | **离线** | 重放 `<instance>.events.jsonl`（校验事件 schema `version`） |
+| `cpn <FILE> --out PATH [--instance I] [--bound T=N]…` | **离线** | 生成单实例 CPN Tools 模型（论文 §4.5/§B；负条件需上界） |
 
 **实例 flag（D27）**：所有域操作命令的 `--instance I` 可选，**缺省 = 默认实例 `default`**——既有不带该 flag 的调用与脚本语义不变。`--force` 仅用于对**非空实例**（`last_seq > DomainLoaded.seq`）的再加载：默认拒绝（`DomainBusy`），加 `--force` 才重置其 Counter。
 
@@ -921,6 +939,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 9. **旧日志不自动迁移**（D27）：双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`；顶层遗留单层文件启动即 `LegacyLayoutDetected` fail-fast，须人工迁移（§7.1），不静默丢数据。
 10. **跨实例不协同**（D27）：同一域声明的多个 Counter 实例彼此隔离（各自 Counter/Archive/订阅）；跨实例协同不在范式保障范围内（论文 rev3 §1.3 实现自由条款，见 §1.3）。
 11. **压缩会牺牲前缀审计**（D25）：被丢弃前缀不再可查，审计视图 = 自足快照 + 保留尾部事件；v1 不做自动周期性轮转，压缩为运维显式动作或启动开关（§7.4）。
+12. **CPN 编码的边界**（D28，§7.7）：负条件依赖调用方给出的 `--bound` 真实并发上界（不可从声明推导）；`not via` 不支持；CPN Tools GUI 内的实际加载/状态空间实验需人工验收，CI 只保证 XML/DTD 与结构断言；TokenId 生成器使用 CPN ML `ref` 副作用，状态空间工具可能将其视为非纯表达式。
 
 ---
 

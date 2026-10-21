@@ -1,5 +1,17 @@
 # 设计变更记录
 
+## 2026-10-21（第 28 轮，阶段 6：CPN 编码生成 pact-cpn（D28））
+
+- **D28 新增**：`pact-cpn` 纯函数生成器 + CLI `pact cpn`；输出 CPN Tools XML（`generator format='6'`）；单实例作用域命名空间 `i_<instance>__`；颜色 `PACT_TOKEN = TokenId × Participant × ThingRef × PrecondRefs × Timestamp`、`PACT_ARCHIVE = PACT_TOKEN × Participant × Timestamp`、`PACT_COMPL = int`。
+- **结构映射**：每类型库所 + Archive；生产迁移对每个前驱一条 test arc（输入绑定 + 同变量输出），输出依赖列表 `[#1 xi]`；读迁移 `x` 自环；消费迁移消耗 `x` 并输出 Archive；种子迁移无输入弧。
+- **条件编码**：`GateExpr → NNF → DNF`；每个合取项一条迁移（`or` 多迁移，名称 `_c1/_c2…`）；`count T >= n` n 条 test arc + 两两不同 guard；`via T` test arc + `List.exists (fn z => z = #1 y1) (#4 x)`；`count T <= k` 用互补库所（初值 N、`M(p_T)+M(p_T_not)=N`、生产/种子消耗 1、消费归还 1、测试弧 N-k 借还）；`not via` 拒绝；缺上界/超大 DNF/`count >= n` 超过 1024/非良构域分别报错。
+- **目标类型自查**：目标 token 计入目标类型 count，故 `exists T`/`count T >= 1` 在 T 为目标时无需额外弧，`count T >= n` 只需 n−1 个额外见证；`via T` 在目标类型上仍需额外见证。
+- **CLI 接入**：`pact cpn <FILE> --out PATH [--instance I] [--bound T=N]…`，`--json` 输出 `CpnStats`；错误映射为 `Cpn` 代码（缺上界提示具体类型）；离线路径不触 daemon。
+- **设计文档**：决策表新增 D28；§1 crate 清单与依赖图新增 `pact-cpn`（`cpn → core`）；新增 §15 完整编码设计；阶段表阶段 6 标记已完成。顺手修正 D25 行中与 §9.6 不一致的「(3) 未开始」为「已实现（2026-10-20）」。
+- **验证**：`pact-cpn` 11 项测试（结构计数、via/test arc、not 互补、目标自查、or 展开、count 上界、not via 错误、实例命名空间、XML 良构、超限字面量拒绝）；CLI 离线 e2e 覆盖成功与缺上界；`examples/domains/*.pact` 生成物全部通过 `xmllint --dtdvalid`（CPN DTD）；`cargo fmt --all --check` 干净、`cargo clippy --workspace --all-targets -- -D warnings` 零警告、`cargo test --workspace` **166 项全绿**。
+- **未执行**：CPN Tools GUI 内实际加载与状态空间实验（沙箱无 GUI）——列为人工验收；`--bound` 正确性由调用方承担，文档已明确。
+- **安全审视（零可利用发现）**：生成器零 IO、无 `unsafe`、无新增第三方依赖（仅 pact-core + serde derive）；所有输出文本经 XML 转义，名称经 ML 标识符安全化，实例名进入命名空间前消毒；DNF 设 1024 项上限防指数膨胀；错误路径不回显文件内容。
+
 ## 2026-10-20（第 27 轮，阶段 9：分发产物 dist/（D26））
 
 - **交付形态**：新增 `dist/` 六个文件——`Dockerfile`（多阶段 `rust:1.98-alpine` → `alpine:3.22`，非 root uid/gid 10001、`/var/lib/pact` 数据卷、`EXPOSE 8787`、`HEALTHCHECK` 探 `/health`、入口 `pactd --config /etc/pact/pact.toml`）、`Dockerfile.dockerignore`（排除 `.git`/`target`/`docs`/`examples`/本地数据，避免论文母本进入构建上下文）、`pact.container.toml`、`pactd.service`、`pact.toml.example`、`build-static.sh`。

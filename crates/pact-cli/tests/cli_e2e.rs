@@ -352,6 +352,51 @@ fn offline_commands_without_daemon() {
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stdout).contains("seed_authority"));
 
+    // —— cpn（离线：CPN Tools XML 生成；单实例命名空间） ——
+    let cpn_file = dir.path().join("model.cpn");
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["cpn"])
+        .arg(&decl_file)
+        .arg("--out")
+        .arg(&cpn_file)
+        .args(["--instance", "alpha"])
+        .output()
+        .unwrap();
+    let stats = ok_json(&out);
+    assert_eq!(stats["places"], 4); // 3 类型 + Archive
+    assert_eq!(stats["read_transitions"], 1);
+    assert_eq!(stats["consume_transitions"], 3);
+    assert_eq!(stats["production_transitions"], 2);
+    assert_eq!(stats["seed_transitions"], 1);
+    let xml = std::fs::read_to_string(&cpn_file).unwrap();
+    assert!(xml.contains("<workspaceElements>"));
+    assert!(xml.contains("i_alpha__p_requirement"));
+    assert!(xml.contains("PACT_ARCHIVE"));
+
+    // 缺失上界：`not exists` 必须显式要求 --bound，而非静默编码
+    let neg = dir.path().join("neg.pact");
+    std::fs::write(
+        &neg,
+        "types { a; b }\npreconditions { a → b }\ngates { p: reads b when not exists a }\nseed_authority { s: seeds a }",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["cpn"])
+        .arg(&neg)
+        .arg("--out")
+        .arg(dir.path().join("neg.cpn"))
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(err["error"]["code"], "Cpn");
+    assert!(err["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("--bound"));
+
     // —— compose 冲突路径（C2：共享类型 b 双侧前置规则不同） ——
     let bad = dir.path().join("frag-bad.pact");
     std::fs::write(
