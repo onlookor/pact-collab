@@ -14,8 +14,15 @@ use tokio::sync::mpsc;
 pub enum Endpoint {
     /// 本地 unix socket。
     Unix(PathBuf),
-    /// TCP 地址（`host:port`）。
-    Tcp(String),
+    /// TCP 地址（`host:port`），可选 TLS。
+    Tcp {
+        /// `host:port`。
+        addr: String,
+        /// 是否经 HTTPS（TLS）连接。
+        https: bool,
+        /// 自定义 CA PEM（仅 `https = true` 时有意义）。
+        tls_ca: Option<PathBuf>,
+    },
 }
 
 impl Endpoint {
@@ -24,16 +31,43 @@ impl Endpoint {
         Endpoint::Unix(path.into())
     }
 
-    /// TCP 端点。
+    /// TCP 端点（明文 HTTP）。
     pub fn tcp(addr: impl Into<String>) -> Self {
-        Endpoint::Tcp(addr.into())
+        Endpoint::Tcp {
+            addr: addr.into(),
+            https: false,
+            tls_ca: None,
+        }
+    }
+
+    /// HTTPS 端点；`ca` 存在时仅信任该 CA。
+    pub fn https(addr: impl Into<String>, ca: Option<PathBuf>) -> Self {
+        Endpoint::Tcp {
+            addr: addr.into(),
+            https: true,
+            tls_ca: ca,
+        }
     }
 
     /// 追加到 `pact-mcp` 子进程命令行的连接参数（与 CLI/MCP 的 flag 约定一致，D20）。
     pub fn args(&self) -> Vec<String> {
         match self {
             Endpoint::Unix(p) => vec!["--unix".to_owned(), p.display().to_string()],
-            Endpoint::Tcp(a) => vec!["--tcp".to_owned(), a.clone()],
+            Endpoint::Tcp {
+                addr,
+                https,
+                tls_ca,
+            } => {
+                let mut args = vec!["--tcp".to_owned(), addr.clone()];
+                if *https {
+                    args.push("--https".to_owned());
+                }
+                if let Some(ca) = tls_ca {
+                    args.push("--tls-ca".to_owned());
+                    args.push(ca.display().to_string());
+                }
+                args
+            }
         }
     }
 }
@@ -42,7 +76,13 @@ impl std::fmt::Display for Endpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Endpoint::Unix(p) => write!(f, "unix:{}", p.display()),
-            Endpoint::Tcp(a) => write!(f, "tcp:{a}"),
+            Endpoint::Tcp { addr, https, .. } => {
+                if *https {
+                    write!(f, "https:{addr}")
+                } else {
+                    write!(f, "tcp:{addr}")
+                }
+            }
         }
     }
 }

@@ -5,6 +5,7 @@ use crate::driver::{drive, AgentReport, Bootstrap, DriverConfig, DEFAULT_DEADLIN
 use crate::error::RuntimeError;
 use crate::mcp::McpClient;
 use crate::rest::RestClient;
+use pact_http::sign::SigningIdentity;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -30,7 +31,7 @@ pub enum Transport {
 }
 
 /// 单个参与者规格。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentSpec {
     /// 参与者名（域内身份）。
     pub participant: String,
@@ -40,6 +41,8 @@ pub struct AgentSpec {
     pub bootstrap: Option<Bootstrap>,
     /// Rule-P 产出预算。
     pub produce_budget: Option<usize>,
+    /// D34：Ed25519 请求签名身份（仅 REST 接入生效）。
+    pub signing: Option<SigningIdentity>,
 }
 
 impl AgentSpec {
@@ -53,6 +56,7 @@ impl AgentSpec {
             },
             bootstrap: None,
             produce_budget: None,
+            signing: None,
         }
     }
 
@@ -71,6 +75,7 @@ impl AgentSpec {
             },
             bootstrap: None,
             produce_budget: None,
+            signing: None,
         }
     }
 
@@ -93,6 +98,12 @@ impl AgentSpec {
                 *bearer = Some(token.into())
             }
         }
+        self
+    }
+
+    /// 设 Ed25519 请求签名身份（仅 REST 接入生效；MCP 子进程仍由命令行参数决定）。
+    pub fn with_signing(mut self, id: SigningIdentity) -> Self {
+        self.signing = Some(id);
         self
     }
 }
@@ -167,12 +178,16 @@ impl Orchestrator {
                     poll,
                     deadline,
                 };
+                let signing = spec.signing;
                 match spec.transport {
                     Transport::Rest { endpoint, bearer } => {
                         let mut client =
-                            RestClient::from_endpoint(&endpoint, &domain, bearer.as_deref());
+                            RestClient::from_endpoint(&endpoint, &domain, bearer.as_deref())?;
                         if let Some(i) = instance {
                             client = client.with_instance(i);
+                        }
+                        if let Some(id) = signing {
+                            client = client.with_signing(id);
                         }
                         drive(client, &cfg).await
                     }

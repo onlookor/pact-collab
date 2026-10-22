@@ -4,12 +4,12 @@
 
 ## 1. 项目目标
 
-实现论文提出的 PACT（Precondition-governed Autonomous Counter-based Token）范式的完整工程实现：一个可运行的单机协调引擎，忠实实现论文的全部形式语义（六原语、SOS 规则、GateHolds、GateExpr、静态分析、片段组合）。
+实现论文提出的 PACT（Precondition-governed Autonomous Counter-based Token）范式的完整工程实现：一个单权威的协调引擎，忠实实现论文的全部形式语义（六原语、SOS 规则、GateHolds、GateExpr、静态分析、片段组合）；v1 默认单机，v2 在接口层补足受控联网（TLS/mTLS、签名身份、MCP Streamable HTTP、MCP OIDC）。
 
 ## 2. 总体约束
 
 - **语言**：Rust（决策依据见 `docs/pact工程落地语言选择.md` 及 `docs/design.md` 决策 D1，无反对意见）。
-- **部署范围**：当前仅单机运行；架构设计必须为将来联网运行预留演进路径（见 NFR6）。
+- **部署范围**：默认单机（unix socket / 回环）；NFR6 v2 已支持受控联网（daemon 内 TLS/mTLS、Ed25519 签名、MCP Streamable HTTP、MCP OIDC），Counter 仍为单权威 client/server，无分布式共识。
 - **开发环境**：所有开发工作在 Trae 沙箱环境中进行。
 - **无人值守**：整个协调工作从启动到完成（含 Rule-T 终止）可全程无人工介入。
 
@@ -18,11 +18,12 @@
 按优先级排序：AI agent（主要）≈ 普通应用程序（主要）> 人类。
 
 ### FR1 AI Agent 接口（MCP 协议）
-- 提供 MCP server，agent 以参与者身份接入，执行全部领域操作。
+- 提供 MCP server，agent 以参与者身份接入，执行全部领域操作；形态为 stdio（`pact-mcp` 薄封装，经 REST）与 daemon 内建 Streamable HTTP `/mcp`（FR23），二者工具面一致。
 - 工具集覆盖：域加载/校验、Rule-S/P/R/E 四类动作、Counter/Archive 查询、静态分析、片段组合、参与者能力查询（`my_gates`）、Rule-P 可满足性查询（`enabled`，服务 Rule-W）、Counter 变更订阅（Rule-W 唤醒）、终止状态查询。
 
 ### FR2 应用程序接口（REST/JSON）
 - 提供 REST API，与 MCP 共享同一引擎门面，能力对等（除订阅用 SSE 外）。
+- 身份为静态 Bearer 或 Ed25519 签名（FR22）；REST 不接受 OIDC 令牌。
 
 ### FR3 人类接口（CLI）
 - **注入点**：通过 `.pact` 域声明文件（论文 §3.1 文法）注入 TypeSchema / PreconditionGraph / GateMatrix / SeedAuthority 四个注入点；种子注入（Rule-S）。
@@ -160,14 +161,38 @@
 - **ABI 策略**：`pact-wasm/0.x`，全部方法使用 JSON 字符串；破坏性变更须提升 ABI 版本并记入 `docs/design-change.md`；版本探测入口为 `abi_version`。去除非实验性标记不改变 ABI 版本策略。
 - **稳定化验收（已完成）**：(1) Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）——**已实现（2026-10-21，`ci.yml` 的 `wasm` job）**；(2) 金标覆盖扩展（多实例、组合域、条件分支、压缩后恢复）——**已实现（2026-10-21，`crates/pact-wasm/tests/parity.rs` 7 项金标）**；(3) `pact-engine-kernel` 抽取——**已实现（2026-10-21，原生 `pact-engine` 与 `pact-wasm` 共用实例会话语义，D32）**；(4) 推送/发布前宿主边界安全审视——**已完成（2026-10-21，无新增可利用发现）**。四项验收完成后按 D33 去除实验性标记。
 
+### FR22 TLS 与 Ed25519 请求签名身份（NFR6 v2）
+
+- **TLS（可选）**：daemon 在 TCP 监听上可选终止 TLS（rustls，TLS 1.2/1.3）；`[tls]` 提供 PEM 证书链与私钥，`client_ca` 存在时要求客户端证书（mTLS）；`listen_unix` 不受影响。内置客户端（CLI / `pact-mcp` / `pact-runtime`）以 `--https` 连接、以 `--tls-ca` 信任自定义 CA；内置客户端不携带客户端证书，mTLS 面向外部客户端。
+- **签名身份（可选）**：`[auth.keys] 参与者 = base64(32 字节 Ed25519 公钥)` 非空即启用。客户端以 base64(32 字节) Ed25519 私钥种子对请求签名，携带 `x-pact-participant` / `x-pact-timestamp` / `x-pact-nonce` / `x-pact-signature`；规范化串为 `PACT-SIGNATURE-V1`，覆盖方法、路径+查询、请求体 SHA-256、时间戳、nonce、参与者。服务端校验时间窗 `±300s`、nonce 去重（TTL 300s、上限 8192）、签名与请求体（> 8 MiB 返回 413）；通过后把已验证参与者写入可信头 `x-pact-verified-principal`，并剥离客户端伪造的同名头。
+- **身份绑定**：签名与 Bearer 可同时配置；一旦 `[auth.keys]` 非空，除豁免端点外的 REST 请求**必须携带有效签名**（Bearer 不能替代签名；两者同时出现时以签名身份为准）。请求体/查询中的 `participant` 必须与解析出的身份一致，否则 `401 Unauthorized`（不是 403）；ACL 照常生效。签名身份仅用于 REST（含 CLI/MCP stdio 转发），不用于 `/mcp` 的 OIDC 路径。
+- **豁免与信任模式**：`/health` `/ready` `/metrics` `/mcp` 与 OIDC 元数据端点豁免验签；REST 未配置任何身份（无令牌、无密钥；OIDC 只影响 `/mcp`）时为信任声明模式，仅在单机/回环部署使用。
+- **线上契约与错误码**：签名请求头四件套；可信头 `x-pact-verified-principal`；进程内能力头 `x-pact-internal-auth`（随机 32 字节，不落日志）；缺/错身份 `401`、participant 不匹配 `401`、ACL 越权 `403`、签名请求体超限 `413`、nonce 重放 `429`、IdP 不可达 `503`（OIDC，见 FR24）。
+
+### FR23 MCP Streamable HTTP（NFR6 v2）
+
+- daemon 在 `[mcp].enabled = true` 时于同一监听端口内建 `/mcp`（MCP Streamable HTTP），工具面与 stdio 完全一致（17 个 `pact_*` 工具）；`pact-mcp` 保留 stdio 形态，作为薄封装经 REST 接入 daemon。
+- **线上契约**：`POST/GET/DELETE /mcp`；`[mcp].public_url` 为对外可达基址，用于 `allowed_hosts` 与 OIDC 元数据。
+- **鉴权**：令牌表非空时要求 `Authorization: Bearer <token>`；配置 OIDC 时按 FR24 校验 JWT；两者皆无时为本地信任模式（仅单机/回环，启动打印警告）。`[auth.keys]` 非空而令牌表为空且无 OIDC 时拒绝启动，避免 `/mcp` 仅凭公钥冒用身份。
+- **本地调用**：daemon 内建 MCP 通过进程内 tower 路由调用自身 REST，不发起网络自连接；工具调用使用随机内部能力令牌 `x-pact-internal-auth`，并仅按当前请求注入已验证参与者，禁止跨会话串用或把外部 JWT 转发给 REST。
+- **宿主保护**：rmcp 侧 `allowed_hosts` 仅允许回环与 `[mcp].public_url` 的 authority；不新增公网多租户、限流或 WAF。
+
+### FR24 MCP OIDC 身份（资源服务器模式，NFR6 v2）
+
+- **定位**：daemon 作为 OIDC **资源服务器**，只验证 IdP 签发的 JWT，不内置授权服务器、不实现授权码 + PKCE、登录页或 token 端点；授权码流程由 MCP 宿主/客户端向 IdP 完成。
+- **范围**：OIDC 身份**仅 `/mcp` 接受**；REST 仍为静态 Bearer 或 Ed25519 签名；OIDC 令牌不缓存、不转发给 REST。
+- **配置**：`[mcp.oidc]` 的 `issuer`、`audience`、`principal_claim`（缺省 `sub`）、`principal_map`、`jwks_uri`、`discovery`、`allowed_algs`、`ca`、`allow_static_tokens`、`allow_insecure_http`；启用 OIDC 时 `[mcp].enabled = true` 且 `public_url` 必填。
+- **校验**：alg 白名单（缺省 RS256/ES256/EdDSA，拒绝 `none` / HS* / 非空 `crit`）；`iss` 精确匹配、`aud` 包含配置值、`exp` 必需、`nbf` 存在时校验，允许 60s 时钟偏移；JWKS 缓存 TTL 300s、最多 64 键，未知 `kid` 限频（最短 30s）重取一次；`principal_claim` 取值须为字符串（或唯一字符串元素的数组），经 `principal_map` 映射后须匹配 `[A-Za-z0-9_-]{1,128}`。
+- **线上契约**：`GET /.well-known/oauth-protected-resource` 返回 `{resource, authorization_servers, bearer_methods_supported}`；`/mcp` 的 401 响应携带 `WWW-Authenticate: Bearer resource_metadata="<public_url>/.well-known/oauth-protected-resource"`；令牌非法 `401`，IdP 发现/JWKS 不可达 `503`，**REST 不受 IdP 故障影响**。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。
 - **NFR2 审计完整性**：事件日志自身即完整审计记录，人类可直接阅读；每条事件自足（消费事件携带 token 全量快照与可选幂等键），不依赖同一域实例其他行。
 - **NFR3 确定性**：时钟抽象注入（系统时钟/逻辑时钟），支持确定性测试与重放。
 - **NFR4 部署**：单一静态二进制（daemon + CLI），零运行时依赖。
-- **NFR5 身份模型**：v1 采用信任声明（客户端自报参与者名）+ 可选的按参与者令牌认证；为联网版真实认证预留抽象。
-- **NFR6 联网演进**：Counter 单权威架构不变，联网形态为 client/server（无分布式共识需求）；传输层（stdio/本地 HTTP/远程 TLS）与核心逻辑分离。
+- **NFR5 身份模型**：采用信任声明（客户端自报参与者名）+ 可选的按参与者令牌认证；v2 增补 Ed25519 请求签名身份与 MCP OIDC 资源服务器身份。身份校验全部位于接口层，核心与引擎不感知认证方式。
+- **NFR6 联网演进**：Counter 单权威架构不变，联网形态为 client/server（无分布式共识需求）；传输层（stdio/本地 HTTP/远程 TLS）与核心逻辑分离。**v2 已实现（2026-10-22）**：daemon 内 TLS 1.2/1.3 与可选 mTLS；Ed25519 请求签名身份（防重放、与 ACL 绑定）；MCP Streamable HTTP（daemon 内建 `/mcp`，stdio 薄封装保留）；MCP OIDC 资源服务器（IdP 发现/JWKS、JWT 校验、claim 映射、RFC 9728 元数据）。OIDC 仅作用于 `/mcp`，REST 仍为静态 Bearer 或签名；引擎、存储与核心语义零改动。
 - **NFR7 可运维性**：生产形态须可被外部进程管理器托管（可探活、可优雅停机），运行状态可观测（指标），数据可备份恢复；事件日志的长期增长须有可控的压缩/保留手段。**多实例边界（D27）**：同一 `data_dir` 上并发承载多实例时须以独占锁（flock）保证单写者，禁止交错写同一日志；实例间不共享 Counter/Archive，跨实例协同不在范式保障范围内。
 
 ## 6. 范围外（显式排除）

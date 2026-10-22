@@ -1,5 +1,16 @@
 # 架构变更记录
 
+## 2026-10-22（第 23 轮，NFR6 v2 架构落地）
+
+- **§1 总览**：daemon 由「单机单进程」表述更新为「单权威进程，unix 默认 / TCP+TLS 可选」；接口图补 MCP Streamable HTTP 与身份层（Bearer/签名/OIDC）；新增「身份止于接口层」约束。
+- **§2.1 数据流**：MCP 请求路径改为 `pact-mcp / 内建 /mcp → REST → engine`，并标注中间件身份解析（Bearer/Ed25519 签名；HTTP 侧 OIDC）。
+- **§2.5 ACL 流**：身份来源改为 Bearer 或签名；豁免路径改列 `/health|/ready|/metrics|/mcp|RFC 9728 元数据`，说明 `/validate` 在签名启用时仍需签名。
+- **新增 §2.7**：MCP Streamable HTTP 与 OIDC 数据流（`require_mcp_auth` → JWT 校验 → `PactMcp` → 进程内 tower 调 REST → engine；401/503 边界；令牌不缓存/不转发；信任模式限制）。
+- **§3 进程与部署视图**：改为 v2 拓扑（TLS 终止在 pactd、内建 `/mcp`、外部 IdP/JWKS、stdio 薄封装保留）；明确 OIDC 为可选外部依赖且仅 `/mcp` 触发。
+- **§4 联网拓扑**：由「v2 预留」改为「v2 已实现」；新增部署拓扑图（TLS in pactd、mTLS 可选、签名、内建 `/mcp`、IdP/JWKS）、请求身份判定顺序表、v1→v2 差异表；明确引擎/存储/核心零改动，新增仅 `pact-http` 的 `tls`/`sign`/`oidc`/`mcp` 模块。
+- **§5 安全边界**：更新为 TLS/mTLS + Bearer/签名 + ACL；新增「联网身份与传输」行（OIDC 仅 `/mcp`、令牌不转发、IdP 故障 503、内置客户端不出示客户端证书）。
+- **§6 生产运行层**：runtime 连接参数补 `--https/--tls-ca/--sign-key/--sign-as`；删除「服务端 MCP 随 v2 落地」「v1 无 TLS」等陈旧表述；分发仍要求默认仅绑回环/受信网络，跨主机时用 TLS/mTLS 或外部终结 + 令牌/签名/ACL。
+
 ## 2026-10-21（第 22 轮，D33：WASM 本地分发形态去除“实验性”标记）
 
 - **组件状态**：`pact-wasm` 由“实验性本地分发形态”转为**受支持的本地分发形态**（D33）。组件职责、依赖边与运行边界不变：仍是进程内、本地单用户、Node/桌面嵌入；权威仍是原生 daemon。

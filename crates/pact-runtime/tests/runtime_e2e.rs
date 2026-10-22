@@ -204,6 +204,16 @@ fn endpoint_args_follow_cli_contract() {
         Endpoint::tcp("127.0.0.1:8787").args(),
         vec!["--tcp".to_owned(), "127.0.0.1:8787".to_owned()]
     );
+    assert_eq!(
+        Endpoint::https("127.0.0.1:8787", Some(PathBuf::from("/tmp/ca.pem"))).args(),
+        vec![
+            "--tcp".to_owned(),
+            "127.0.0.1:8787".to_owned(),
+            "--https".to_owned(),
+            "--tls-ca".to_owned(),
+            "/tmp/ca.pem".to_owned(),
+        ]
+    );
 }
 
 #[test]
@@ -446,7 +456,7 @@ async fn side_effect_saga() {
             ty: "task_failure".to_owned(),
             finalize: true,
         });
-    let client = RestClient::from_endpoint(&endpoint, "mat", None);
+    let client = RestClient::from_endpoint(&endpoint, "mat", None).expect("unix 端点构造应成功");
     let mut executor = SideEffectExecutor::new(client, ex_cfg);
     let stop = StopSignal::new();
     let stop_for_exec = stop.clone();

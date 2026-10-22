@@ -37,8 +37,18 @@ pub struct ServerState {
     engine: Engine,
     /// 参与者 → 令牌；空表 = 信任声明模式（NFR5）。
     auth_tokens: BTreeMap<String, String>,
+    /// D34：参与者 → Ed25519 公钥；非空即启用请求签名。
+    auth_keys: BTreeMap<String, [u8; 32]>,
     /// 域级授权表（FR17/FR19）；空表 = 不启用 ACL（向后兼容）。
     acl: AclMap,
+    /// D36：MCP OIDC 验证器（仅 `/mcp` 使用）。
+    oidc: Option<Arc<crate::oidc::OidcValidator>>,
+    /// D36：对外基址（RFC 9728 元数据）。
+    public_url: Option<String>,
+    /// D35：进程内能力令牌（MCP → 本地 REST）。
+    internal_token: [u8; 32],
+    /// D34：nonce 防重放缓存。
+    nonces: tokio::sync::Mutex<crate::sign::NonceCache>,
     /// 启动时刻（`/metrics` 的 uptime 基准）。
     started_at: std::time::Instant,
 }
@@ -54,10 +64,26 @@ impl ServerState {
         auth_tokens: BTreeMap<String, String>,
         acl: AclMap,
     ) -> Arc<Self> {
+        Self::with_identity(engine, auth_tokens, BTreeMap::new(), acl, None, None)
+    }
+
+    pub fn with_identity(
+        engine: Engine,
+        auth_tokens: BTreeMap<String, String>,
+        auth_keys: BTreeMap<String, [u8; 32]>,
+        acl: AclMap,
+        oidc: Option<Arc<crate::oidc::OidcValidator>>,
+        public_url: Option<String>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             engine,
             auth_tokens,
+            auth_keys,
             acl,
+            oidc,
+            public_url,
+            internal_token: random_internal_token(),
+            nonces: tokio::sync::Mutex::new(crate::sign::NonceCache::default()),
             started_at: std::time::Instant::now(),
         })
     }
@@ -66,11 +92,76 @@ impl ServerState {
         !self.acl.is_empty()
     }
 
+    pub fn signing_enabled(&self) -> bool {
+        !self.auth_keys.is_empty()
+    }
+
+    pub fn auth_key(&self, participant: &str) -> Option<&[u8; 32]> {
+        self.auth_keys.get(participant)
+    }
+
+    pub fn internal_token(&self) -> [u8; 32] {
+        self.internal_token
+    }
+
+    pub fn internal_token_hex(&self) -> String {
+        let mut out = String::with_capacity(64);
+        for b in self.internal_token {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{b:02x}");
+        }
+        out
+    }
+
+    /// 记录 nonce；重复或缓存满返回 false（429）。
+    pub async fn accept_nonce(&self, nonce: &str) -> bool {
+        self.nonces
+            .lock()
+            .await
+            .check_and_insert(nonce, std::time::Instant::now())
+    }
+
+    pub fn has_static_tokens(&self) -> bool {
+        !self.auth_tokens.is_empty()
+    }
+
+    pub fn static_token_matches(&self, supplied: &str) -> Option<String> {
+        let mut found = None;
+        for (principal, token) in &self.auth_tokens {
+            if ct_eq(supplied, token) {
+                found = Some(principal.clone());
+            }
+        }
+        found
+    }
+
+    pub fn oidc(&self) -> Option<&Arc<crate::oidc::OidcValidator>> {
+        self.oidc.as_ref()
+    }
+
+    pub fn public_url(&self) -> Option<&str> {
+        self.public_url.as_deref()
+    }
+
     /// 从请求头解出已认证参与者（令牌表为空 → None = 信任声明模式）。
     ///
     /// 恒时遍历全部令牌再判定，不按 principal 提前返回（CWE-208）。
     fn authenticated_principal(&self, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+        // D34：签名中间件写入的可信头优先。
+        if let Some(p) = headers
+            .get(crate::sign::HEADER_VERIFIED_PRINCIPAL)
+            .and_then(|v| v.to_str().ok())
+        {
+            return Ok(Some(p.to_owned()));
+        }
         if self.auth_tokens.is_empty() {
+            if self.signing_enabled() {
+                return Err(ApiError::new(
+                    StatusCode::UNAUTHORIZED,
+                    "Unauthorized",
+                    "缺少请求签名".to_owned(),
+                ));
+            }
             return Ok(None);
         }
         let supplied = headers
@@ -81,16 +172,10 @@ impl ServerState {
             return Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "Unauthorized",
-                "缺少 Bearer 令牌".to_owned(),
+                "缺少 Bearer 令牌或请求签名".to_owned(),
             ));
         };
-        let mut found = None;
-        for (principal, token) in &self.auth_tokens {
-            if ct_eq(supplied, token) {
-                found = Some(principal.clone());
-            }
-        }
-        match found {
+        match self.static_token_matches(supplied) {
             Some(p) => Ok(Some(p)),
             None => Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
@@ -126,28 +211,18 @@ impl ServerState {
     /// 参与者身份校验（§9.4：命令进入引擎前完成）。
     /// 令牌表为空 = 信任声明模式，直接放行。
     fn authorize(&self, participant: &str, headers: &HeaderMap) -> Result<(), ApiError> {
-        if self.auth_tokens.is_empty() {
+        if self.auth_tokens.is_empty() && !self.signing_enabled() {
             return Ok(());
         }
-        let expected = self.auth_tokens.get(participant).ok_or_else(|| {
-            ApiError::new(
+        let identity = self.require_principal(headers)?;
+        if identity != participant {
+            return Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "Unauthorized",
-                format!("参与者 {participant} 无登记令牌"),
-            )
-        })?;
-        let supplied = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.strip_prefix("Bearer "));
-        match supplied {
-            Some(t) if ct_eq(t, expected) => Ok(()),
-            _ => Err(ApiError::new(
-                StatusCode::UNAUTHORIZED,
-                "Unauthorized",
-                format!("参与者 {participant} 令牌缺失或不匹配"),
-            )),
+                format!("请求身份与参与者 {participant} 不一致"),
+            ));
         }
+        Ok(())
     }
 
     /// 动作端点：令牌校验 +（启用 ACL 时）实例授权。
@@ -188,6 +263,22 @@ impl ServerState {
         }
         Ok(())
     }
+}
+
+/// D35：启动时生成的进程内能力令牌（优先取 32 字节系统随机源）。
+fn random_internal_token() -> [u8; 32] {
+    use std::io::Read as _;
+    let mut out = [0u8; 32];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut out))
+        .is_ok()
+    {
+        return out;
+    }
+    // 退化路径：两枚 ULID 提供 160 位随机熵。
+    out[..16].copy_from_slice(&ulid::Ulid::new().to_bytes());
+    out[16..].copy_from_slice(&ulid::Ulid::new().to_bytes());
+    out
 }
 
 /// 恒时字符串比较（CWE-208 防护）：比较耗时与字节内容无关，仅依赖较短一侧长度。
@@ -433,8 +524,50 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/domains/{d}/instances/{i}/status", get(status_instance))
         .route("/domains/{d}/instances/{i}/events", get(events_instance))
         .route("/domains/{d}/instances/{i}/compact", post(compact_instance))
+        // D36：RFC 9728 受保护资源元数据（豁免签名）。
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(oauth_protected_resource),
+        )
         .fallback(not_found)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::enforce_identity,
+        ))
         .with_state(state)
+}
+
+/// D35：在公开路由之上挂载 `/mcp`（`[mcp].enabled = true` 时）。
+pub fn router_with_mcp(state: Arc<ServerState>, mcp_enabled: bool) -> Router {
+    let base = router(state.clone());
+    if !mcp_enabled {
+        return base;
+    }
+    let client = Arc::new(crate::client::Client::local(
+        base.clone(),
+        state.internal_token(),
+    ));
+    let mut hosts = vec![
+        "localhost".to_owned(),
+        "127.0.0.1".to_owned(),
+        "::1".to_owned(),
+    ];
+    if let Some(url) = state.public_url() {
+        if let Ok(uri) = url.parse::<http::Uri>() {
+            if let Some(a) = uri.authority() {
+                hosts.push(a.as_str().to_owned());
+            }
+        }
+    }
+    let service = crate::mcp::http_service(client, hosts);
+    let mcp =
+        Router::new()
+            .nest_service("/mcp", service)
+            .layer(axum::middleware::from_fn_with_state(
+                state,
+                crate::middleware::require_mcp_auth,
+            ));
+    base.merge(mcp)
 }
 
 // ============ 运维端点（D25 子项 2：health / ready / metrics，不校验令牌） ============
@@ -442,6 +575,19 @@ pub fn router(state: Arc<ServerState>) -> Router {
 /// 存活探针（liveness）：进程在服务即 200，不依赖引擎状态。
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(serde_json::json!({ "status": "ok" })))
+}
+
+/// D36：RFC 9728 受保护资源元数据（未配置 OIDC 或 public_url 时为 404）。
+async fn oauth_protected_resource(State(st): State<Arc<ServerState>>) -> Response {
+    match (st.oidc(), st.public_url()) {
+        (Some(oidc), Some(url)) => Json(oidc.metadata(url)).into_response(),
+        _ => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "NotFound",
+            "未启用 OIDC 受保护资源元数据".to_owned(),
+        )
+        .into_response(),
+    }
 }
 
 /// 就绪探针（readiness）：引擎可应答（启动恢复完成且未停机）→ 200，否则 503。
@@ -1289,10 +1435,11 @@ pub async fn serve_unix(
     Ok(())
 }
 
-/// TCP 监听循环（可选，建议 127.0.0.1）。
+/// TCP 监听循环（可选）；`tls` 存在时在 accept 后完成 TLS 握手（D34）。
 pub async fn serve_tcp(
     app: Router,
     addr: &str,
+    tls: Option<tokio_rustls::TlsAcceptor>,
     mut shutdown: watch::Receiver<bool>,
     tracker: ConnTracker,
 ) -> std::io::Result<()> {
@@ -1301,7 +1448,25 @@ pub async fn serve_tcp(
         tokio::select! {
             r = listener.accept() => {
                 let (stream, _) = r?;
-                spawn_connection(app.clone(), hyper_util::rt::TokioIo::new(stream), tracker.guard());
+                match &tls {
+                    None => spawn_connection(app.clone(), hyper_util::rt::TokioIo::new(stream), tracker.guard()),
+                    Some(acceptor) => {
+                        let acceptor = acceptor.clone();
+                        let app = app.clone();
+                        let guard = tracker.guard();
+                        tokio::spawn(async move {
+                            match acceptor.accept(stream).await {
+                                Ok(tls_stream) => {
+                                    serve_connection(app, hyper_util::rt::TokioIo::new(tls_stream), guard).await;
+                                }
+                                Err(e) => {
+                                    // 握手失败（缺客户端证书、协议不符等）只影响该连接。
+                                    eprintln!("pactd: TLS 握手失败：{e}");
+                                }
+                            }
+                        });
+                    }
+                }
             }
             _ = wait_shutdown(&mut shutdown) => break,
         }
@@ -1322,14 +1487,19 @@ fn spawn_connection<I>(app: Router, io: I, guard: ConnGuard)
 where
     I: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
 {
-    tokio::spawn(async move {
-        let _guard = guard;
-        let svc = hyper_util::service::TowerToHyperService::new(app.into_service());
-        let builder =
-            hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
-        // 连接级错误（客户端断开等）不影响 daemon 存活
-        let _ = builder.serve_connection(io, svc).await;
-    });
+    tokio::spawn(serve_connection(app, io, guard));
+}
+
+async fn serve_connection<I>(app: Router, io: I, guard: ConnGuard)
+where
+    I: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+{
+    let _guard = guard;
+    let svc = hyper_util::service::TowerToHyperService::new(app.into_service());
+    let builder =
+        hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+    // 连接级错误（客户端断开等）不影响 daemon 存活
+    let _ = builder.serve_connection(io, svc).await;
 }
 
 #[cfg(test)]

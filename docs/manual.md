@@ -54,16 +54,18 @@ PACT 把你的协作流程写成一份 **域声明**（`.pact` 文件），然�
 3. **Rule-T 是信息，不是闸门**。域终止后不禁止动作，只是 Counter 空了让 Rule-P 拿不到前驱；
    再 `seed` 一次，`terminated` 就翻回 `false`（示例 §3 第 11 步实测）。
 
-### 1.3 三个接口，一个权威
+### 1.3 四个接入形态，一个权威
 
 ```
-agent ── MCP (stdio) ─┐
-应用  ── REST + SSE ──┼── 同一个 daemon 进程 ── Counter 唯一权威 ── JSONL 事件日志
-人    ── CLI ─────────┘        （pact-mcp / pact-cli 的在线命令都是 REST 客户端）
+agent ── MCP (stdio) ─────────┐
+agent ── MCP (Streamable HTTP)─┤
+应用  ── REST + SSE ───────────┼── 同一个 daemon 进程 ── Counter 唯一权威 ── JSONL 事件日志
+人    ── CLI ──────────────────┘   （pact-mcp / 内建 /mcp / pact-cli 在线命令都落到 REST）
 ```
 
-三接口能力对等，共享同一套线上格式（设计 §6）。差别只在传输与形态；
-唯一例外是 `compose` 的语义差异，见 §6.3。
+四形态能力对等，共享同一套线上格式（设计 §6）。差别只在传输、身份与形态：
+stdio 与 REST 可用静态 Bearer 或 Ed25519 签名；`/mcp` 可用 OIDC JWT 或静态 Bearer；
+`/health` `/ready` `/metrics` 免身份。唯一语义例外是 `compose`，见 §6.3。
 
 ### 1.4 什么时候该用（§2.1 五条判据）
 
@@ -108,7 +110,7 @@ agent ── MCP (stdio) ─┐
 ```bash
 cargo build -p pact-cli        # → target/debug/pact（含 daemon start）
 cargo build -p pact-http       # → target/debug/pactd（裸 daemon，等价于 pact daemon start）
-cargo build -p pact-mcp        # → target/debug/pact-mcp（stdio MCP server，由 agent 拉起）
+cargo build -p pact-mcp        # → target/debug/pact-mcp（stdio MCP 薄封装，由 agent 拉起）
 ```
 
 ### 2.2 配置文件 `pact.toml`
@@ -122,23 +124,49 @@ listen_unix = "./pact.sock"       # 默认监听；单机安全
 # compact_keep_last = 0           # 可选；自动压缩保留的尾部事件条数
 # read_audit = false              # 可选；持久化 Rule-R 读审计（每次成功读追加一行记录，默认关闭）
 
+# NFR6 v2：TLS / mTLS（可选；仅对 listen_tcp 生效）
+# [tls]
+# certificate = "/etc/pact/server-chain.pem"   # PEM 证书链
+# private_key = "/etc/pact/server.key"         # PEM 私钥（PKCS#8/PKCS#1/SEC1）
+# client_ca   = "/etc/pact/client-ca.pem"      # 存在即要求客户端证书（mTLS）
+
+# NFR6 v2：Ed25519 公钥表；非空即启用请求签名（值 = base64 的 32 字节公钥）
+# [auth.keys]
+# architect = "<base64-32B-pubkey>"
+
 [mcp]
 enabled = true
+# public_url = "https://pact.example.com"      # OIDC 必填；也用于 /mcp Host 白名单
+
+# NFR6 v2：MCP OIDC 资源服务器（仅 /mcp；不内置授权服务器）
+# [mcp.oidc]
+# issuer = "https://idp.example.com"
+# audience = "pact-mcp"
+# principal_claim = "sub"                      # 缺省 sub
+# principal_map = { "auth0|alice" = "alice" }  # claim 值 → 参与者名
+# jwks_uri = "https://idp.example.com/.well-known/jwks.json"  # discovery=false 时必填
+# discovery = true                             # 缺省 true
+# allowed_algs = ["RS256", "ES256", "EdDSA"]   # 缺省即这三项
+# ca = "/etc/pact/idp-ca.pem"                  # IdP TLS 自定义 CA
+# allow_static_tokens = true                   # 允许静态 Bearer 与 JWT 并存
+# allow_insecure_http = false                  # 仅本地/测试可 true
 
 [auth]                            # 可选；整段缺省 = 信任声明模式
 [auth.tokens]
 architect = "sekret"              # 参与者 → 令牌，请求头 Authorization: Bearer
-# [auth.acl]                      # 可选；域级 ACL，非空时必须同时配置 [auth.tokens]
+
+# [auth.acl]                      # 可选；域级 ACL，非空时 [auth.tokens] 或 [auth.keys] 至少其一
 # architect = ["proj/*", "other/default"]  # 条目格式：domain/instance 或 domain/*
 ```
 
 缺省语义（文件不存在或字段缺省时）：`data_dir = "./data"`、`listen_unix = "./pact.sock"`、
-无 TCP、无令牌表、无 ACL、无 PID 文件、不自动压缩（`compact_on_start = false`、`compact_keep_last = 0`）、
-不写读审计（`read_audit = false`）。两个易踩点：
+无 TCP、无 TLS、无签名公钥表、无令牌表、无 ACL、无 PID 文件、不自动压缩（`compact_on_start = false`、`compact_keep_last = 0`）、
+不写读审计（`read_audit = false`）、`[mcp].enabled = false`、无 OIDC。三个易踩点：
 
 - 配置用 `deny_unknown_fields`，**写错键名会直接报错**，不会静默忽略。
 - `listen_unix = ""`（空串）= 禁用 unix socket；只写 `listen_tcp` 而不写 `listen_unix`，
   unix socket 也一并禁用。
+- `[tls]` 必须同时给 `certificate` 与 `private_key`，且必须配置 `listen_tcp`；只配其中一个会拒绝启动。
 
 ### 2.3 启动与停止 daemon
 
@@ -157,9 +185,9 @@ pact daemon start --config pact.toml      # 前台运行；Ctrl-C 或 SIGTERM �
 **PID 文件（可选）**：配置 `pid_file` 后启动写入自身 PID、退出删除。启动时若该文件已存在
 且记录的 PID 仍存活，则**拒绝启动**（防两个 pactd 争同一文件）；确认是无用残留后再手动删除。
 
-### 2.3.1 运维端点（免令牌）
+### 2.3.1 运维端点（免身份）
 
-daemon 提供三个仅供本地/内网使用的运维端点（**不校验令牌**）。认证边界：配置 `[auth.acl]` 后，域生命周期、四类动作、查询、`/compact` 与读审计视图全部按 `(domain, instance)` 授权（§2.4、§7.6）；**未配置 ACL** 时，令牌只覆盖四类动作端点，生命周期、查询与 `/compact` 不绑定身份。无论是否启用 ACL，`/health` `/ready` `/metrics` 与 `POST /validate` 都免令牌——daemon 仍应仅监听 unix socket、回环或受信网络，**不得把 TCP 端口暴露给不可信网络**。
+daemon 提供三个仅供本地/内网使用的运维端点（**不校验身份**）。认证边界：配置 `[auth.acl]` 后，域生命周期、四类动作、查询、`/compact` 与读审计视图全部按 `(domain, instance)` 授权（§2.4、§7.6）；**未配置 ACL** 时不做域级授权（静态 Bearer 仍用于四类动作端点的参与者一致性；启用签名时验签覆盖全部非豁免 REST 端点，生命周期、查询与 `/compact` 也需签名）。`/health` `/ready` `/metrics` 与 OIDC 元数据始终免身份；`POST /validate` 在**未启用签名**时免身份，启用 `[auth.keys]` 后需签名。daemon 默认应只监听 unix socket 或回环；需要暴露 TCP 时启用 TLS/mTLS（设计 §9.5），**不得把明文端口暴露给不可信网络**。
 
 ```bash
 curl --unix-socket ./pact.sock http://localhost/health   # {"status":"ok"}（存活）
@@ -173,19 +201,19 @@ curl --unix-socket ./pact.sock http://localhost/metrics  # Prometheus 文本格�
 
 ### 2.4 身份与令牌
 
-- **信任声明模式**（默认）：`[auth.tokens]` 缺省或为空表，任何 `--participant` 值都被接受。
-  身份校验退化为「你说你是谁就是谁」，权限裁决仍由 Gate 与 SeedAuthority 完成。
-- **令牌模式**：令牌表非空时，参与者必须在表内且 `Authorization: Bearer <token>` 匹配，
-  否则 `401 Unauthorized`。比较用恒时算法（防 CWE-208 时序侧信道）。
+- **信任声明模式**（REST 默认，`[auth.tokens]` 与 `[auth.keys]` 均为空时）：任何 `--participant` 值都被接受。身份校验退化为「你说你是谁就是谁」，权限裁决仍由 Gate 与 SeedAuthority 完成。OIDC 配置只影响 `/mcp`，不会让 REST 变成需要 JWT。
+- **令牌模式**：令牌表非空时，参与者必须在表内且 `Authorization: Bearer <token>` 匹配，否则 `401 Unauthorized`。比较用恒时算法（防 CWE-208 时序侧信道）。
+- **签名模式（NFR6 v2）**：`[auth.keys]` 非空时启用 Ed25519 请求签名，客户端用 `--sign-key`（base64 32 字节种子）+ `--sign-as` 对每个 REST 请求签名；服务端验签后把参与者写入可信头。启用签名后，除豁免端点外的 REST 请求**必须签名，Bearer 不能替代**；两者同时配置时，带签名的请求以签名身份为准。请求中的 `participant` 必须等于签名身份，否则 `401`。
+- **MCP OIDC（NFR6 v2）**：只作用于 `/mcp`，daemon 是资源服务器；客户端把 IdP 签发的访问令牌直接作为 `Authorization: Bearer` 传入，客户端不做授权码流程。OIDC 令牌不用于 REST，也不会被转发。
 
-身份在**命令进入引擎之前**由接口层校验；核心与引擎不感知认证方式（设计 §9.4，NFR5）。
+身份在**命令进入引擎之前**由接口层校验；核心与引擎不感知认证方式（设计 §9.4/§9.6/§9.8，NFR5）。
 
-**域级 ACL（可选）**：`[auth.acl]` 非空时启用实例级授权（`domain/instance` 或 `domain/*`），覆盖生命周期、动作、查询、压缩与读审计视图；未配置时保持上述信任声明/令牌行为不变。配置必须同时提供 `[auth.tokens]`，否则 daemon 拒绝启动。详见 §7.6。
+**域级 ACL（可选）**：`[auth.acl]` 非空时启用实例级授权（`domain/instance` 或 `domain/*`），覆盖生命周期、动作、查询、压缩与读审计视图；未配置时保持上述信任声明/令牌/签名行为不变。配置必须同时提供 `[auth.tokens]` 或 `[auth.keys]`（至少其一），否则 daemon 拒绝启动。详见 §7.6。
 
 ### 2.5 分发与部署（阶段 9，D26）
 
 仓库 `dist/` 提供三条等价部署路径，载荷是同一批静态二进制：`pact`（CLI + daemon）、
-`pactd`（裸 daemon）、`pact-mcp`（stdio MCP server）、`pact-runtime`（生产编排）。
+`pactd`（裸 daemon）、`pact-mcp`（stdio MCP 薄封装）、`pact-runtime`（生产编排）。
 
 #### 2.5.1 musl 静态二进制打包
 
@@ -244,7 +272,8 @@ unit 要点：前台运行 `pactd --config /etc/pact/pact.toml`；`WorkingDirect
 # 上下文过滤依赖 dist/Dockerfile.dockerignore，避免把 docs/（含未公开论文）带入构建
 docker build -f dist/Dockerfile -t pact:0.1.0 .
 
-# 运行：只绑回环（v1 无 TLS，切勿 -p 8787:8787 暴露到公网）
+# 运行：默认只绑回环；跨主机时启用 [tls] 或前置 TLS 终结，
+# 切勿把无 TLS、无身份的明文端口暴露到公网
 docker run --rm --name pact \
   -p 127.0.0.1:8787:8787 \
   -v pact-data:/var/lib/pact \
@@ -258,8 +287,79 @@ docker run --rm -p 127.0.0.1:8787:8787 \
 
 镜像以 uid/gid 10001 的 `pact` 用户运行，`/var/lib/pact` 为数据卷，暴露 `8787`，
 `HEALTHCHECK` 每 30s 请求 `/health`。容器内默认配置为 `dist/pact.container.toml`
-（`listen_unix=""`，`listen_tcp="0.0.0.0:8787"`）；跨主机访问须在容器前置 TLS 终结，
-并配置 `[auth.tokens]` / `[auth.acl]`（§2.4、§7.6）。
+（`listen_unix=""`，`listen_tcp="0.0.0.0:8787"`）；跨主机访问须在 pactd 启用 `[tls]`（可含 `client_ca` mTLS）
+或前置 TLS 终结，并配置 `[auth.tokens]` / `[auth.keys]` / `[auth.acl]`（§2.4、§7.6）。
+
+### 2.6 HTTPS、签名、MCP HTTP 与 OIDC（NFR6 v2）
+
+#### 2.6.1 启用 HTTPS（服务端 TLS / mTLS）
+
+```toml
+listen_tcp = "0.0.0.0:8787"
+[tls]
+certificate = "/etc/pact/server-chain.pem"
+private_key = "/etc/pact/server.key"
+# client_ca = "/etc/pact/client-ca.pem"   # 加此行即要求客户端证书
+```
+
+- TLS 只在 TCP 监听上生效；unix socket 始终明文。配置不完整（缺证书/私钥，或没有 `listen_tcp`）则拒绝启动。
+- `client_ca` 存在即启用 mTLS；握手失败的连接被拒绝但 daemon 继续服务。
+- 内置客户端只验证服务端，**不出示客户端证书**；需要 mTLS 时请用能出示证书的外部客户端（curl `--cert/--key` 等）。
+- 客户端连接：
+
+```bash
+pact --tcp pact.example.com:8787 --https --tls-ca ./ca.pem --bearer "$TOKEN" domain list
+```
+
+#### 2.6.2 Ed25519 请求签名
+
+```toml
+[auth.keys]
+architect = "<base64-32B-pubkey>"   # base64 的 32 字节 Ed25519 公钥
+```
+
+```bash
+# --sign-key：base64 的 32 字节 Ed25519 私钥种子（裸 seed，非 PKCS#8 DER）；--sign-as 必须与请求 participant 一致
+pact --tcp 127.0.0.1:8787 --sign-key ./architect.seed --sign-as architect \
+  --domain proj --participant architect produce --type design --predecessors <requirement-token-id>
+```
+
+- 服务端校验 ±300 秒时间窗与 nonce 防重放；请求体超过 8 MiB 返回 `413`，nonce 重放返回 `429`。
+- 签名与 Bearer 可同时配置，但启用签名后除豁免端点外的 REST 请求**必须签名，Bearer 不能替代**；带签名的请求以签名身份为准。签名身份与请求 `participant` 不一致返回 `401`。
+- `/health` `/ready` `/metrics` `/mcp` 免验签；启用签名后 `POST /validate` 也需签名。
+
+#### 2.6.3 通过 HTTP 使用 MCP
+
+```toml
+[mcp]
+enabled = true
+public_url = "https://pact.example.com"
+```
+
+MCP 客户端配置为 Streamable HTTP：`https://pact.example.com/mcp`，请求头
+`Authorization: Bearer <令牌或 OIDC 访问令牌>`。`public_url` 的 authority 会加入 `/mcp` 的 Host 白名单
+（同时保留回环）。未配置 OIDC 与令牌时为信任模式，仅限单机/回环，启动会打印警告；
+若配置了 `[auth.keys]` 但既无令牌也无 OIDC，daemon 拒绝启动。
+
+#### 2.6.4 用 OIDC 保护 `/mcp`
+
+```toml
+[mcp]
+enabled = true
+public_url = "https://pact.example.com"
+[mcp.oidc]
+issuer = "https://idp.example.com"
+audience = "pact-mcp"
+principal_claim = "email"
+principal_map = { "alice@example.com" = "alice" }
+# discovery = true（默认）或 jwks_uri = "..."
+```
+
+- MCP 宿主（或用户）先向 IdP 完成授权并取得访问令牌，再把它直接作为 `Authorization: Bearer` 发给 `/mcp`；daemon 与 CLI 不实现授权码流程，只做资源服务器验证。
+- 校验 `iss`/`aud`/`exp`/`nbf`、alg 白名单（RS256/ES256/EdDSA），拒绝 `none`/HS*；claim 映射后的参与者须匹配 `[A-Za-z0-9_-]{1,128}`。
+- 发现链：`GET https://pact.example.com/.well-known/oauth-protected-resource` → `authorization_servers` → IdP。401 响应带 `WWW-Authenticate` 指向该元数据。
+- IdP/JWKS 不可达时 `/mcp` 返回 `503`；REST、CLI、stdio MCP 不受影响。令牌不缓存、不写日志、不转发给 REST。
+- 本地开发可用 `allow_insecure_http = true` 与 `ca = "./idp-ca.pem"`；生产保持默认 `false`。
 
 ---
 
@@ -649,7 +749,7 @@ pact compact --domain D --instance I --keep-last 100   # 保留最近 100 条，
   （`SnapshotRequiredForCompactedLog`），不静默丢数据。
 - **代价**：被丢弃前缀**不再可从日志审计**——审计视图退化为「快照 + 保留的尾部事件」。
   需要完整历史时保留 `keep_last` 足够大，或先备份 JSONL 再压缩。
-- **安全边界**：压缩是**破坏性**运维操作；启用 `[auth.acl]` 时与其它实例端点一样按 `(domain, instance)` 授权，未启用 ACL 时不校验令牌（同域生命周期端点）——只应在 unix socket / 回环 / 受信网络暴露。另注意 `compact_on_start = true` 且 `compact_keep_last = 0` 时，**每次重启都会丢弃全部已入快照的审计前缀**；需要留存审计时务必显式设置 `compact_keep_last`（pactd 启动会打印告警）。
+- **安全边界**：压缩是**破坏性**运维操作；启用 `[auth.acl]` 时与其它实例端点一样按 `(domain, instance)` 授权；未启用 ACL 时不做域级授权（但启用签名时仍需签名）——只应在 unix socket / 回环 / 受信网络暴露。另注意 `compact_on_start = true` 且 `compact_keep_last = 0` 时，**每次重启都会丢弃全部已入快照的审计前缀**；需要留存审计时务必显式设置 `compact_keep_last`（pactd 启动会打印告警）。
 - 可选启动自动压缩：`compact_on_start = true` + `compact_keep_last = N`；
   恢复后逐实例压缩，单个实例失败只告警、不阻断 daemon 启动。
 - REST 等价入口：`POST /domains/{d}[/instances/{i}]/compact {"keep_last": 0}`，
@@ -674,26 +774,30 @@ curl --unix-socket ./pact.sock http://localhost/domains/proj/instances/foo/read-
 
 ### 7.6 域级 ACL（D25）
 
-`[auth.acl]` 非空即启用域级授权，必须同时配置 `[auth.tokens]`。格式：
+`[auth.acl]` 非空即启用域级授权，必须同时配置 `[auth.tokens]` 或 `[auth.keys]`（至少其一）。格式：
 
 ```toml
 [auth.tokens]
 architect = "token-arch"
 reviewer = "token-rev"
 
+# 或者/同时使用签名身份：
+# [auth.keys]
+# architect = "<base64 32B 公钥>"
+
 [auth.acl]
 architect = ["proj/*"]          # 通配：proj 下任意实例都允许
 reviewer = ["proj/default"]    # 仅允许 reviewer 读 proj/default
 ```
 
-授权规则（除 `/health` `/ready` `/metrics` `/validate` 均生效）：
+授权规则（除 `/health` `/ready` `/metrics` `/mcp` `/validate` 均生效）：
 
-- `load` / `instantiate` / `unload` / `compact` / `:analyze` / `:compose`：从 Bearer 令牌反查参与者，按 `(domain, instance)` 授权。
-- 四类动作（seed / produce / read / consume）：请求体/查询参数的 `participant` 必须与 Bearer 令牌归属一致，且参与者对实例有授权。
-- 查询（counter / archive / gates / enabled / status / events / read-audit）：从 Bearer 令牌反查参与者，按 `(domain, instance)` 授权。
+- `load` / `instantiate` / `unload` / `compact` / `:analyze` / `:compose`：启用签名时取签名身份，否则取 Bearer 令牌归属的参与者，按 `(domain, instance)` 授权。
+- 四类动作（seed / produce / read / consume）：请求体/查询参数的 `participant` 必须与启用签名时的签名身份（或未启用签名时的 Bearer 令牌归属）一致，且参与者对实例有授权。
+- 查询（counter / archive / gates / enabled / status / events / read-audit）：启用签名时取签名身份，否则取 Bearer 令牌归属的参与者，按 `(domain, instance)` 授权。
 - `GET /domains`：按参与者过滤，只返回其有权访问的实例（空域剔除）。
 
-未授权返回 `403 Forbidden`（结构化错误体，含 `domain` `instance`）；无有效令牌返回 `401 Unauthorized`。未配置 `[auth.acl]` 保持原有信任声明行为（即任何人说自己是谁就是谁，不做域级授权）。
+未授权返回 `403 Forbidden`（结构化错误体，含 `domain` `instance`）；无有效身份/身份与 participant 不一致返回 `401 Unauthorized`。未配置 `[auth.acl]` 保持原有信任声明行为（即任何人说自己是谁就是谁，不做域级授权）。
 
 ### 7.7 CPN 模型生成（离线，阶段 6）
 
@@ -724,8 +828,15 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 |------|------|
 | `--unix <PATH>` | unix socket 路径，缺省 `./pact.sock` |
 | `--tcp <ADDR>` | TCP 地址（如 `127.0.0.1:8787`）；**设置时优先于 `--unix`** |
+| `--https` | 以 TLS 连接 `--tcp`（须同时给 `--tcp`）；服务端须启用 `[tls]` |
+| `--tls-ca <PATH>` | 信任的服务端自定义 CA（PEM）；IdP 的 CA 在 daemon 侧 `[mcp.oidc].ca` 配置 |
+| `--sign-key <PATH>` | Ed25519 私钥种子文件（base64 32 字节）；须与 `--sign-as` 成对 |
+| `--sign-as <PARTICIPANT>` | 签名身份名；须与请求 `participant` 一致 |
 | `--bearer <TOKEN>` | 参与者令牌（`Authorization: Bearer`）；信任声明模式下可省 |
+| `--bearer-file <PATH>` | 从文件读取令牌（与 `--bearer` 互斥，便于 secret 挂载） |
 | `--json` | 以 §6 线上格式输出 JSON |
+
+`--sign-key` 与 `--sign-as` 必须同时出现；只给一个会在建立客户端前报用法错误。
 
 子命令（**在线** = 必须有 daemon；**离线** = 纯函数层，不经 daemon）：
 
@@ -761,7 +872,8 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 
 ### 8.2 REST
 
-监听 unix socket（默认）与/或 TCP。全部载荷取 §6 线上格式。
+监听 unix socket（默认）与/或 TCP（可 TLS/mTLS）。全部载荷取 §6 线上格式。
+身份：静态 Bearer 或 Ed25519 签名；启用 `[auth.keys]` 后除运维三端点、`/mcp` 与 OIDC 元数据外的请求均需签名（Bearer 不能替代）。OIDC **不用于 REST**。
 
 | 方法与路径 | 请求体 | 成功响应 |
 |-----------|--------|----------|
@@ -785,25 +897,31 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 | `POST /domains/{d}/compact` | `{keep_last?}`（缺省 0） | `200` `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`（D25） |
 | `GET /domains/{d}/events` | — | SSE 流（含 keep-alive），每条 `data:` 是 §6.4 通知 |
 | `GET /domains/{d}/read-audit?limit=` | — | `200` `{records:[...]}`（D25 子项 3；缺省 100、上限 1000） |
+| `POST/GET/DELETE /mcp` | MCP JSON-RPC / 会话控制 | MCP Streamable HTTP（D35；`[mcp].enabled = true` 时存在） |
+| `GET /.well-known/oauth-protected-resource` | — | `200` `{resource, authorization_servers, bearer_methods_supported}`（D36；OIDC 未启用时 `404`） |
 
-**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无令牌 `401`、越权 `403`；`GET /domains` 按授权过滤。未配置时行为不变。详见 §7.6。
+**签名错误语义（D34）**：缺头/未知参与者/时间戳越界/签名错误 → `401`；请求体 > 8 MiB → `413`；nonce 重放 → `429`。`/mcp` 的 OIDC 令牌非法 → `401`，IdP/JWKS 不可达 → `503`。
 
-**运维端点（D25，免令牌）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验令牌**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不校验令牌（破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
+**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。未配置时不做域级授权，但仍受签名/令牌中间件约束。详见 §7.6。
+
+**运维端点（D25，免身份）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验身份**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不做域级授权（但启用签名时仍需签名；破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
 
 **实例路由（D27）**：上表 `/domains/{d}/…` 的语义 = **`default` 实例**。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events / read-audit 全套同形。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。
 
 实现注记：`{d}:analyze` / `{d}:compose` 因路由库不支持同段「参数 + 字面量」，
 在 `/domains/{d}` 统一入口内按段内冒号后缀分发，**对外 URL 不变**。
 
-### 8.3 MCP（stdio）
+### 8.3 MCP（stdio 与 Streamable HTTP）
 
 ```bash
-pact-mcp --unix <sock> [--bearer <token>]     # 或 --tcp <addr>（优先）
+pact-mcp --unix <sock> [--bearer <token>] [--sign-key <seed> --sign-as <P>]   # 或 --tcp
+pact-mcp --tcp <addr> --https [--tls-ca <ca.pem>] [--bearer <token>|--bearer-file <path>] \
+         [--sign-key <seed> --sign-as <P>]
 ```
 
-由 agent 拉起为子进程，工具经 REST 转发至 daemon；schema 由 serde + schemars 派生；
-错误以 §6.3 结构化 JSON 返回（`CallToolResult.is_error = true`），agent 可编程处理
-（例如 gate 被拒后转入等待）。
+stdio 形态由 agent 拉起为子进程，工具经 REST 转发至 daemon；`--https/--tls-ca/--sign-key/--sign-as/--bearer-file` 与 CLI 同名（`--bearer-file` 与 `--bearer` 互斥）。schema 由 serde + schemars 派生；错误以 §6.3 结构化 JSON 返回（`CallToolResult.is_error = true`），agent 可编程处理（例如 gate 被拒后转入等待）。
+
+远程形态无需 `pact-mcp`：MCP 客户端直接连接 daemon 的 `https://<public_url>/mcp`，以 `Authorization: Bearer <静态令牌或 OIDC 访问令牌>` 认证（OIDC 见 §2.6.4）。两种形态工具、参数与错误语义完全一致。
 
 | 工具 | 语义 |
 |------|------|
@@ -825,6 +943,12 @@ pact-mcp --unix <sock> [--bearer <token>]     # 或 --tcp <addr>（优先）
 | `pact_subscribe` | 注册 Counter 变更通知；事件经 `notifications/pact/event` 推送 |
 
 共 **17** 个工具。除 `pact_domain_validate` / `pact_analyze` / `pact_compose` / `pact_list_domains` 外，全部工具接受可选 `instance` 参数（缺省 = `default` 实例，D27）。
+
+### 8.4 pact-runtime（生产编排）连接参数
+
+`pact-runtime --config <toml> [--https] [--tls-ca <pem>] [--sign-key <seed>] [--sign-as <P>]`；TOML 的 `endpoint` 支持 `https = true` 与 `tls_ca`，签名身份只经命令行 `--sign-key/--sign-as` 提供（作用于 runtime 的 REST 客户端）。
+
+`Endpoint` 提供 `unix(path)`、`tcp(addr)` 与 `https(addr, ca)` 三种构造；`https` 等价于 `tcp` + TLS。runtime 的 stdio MCP 子进程目前只透传 TLS 与 Bearer，不透传签名参数；连接签名 daemon 时请使用 REST 通道或 TLS + Bearer。
 
 ---
 
@@ -881,13 +1005,17 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `DomainBusy` | 409 | 对**非空实例**（`last_seq > DomainLoaded.seq`）再加载；须显式 `force` 才重置 |
 | `InvalidDomainName` | 400 | 域名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
 | `InvalidInstanceName` | 400 | 实例名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
-| `Unauthorized` | 401 | 令牌模式下列表无此参与者，或 Bearer 缺失/不匹配 |
-| `NotFound` | 404 | 路径不存在 |
+| `Unauthorized` | 401 | 令牌/签名缺失或不匹配；签名身份与请求 `participant` 不一致；`/mcp` 的 OIDC 令牌缺失/非法/claim 不合规 |
+| `Forbidden` | 403 | ACL 拒绝：身份有效但无该 `(domain, instance)` 授权 |
+| `PayloadTooLarge` | 413 | 签名验证前的请求体超过 8 MiB（D34） |
+| `TooManyRequests` | 429 | 签名 nonce 重放，或 nonce 缓存已满（D34） |
+| `NotFound` | 404 | 路径不存在；OIDC 未启用时 `/.well-known/oauth-protected-resource` 亦返回 404 |
 | `MethodNotAllowed` | 405 | 方法与路径不匹配（如 `GET /domains/{d}:analyze`） |
 | `BadRequest` | 400 | JSON 请求体解析失败 |
 | `Store` | 500 | 存储写入失败；**含 `UnsupportedSchemaVersion`**（日志/快照 `version` 高于当前支持版本）、**`SnapshotRequiredForCompactedLog`**（日志已截断但快照缺失/不覆盖水位）、**顶层遗留单层文件**（`LegacyLayoutDetected`，须人工迁移） |
 | `Recovery` | 500 | 启动恢复失败 |
 | `EngineStopped` | 503 | 引擎已停止 |
+| `ServiceUnavailable` | 503 | IdP 发现/JWKS 拉取不可达（仅 `/mcp`，D36） |
 | `Transport` | —（仅 CLI/MCP） | 连不上 daemon：`client error (Connect)` |
 | `Io` | —（仅 CLI） | 读取 `.pact` / `.jsonl` 文件失败，`detail.path` 是路径 |
 | `Usage` | —（仅 CLI） | 命令用法错误，如 `compose` 少于两个片段 |
@@ -916,6 +1044,15 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | 启动报 `UnsupportedSchemaVersion` | 数据由更新版 pactd 写入（事件 schema 版本更高） | 升级 pactd 或按新版格式迁移；**不可**期望旧版静默重放（§7.3） |
 | 启动报 `SnapshotRequiredForCompactedLog` | 日志已被压缩截断，但快照缺失/未覆盖 `base_seq` | 从备份恢复 `<instance>.snapshot.json`；勿手工删除快照（§7.4） |
 | 压缩后早期事件查不到 | 前缀已随快照丢弃（预期取舍） | 需要完整历史时先备份 JSONL，或用 `--keep-last` 保留足够尾部后重压（§7.4） |
+| `error [Transport]: client error (Connect)` 且使用 `--https` | 服务端未启用 `[tls]`，或客户端没给 `--tls-ca` | 确认 `listen_tcp` + `[tls]` 完整；自签/私有 CA 用 `--tls-ca`（§2.6.1） |
+| TLS 握手失败（mTLS） | 服务端配置了 `client_ca`，客户端未出示证书 | 内置 CLI/MCP/runtime 不出示证书；改用外部客户端 `--cert/--key`，或移除 `client_ca`（§2.6.1） |
+| 401 且提示「时间戳」/「nonce」/「签名」 | 客户端时钟偏差 > 300s、nonce 重放或签名种子不匹配 | 校准时间；每次请求重新签名；确认 `--sign-key` 与 `[auth.keys]` 对应（§2.6.2） |
+| 413 `PayloadTooLarge` | 签名请求体 > 8 MiB | 减小载荷；该上限在验签前生效（设计 §9.6） |
+| 429 `TooManyRequests` | 同一 nonce 被重放，或 300s 内 nonce 缓存达到 8192 | 勿重放同一请求；高并发部署缩短重试间隔或拆 daemon（设计 §9.6） |
+| `/mcp` 401 | 未带令牌、JWT 过期/aud 不符/claim 映射失败 | 检查 `Authorization: Bearer`；对照 `audience`、`principal_claim`、`principal_map`（§2.6.4） |
+| `/mcp` 503 | IdP 发现或 JWKS 不可达 | 检查 `issuer`、网络、`ca`/`allow_insecure_http`；REST 不受影响（§2.6.4） |
+| `/mcp` 403 或 Host 被拒 | `public_url` 的 authority 不在允许列表，或请求 Host 不匹配 | 设置正确的 `public_url`；客户端使用该主机名访问（设计 §9.7） |
+| `/mcp` 信任模式告警 | 未配置 OIDC、未配置令牌表 | 仅限单机/回环；生产请配置 `[auth.tokens]` 或 `[mcp.oidc]`（§2.6.3） |
 
 ---
 
@@ -935,11 +1072,12 @@ PreconditionMismatch { ty: TypeName("deployment"),
 7. **无 `daemon stop`**；systemd unit 与容器镜像由阶段 9 交付（`dist/pactd.service`、
    `dist/Dockerfile`，§2.5）；**PID 文件已提供**（`pid_file` 可选配置，含陈旧检测），
    停机靠 SIGINT/SIGTERM 优雅退出（§2.3）。
-8. **v1 传输范围**：MCP 仅 stdio，无 Streamable HTTP；daemon 单机单进程，无联网协作（D20，架构 §4）。
+8. **传输与身份范围**：NFR6 v2 已实现 TLS/mTLS、Ed25519 签名、MCP Streamable HTTP 与 MCP OIDC 资源服务器（D34–D36）。仍有边界：daemon 不内置授权服务器/授权码 + PKCE；OIDC 仅 `/mcp`；内置 CLI/MCP/runtime 不出示客户端证书；`pact-runtime` 的 stdio MCP 子进程不透传签名参数；OIDC 令牌不缓存、不转发 REST（§2.6，架构 §4）。
 9. **旧日志不自动迁移**（D27）：双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`；顶层遗留单层文件启动即 `LegacyLayoutDetected` fail-fast，须人工迁移（§7.1），不静默丢数据。
 10. **跨实例不协同**（D27）：同一域声明的多个 Counter 实例彼此隔离（各自 Counter/Archive/订阅）；跨实例协同不在范式保障范围内（论文 rev3 §1.3 实现自由条款，见 §1.3）。
-11. **压缩会牺牲前缀审计**（D25）：被丢弃前缀不再可查，审计视图 = 自足快照 + 保留尾部事件；v1 不做自动周期性轮转，压缩为运维显式动作或启动开关（§7.4）。
+11. **压缩会牺牲前缀审计**（D25）：被丢弃前缀不再可查，审计视图 = 自足快照 + 保留尾部事件；不做自动周期性轮转，压缩为运维显式动作或启动开关（§7.4）。
 12. **CPN 编码的边界**（D28，§7.7）：负条件依赖调用方给出的 `--bound` 真实并发上界（不可从声明推导）；`not via` 不支持；CPN Tools GUI 内的实际加载/状态空间实验需人工验收，CI 只保证 XML/DTD 与结构断言；TokenId 生成器使用 CPN ML `ref` 副作用，状态空间工具可能将其视为非纯表达式。
+13. **MCP `/mcp` 请求体上限**：rmcp 的 Streamable HTTP 默认请求体上限独立于签名 8 MiB 限制；超限由 MCP 层拒绝（非签名错误）。
 
 ---
 
@@ -966,7 +1104,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 |------|------|
 | [`docs/pactv1_rev3.md`](pactv1_rev3.md) | 范式规范母本：六原语、六规则、§2 适用性、§3 文法、Appendix A 分析算法 |
 | [`docs/requirements.md`](requirements.md) | 需求与范围（含明确的范围外项） |
-| [`docs/design.md`](design.md) | 实现设计：D1–D27 决策记录、§6 线上格式、§9 三接口 |
+| [`docs/design.md`](design.md) | 实现设计：D1–D36 决策记录、§6 线上格式、§9 接口与身份（TLS/签名/MCP HTTP/OIDC） |
 | [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复 |
 | [`docs/skill-adaptation.md`](skill-adaptation.md) | 领域适配层示例（RE / SE 技能），与本手册正交 |
 | [`examples/README.md`](../examples/README.md) | 五份通用域 + 两条可复现轨迹的逐例讲解 |

@@ -8,9 +8,11 @@ use crate::dto::{
     ErrorDetail, GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq,
     ReadAuditResp, SeedReq, TokenResp, ValidateReq, ValidateResp,
 };
+use crate::sign::SigningIdentity;
+use axum::Router;
 use bytes::Bytes;
 use http::uri::Uri;
-use http::{Method, Request, Response, StatusCode};
+use http::{Method, Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -26,6 +28,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use tower::ServiceExt;
 use tower_service::Service;
 
 type Hyper<C> = hyper_util::client::legacy::Client<C, Full<Bytes>>;
@@ -51,6 +54,8 @@ pub enum ClientError {
     Parse(serde_json::Error),
     /// 非预期的状态码（且无法解析为 §6.3 错误体）。
     UnexpectedStatus(StatusCode),
+    /// 客户端配置非法（如 HTTPS 缺地址、签名身份与参与者不匹配）。
+    Config(String),
 }
 
 impl std::fmt::Display for ClientError {
@@ -61,6 +66,7 @@ impl std::fmt::Display for ClientError {
             ClientError::Api(d) => write!(f, "[{}] {}", d.code, d.message),
             ClientError::Parse(e) => write!(f, "响应解析失败：{e}"),
             ClientError::UnexpectedStatus(s) => write!(f, "非预期状态码：{s}"),
+            ClientError::Config(msg) => write!(f, "客户端配置错误：{msg}"),
         }
     }
 }
@@ -92,18 +98,31 @@ impl Service<Uri> for UnixConnector {
     }
 }
 
+#[derive(Clone)]
 enum Inner {
     Unix(Hyper<UnixConnector>),
     Tcp(Hyper<HttpConnector>),
+    Tls(Hyper<hyper_rustls::HttpsConnector<HttpConnector>>),
+    /// D35：daemon 内建 MCP 的进程内路由（无网络自连接）。
+    Local(Router),
 }
 
 /// PACT daemon client。
+#[derive(Clone)]
 pub struct Client {
     inner: Inner,
     /// 请求 Uri 的 authority 段（unix 下仅占位）。
     authority: String,
+    /// 请求 scheme（D34：`https` 走 TLS）。
+    scheme: &'static str,
     /// §9.4：非空令牌表时随请求附 `Authorization: Bearer`。
     bearer: Option<String>,
+    /// D34：Ed25519 请求签名身份（可选）。
+    signing: Option<SigningIdentity>,
+    /// D35：本地路由的进程内能力令牌。
+    local_internal: Option<[u8; 32]>,
+    /// D35：本地调用使用的已验证参与者。
+    verified_principal: Option<String>,
 }
 
 impl Client {
@@ -115,7 +134,11 @@ impl Client {
         Self {
             inner: Inner::Unix(client),
             authority: "pactd".to_owned(),
+            scheme: "http",
             bearer: None,
+            signing: None,
+            local_internal: None,
+            verified_principal: None,
         }
     }
 
@@ -126,7 +149,46 @@ impl Client {
         Self {
             inner: Inner::Tcp(client),
             authority: addr.into(),
+            scheme: "http",
             bearer: None,
+            signing: None,
+            local_internal: None,
+            verified_principal: None,
+        }
+    }
+
+    /// D34：连接 HTTPS daemon；`ca` 存在时仅信任该 CA，否则使用 webpki 根证书。
+    pub fn https(addr: impl Into<String>, ca: Option<PathBuf>) -> Result<Self, ClientError> {
+        let tls =
+            crate::tls::client_config(ca.as_deref()).map_err(|e| ClientError::Http(Box::new(e)))?;
+        let conn = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls)
+            .https_or_http()
+            .enable_http1()
+            .build();
+        let client: Hyper<hyper_rustls::HttpsConnector<HttpConnector>> =
+            hyper_util::client::legacy::Client::builder(TokioExecutor::new()).build(conn);
+        Ok(Self {
+            inner: Inner::Tls(client),
+            authority: addr.into(),
+            scheme: "https",
+            bearer: None,
+            signing: None,
+            local_internal: None,
+            verified_principal: None,
+        })
+    }
+
+    /// D35：进程内路由（daemon 内建 MCP 调用自身）。
+    pub fn local(app: Router, internal_token: [u8; 32]) -> Self {
+        Self {
+            inner: Inner::Local(app),
+            authority: "pactd.local".to_owned(),
+            scheme: "http",
+            bearer: None,
+            signing: None,
+            local_internal: Some(internal_token),
+            verified_principal: None,
         }
     }
 
@@ -134,6 +196,22 @@ impl Client {
     pub fn with_bearer(mut self, token: impl Into<String>) -> Self {
         self.bearer = Some(token.into());
         self
+    }
+
+    /// D34：设置 Ed25519 请求签名身份。
+    pub fn with_signing(mut self, id: SigningIdentity) -> Self {
+        self.signing = Some(id);
+        self
+    }
+
+    /// D35：本地调用时携带已验证参与者（仅本地路由生效）。
+    pub fn with_verified_principal(mut self, principal: Option<String>) -> Self {
+        self.verified_principal = principal;
+        self
+    }
+
+    pub fn is_local(&self) -> bool {
+        matches!(self.inner, Inner::Local(_))
     }
 
     // —— 域生命周期 ——
@@ -430,10 +508,15 @@ impl Client {
             &format!("{}/events", base_path(domain, instance)),
             None,
         )?;
-        let resp = self.dispatch(req).await?;
-        let (parts, body) = resp.into_parts();
-        if !parts.status.is_success() {
-            return Err(error_from_body(body).await);
+        let (status, body) = self.dispatch_stream(req).await?;
+        if !status.is_success() {
+            let body = match body {
+                BodySource::Http(b) => b.collect().await.map_err(boxed)?.to_bytes(),
+                BodySource::Local(b) => axum::body::to_bytes(b, crate::sign::MAX_SIGNATURE_BODY)
+                    .await
+                    .map_err(boxed)?,
+            };
+            return Err(error_from_body(RawResponse { status, body }));
         }
         Ok(EventStream::new(body))
     }
@@ -446,84 +529,168 @@ impl Client {
         path: &str,
         body: Option<&T>,
     ) -> Result<Request<Full<Bytes>>, ClientError> {
-        let uri: Uri = format!("http://{}{}", self.authority, path)
+        let uri: Uri = format!("{}://{}{}", self.scheme, self.authority, path)
             .parse()
             .map_err(|e: http::uri::InvalidUri| ClientError::Http(Box::new(e)))?;
-        let mut builder = Request::builder().method(method).uri(uri);
+        let path_and_query = uri
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or("/")
+            .to_owned();
+        let bytes = match body {
+            Some(v) => Bytes::from(serde_json::to_vec(v).map_err(ClientError::Parse)?),
+            None => Bytes::new(),
+        };
+
+        let mut builder = Request::builder().method(method.clone()).uri(uri);
         if body.is_some() {
             builder = builder.header("content-type", "application/json");
         }
         if let Some(t) = &self.bearer {
             builder = builder.header("authorization", format!("Bearer {t}"));
         }
-        let bytes = match body {
-            Some(v) => Bytes::from(serde_json::to_vec(v).map_err(ClientError::Parse)?),
-            None => Bytes::new(),
-        };
+        if let Some(id) = &self.signing {
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| ClientError::Config(format!("系统时钟早于 Unix 纪元：{e}")))?
+                .as_secs();
+            let nonce = ulid::Ulid::new().to_string();
+            let h = id.headers(method.as_str(), &path_and_query, &bytes, timestamp, &nonce);
+            builder = builder
+                .header(crate::sign::HEADER_PARTICIPANT, h.participant)
+                .header(crate::sign::HEADER_TIMESTAMP, h.timestamp.to_string())
+                .header(crate::sign::HEADER_NONCE, h.nonce)
+                .header(crate::sign::HEADER_SIGNATURE, h.signature);
+        }
+        if let Some(token) = &self.local_internal {
+            builder = builder.header(crate::sign::HEADER_INTERNAL_AUTH, hex_encode(token));
+        }
+        if let Some(p) = &self.verified_principal {
+            builder = builder.header(crate::sign::HEADER_VERIFIED_PRINCIPAL, p);
+        }
         builder
             .body(Full::new(bytes))
             .map_err(|e| ClientError::Http(Box::new(e)))
     }
 
-    async fn dispatch(&self, req: Request<Full<Bytes>>) -> Result<Response<Incoming>, ClientError> {
+    /// 聚合响应（本地路由与网络路径统一为 `RawResponse`）。
+    async fn dispatch(&self, req: Request<Full<Bytes>>) -> Result<RawResponse, ClientError> {
         match &self.inner {
-            Inner::Unix(c) => c
-                .request(req)
-                .await
-                .map_err(|e| ClientError::Http(Box::new(e))),
-            Inner::Tcp(c) => c
-                .request(req)
-                .await
-                .map_err(|e| ClientError::Http(Box::new(e))),
+            Inner::Local(app) => {
+                let resp = app
+                    .clone()
+                    .oneshot(req.map(axum::body::Body::new))
+                    .await
+                    .map_err(|e| ClientError::Http(Box::new(e)))?;
+                let (parts, body) = resp.into_parts();
+                let body = axum::body::to_bytes(body, crate::sign::MAX_SIGNATURE_BODY)
+                    .await
+                    .map_err(|e| ClientError::Http(Box::new(e)))?;
+                Ok(RawResponse {
+                    status: parts.status,
+                    body,
+                })
+            }
+            Inner::Unix(c) => collect(c.request(req).await.map_err(boxed)?).await,
+            Inner::Tcp(c) => collect(c.request(req).await.map_err(boxed)?).await,
+            Inner::Tls(c) => collect(c.request(req).await.map_err(boxed)?).await,
         }
+    }
+
+    /// 流式响应（SSE 订阅）：本地路由保留 axum Body，网络路径保留 Incoming。
+    async fn dispatch_stream(
+        &self,
+        req: Request<Full<Bytes>>,
+    ) -> Result<(StatusCode, BodySource), ClientError> {
+        if let Inner::Local(app) = &self.inner {
+            let resp = app
+                .clone()
+                .oneshot(req.map(axum::body::Body::new))
+                .await
+                .map_err(|e| ClientError::Http(Box::new(e)))?;
+            let (parts, body) = resp.into_parts();
+            return Ok((parts.status, BodySource::Local(body)));
+        }
+        let resp = match &self.inner {
+            Inner::Unix(c) => c.request(req).await.map_err(boxed)?,
+            Inner::Tcp(c) => c.request(req).await.map_err(boxed)?,
+            Inner::Tls(c) => c.request(req).await.map_err(boxed)?,
+            Inner::Local(_) => unreachable!(),
+        };
+        let (parts, body) = resp.into_parts();
+        Ok((parts.status, BodySource::Http(body)))
     }
 }
 
-/// 2xx → JSON 反序列化；否则解析 §6.3 错误体。
-async fn decode<T: DeserializeOwned>(resp: Response<Incoming>) -> Result<T, ClientError> {
+fn boxed<E: std::error::Error + Send + Sync + 'static>(e: E) -> ClientError {
+    ClientError::Http(Box::new(e))
+}
+
+/// 聚合响应。
+struct RawResponse {
+    status: StatusCode,
+    body: Bytes,
+}
+
+async fn collect(resp: hyper::Response<Incoming>) -> Result<RawResponse, ClientError> {
     let (parts, body) = resp.into_parts();
-    let bytes = body
-        .collect()
-        .await
-        .map_err(|e| ClientError::Http(Box::new(e)))?
-        .to_bytes();
-    if parts.status.is_success() {
-        return serde_json::from_slice(&bytes).map_err(ClientError::Parse);
+    let body = body.collect().await.map_err(boxed)?.to_bytes();
+    Ok(RawResponse {
+        status: parts.status,
+        body,
+    })
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
     }
-    match serde_json::from_slice::<ErrorBody>(&bytes) {
+    out
+}
+
+/// 2xx → JSON 反序列化；否则解析 §6.3 错误体。
+async fn decode<T: DeserializeOwned>(resp: RawResponse) -> Result<T, ClientError> {
+    if resp.status.is_success() {
+        return serde_json::from_slice(&resp.body).map_err(ClientError::Parse);
+    }
+    match serde_json::from_slice::<ErrorBody>(&resp.body) {
         Ok(b) => Err(ClientError::Api(b.error)),
-        Err(_) => Err(ClientError::UnexpectedStatus(parts.status)),
+        Err(_) => Err(ClientError::UnexpectedStatus(resp.status)),
     }
 }
 
 /// 期望空体成功（204）。
-async fn expect_empty(resp: Response<Incoming>) -> Result<(), ClientError> {
-    let (parts, body) = resp.into_parts();
-    if parts.status.is_success() {
+async fn expect_empty(resp: RawResponse) -> Result<(), ClientError> {
+    if resp.status.is_success() {
         return Ok(());
     }
-    Err(error_from_body(body).await)
+    Err(error_from_body(resp))
 }
 
-async fn error_from_body(body: Incoming) -> ClientError {
-    match body.collect().await {
-        Ok(collected) => match serde_json::from_slice::<ErrorBody>(&collected.to_bytes()) {
-            Ok(b) => ClientError::Api(b.error),
-            Err(_) => ClientError::UnexpectedStatus(StatusCode::INTERNAL_SERVER_ERROR),
-        },
-        Err(e) => ClientError::Http(Box::new(e)),
+fn error_from_body(resp: RawResponse) -> ClientError {
+    match serde_json::from_slice::<ErrorBody>(&resp.body) {
+        Ok(b) => ClientError::Api(b.error),
+        Err(_) => ClientError::UnexpectedStatus(resp.status),
     }
+}
+
+/// 订阅流的响应体来源（网络 / 本地路由）。
+enum BodySource {
+    Http(Incoming),
+    Local(axum::body::Body),
 }
 
 /// §6.4 SSE 事件流：缓冲帧、按空行切事件、解析 `data:` 行。
 pub struct EventStream {
-    body: Incoming,
+    body: BodySource,
     buf: Vec<u8>,
     queue: VecDeque<Notification>,
 }
 
 impl EventStream {
-    fn new(body: Incoming) -> Self {
+    fn new(body: BodySource) -> Self {
         Self {
             body,
             buf: Vec::new(),
@@ -537,14 +704,23 @@ impl EventStream {
             if let Some(n) = self.queue.pop_front() {
                 return Ok(Some(n));
             }
-            match self.body.frame().await {
-                Some(Ok(frame)) => {
-                    if let Some(chunk) = frame.data_ref() {
-                        self.buf.extend_from_slice(chunk);
-                        self.drain_events();
-                    }
+            let chunk = match &mut self.body {
+                BodySource::Http(body) => match body.frame().await {
+                    Some(Ok(frame)) => frame.data_ref().map(|d| Bytes::copy_from_slice(d)),
+                    Some(Err(e)) => return Err(ClientError::Http(Box::new(e))),
+                    None => None,
+                },
+                BodySource::Local(body) => match body.frame().await {
+                    Some(Ok(frame)) => frame.data_ref().map(|d| Bytes::copy_from_slice(d)),
+                    Some(Err(e)) => return Err(ClientError::Http(Box::new(e))),
+                    None => None,
+                },
+            };
+            match chunk {
+                Some(chunk) => {
+                    self.buf.extend_from_slice(&chunk);
+                    self.drain_events();
                 }
-                Some(Err(e)) => return Err(ClientError::Http(Box::new(e))),
                 None => {
                     self.drain_events();
                     return Ok(self.queue.pop_front());

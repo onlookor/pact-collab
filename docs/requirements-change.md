@@ -1,5 +1,16 @@
 # 需求变更记录
 
+## 2026-10-22（第 20 轮，NFR6 v2 落地：TLS / 签名身份 / MCP HTTP / OIDC）
+
+- **触发**：用户要求继续 NFR6 v2，并明确「MCP 通过 OIDC 从 IdP 获取身份」；三项能力（TLS 与签名身份、MCP Streamable HTTP、MCP OIDC）一次交付。
+- **新增 FR22 TLS 与 Ed25519 请求签名身份**：可选 TLS 1.2/1.3（`[tls]`，`client_ca` 启用 mTLS）；`[auth.keys]` 非空即启用 Ed25519 请求签名，四头（participant/timestamp/nonce/signature）+ `PACT-SIGNATURE-V1` 规范化串，时间窗 ±300s、nonce TTL 300s/上限 8192、请求体 8 MiB 上限；签名与 Bearer 并存且签名优先；参与者不匹配 401，ACL 越权 403。
+- **新增 FR23 MCP Streamable HTTP**：`[mcp].enabled = true` 时 daemon 内建 `/mcp`，工具面与 stdio 一致（17 个）；本地 tower 路由调用自身 REST，使用进程内能力令牌；`pact-mcp` 保留 stdio 薄封装；`allowed_hosts` 仅回环 + `public_url`。
+- **新增 FR24 MCP OIDC 身份**：资源服务器模式，仅 `/mcp`；IdP 发现/JWKS 缓存、alg 白名单（RS256/ES256/EdDSA）、iss/aud/exp/nbf 校验、60s leeway、claim → participant 映射；`GET /.well-known/oauth-protected-resource` 与 401 `WWW-Authenticate` 发现链；IdP 不可达 503 且不影响 REST；令牌不缓存、不转发。
+- **NFR5/NFR6 更新**：NFR5 增补两类 v2 身份；NFR6 标记 **v2 已实现（2026-10-22）** 并列出交付范围。
+- **表述澄清**：启用 `[auth.keys]` 后 REST 非豁免请求必须签名，Bearer 不能替代签名；两者同时出现时以签名身份为准。
+- **无删除既有需求**：FR1–FR21、NFR1–NFR7 编号与语义不变；§6 范围外未包含「MCP HTTP / TLS」，无需移除，其余排除项不变。
+- **实现状态**：已实现（2026-10-22）；`cargo test --workspace` 219 项通过，TLS/mTLS/签名/重放/篡改/参与者不匹配、MCP Bearer 与 OIDC 正反向、元数据与 IdP 不可达均有集成覆盖（`crates/pact-http/tests/nfr6_v2.rs`）。
+
 ## 2026-10-21（第 19 轮，FR21 去除 WASM “实验性”标记）
 
 - **FR21 状态变更**：WASM 本地分发形态由“实验性”转为**受支持**（D33，用户裁决）。稳定化前置 (1) Q7 CI、(2) 金标扩面、(3) `pact-engine-kernel` 抽取、(4) 宿主边界安全审视均已完成。

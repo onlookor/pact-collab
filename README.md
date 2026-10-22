@@ -5,7 +5,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A Rust implementation of the **PACT** coordination paradigm — domain declaration, execution semantics, static analysis, and a multi-agent runtime, exposed through three interfaces: REST, MCP, and CLI.
+A Rust implementation of the **PACT** coordination paradigm — domain declaration, execution semantics, static analysis, and a multi-agent runtime — exposed through REST, MCP (stdio and Streamable HTTP), and CLI.
 
 ## What is PACT?
 
@@ -18,7 +18,10 @@ PACT (Precondition-governed Autonomous Counter-based Token) is a coordination pa
 - **Source-production legality** — three-layer enforcement (runtime premise of Rule-P, declaration-time validation, independent static re-check).
 - **Static analysis** — six analyses from the paper's appendix: reachability, gate coverage, consumption reachability, structural deadlock (SCC-based), precondition well-formedness (A.5), and stranding risk.
 - **Fragment composition** — parallel composition of domains with the four consistency conditions (C1–C4).
-- **Three interfaces** — REST daemon (unix socket or TCP, bearer auth, SSE notifications), MCP stdio server (15 `pact_*` tools), and a single `pact` CLI for humans and scripts.
+- **Three interfaces, four access paths** — REST daemon (unix socket or TCP, SSE notifications), MCP (stdio server and daemon-hosted Streamable HTTP `/mcp`), and a single `pact` CLI for humans and scripts.
+- **Transport security** — optional TLS 1.2/1.3 termination in the daemon, with optional mutual TLS via a client CA.
+- **Verifiable participants** — static bearer tokens or Ed25519 request signatures (replay protection, ±300 s window, 8 MiB cap), integrated with domain-level ACL.
+- **Enterprise identity for MCP** — the daemon acts as an OIDC resource server for `/mcp` only: discovery/JWKS, algorithm allow-list, `iss`/`aud`/`exp`/`nbf` validation, and claim-to-participant mapping. Tokens are never cached or forwarded to REST.
 
 ## Quick start
 
@@ -44,7 +47,7 @@ pact analyze examples/domains/se_lifecycle.pact          # human-readable report
 pact analyze --json examples/domains/react_loop.pact     # machine-readable report
 ```
 
-For a hand-on daemon walkthrough, see "Try it live" at the end of the next section. Connection options (`--unix` / `--tcp` / `--bearer`) and `--json` are global flags on every command; `pact --help` lists the full command set.
+For a hand-on daemon walkthrough, see "Try it live" at the end of the next section. Connection options (`--unix` / `--tcp` / `--https` / `--tls-ca` / `--bearer` / `--bearer-file` / `--sign-key` + `--sign-as`) and `--json` are global flags on every command; `pact --help` lists the full command set.
 
 ## Domain declaration syntax
 
@@ -118,8 +121,9 @@ pact status --domain proj
 | `pact-compose` | Parallel composition and consistency checks |
 | `pact-store` | Append-only event log, snapshots, crash recovery |
 | `pact-engine` | Session runtime, notifications, deterministic clock/id |
-| `pact-http` | Axum REST daemon (unix socket / TCP + bearer, SSE) and typed client |
-| `pact-mcp` | MCP stdio server (15 `pact_*` tools, backed by REST) |
+| `pact-http` | Axum REST daemon (unix socket / TCP + TLS/mTLS, bearer or Ed25519 signature, SSE), daemon-hosted `/mcp`, OIDC resource server, and typed client |
+| `pact-mcp` | MCP stdio thin wrapper (17 `pact_*` tools, backed by REST) |
+| `pact-runtime` | Multi-agent orchestrator: participant drive loops, gates, outbox/saga executors |
 | `pact-cpn` | CPN Tools XML encoding of a declaration (positive fragment + complementary places; offline, no I/O) |
 | `pact-cli` | Single `pact` binary: daemon control, online operations, offline validate/analyze/compose/replay/cpn |
 
@@ -129,12 +133,13 @@ pact status --domain proj
 cargo test --workspace
 ```
 
-166 tests across the workspace, covering:
+219 tests across the workspace, covering:
 
 - **Golden traces** for the paper's four example domains — the software lifecycle above, a healthcare pathway (fan-in preconditions, `via` provenance), a ReAct loop (cyclic topology), and a discriminating deadlock scenario.
 - **Property-based tests** — declaration round-trip identity and execution invariants (512 cases each).
 - **Unit tests** per crate, including well-formedness rejections (duplicate LHS, empty LHS, zero/leading-zero count literals) and all three enforcement layers of source-production legality.
-- **End-to-end over all three interfaces** — HTTP daemon full lifecycle (error mapping, SSE, compose/unload), CLI against a real subprocess daemon, MCP stdio with all 15 tools.
+- **End-to-end over all access paths** — HTTP daemon full lifecycle (error mapping, SSE, compose/unload), CLI against a real subprocess daemon, MCP stdio, and Streamable HTTP `/mcp` with all 17 tools.
+- **NFR6 v2 security** — TLS/mTLS handshakes with a custom CA, Ed25519 signature positive/negative cases (tampered body, nonce replay, participant mismatch), OIDC positive/negative (iss/aud/exp/nbf/alg/crit/claim mapping/unknown kid), RFC 9728 metadata, and IdP-unreachable 503.
 - **Unattended multi-agent scenarios** — real `pact-mcp` subprocesses autonomously driving domains to `Terminated` with zero human intervention: a ReAct loop and five concurrent workers on the lifecycle domain.
 - **CPN encoding** — structural assertions for test arcs, complementary places, DNF expansion, instance namespacing, and error paths; generated models validate against the CPN DTD.
 

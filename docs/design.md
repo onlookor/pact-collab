@@ -25,12 +25,12 @@
 | D17 | 源类型生产约束（论文原生语义，rev2 §1.4.4/§3.1 沿用） | 三层强制：(1) Rule-P 前提 `Precond(T) ≠ ∅`——源类型（无前置规则）不可生产，运行时返回 `RuleError::SourceTypeProductionDenied`；(2) 声明期良构校验 `DomainError::SourceTypeProduceGate`（§3.1 约束 6）；(3) `is_source_type` 查询函数 + A.5 静态分析独立复核。Rule-T 按论文 Rule-P-enabled 三条件定义实现（源类型天然排除）；enabled_productions 不返回源类型 | 论文 §1.4/§1.4.3/§3.1 的规范语义：源类型唯一入口是 SeedAuthority（入口唯一性定理），消除 D15 指出的"永不终止"异常于声明期；良构域上 termination_holds 与"Counter 为空"等价（终止论证）。影响：LIFECYCLE 黄金域更新（analyst 角色改为 seed authority、operator via 子句移除——论文 Part II §1.3） |
 | D18 | compose C2 实践语义 | 共享类型前置一致性判定：**双方都声明规则且集合不同 → 冲突**；单侧声明合法（缺席方对 T 的前置无约束，合并取并） | 论文 §1.8 示例的规范语义：D₂ 共享 design 而不重复声明其前置（顺序组合正依赖此机制），若按 C2 字面（一侧 ∅ 一侧 {…} 即冲突）论文自身示例无法组合。C4 安全性不受影响：`produces T` 只可能来自视 T 为非源的良构片段（必有规则），规则并集只增不减 |
 | D19 | 阶段 4 范围与接口接入方式 | pact-http **提前至阶段 4** 与 pact-cli、pact-mcp 同批交付；MCP 与 CLI 均不内嵌引擎，而是经 `pact_http::client`（REST over unix socket）接入同一 daemon；原规划的独立 `pact-server` bin 取消，daemon 由 `pact daemon start`（pact-cli 子命令）与 `pactd`（pact-http 裸 daemon bin）提供 | 用户决策。三接口共享单一 daemon 即单一 Counter 权威（D6），REST 成为唯一状态变更通道——接口等价性由构造保证（MCP/CLI 只是 REST 的形态转换），e2e 只需各走一遍 REST 即覆盖契约一致性；联网版（v2）只换传输与认证，接口层结构零改动 |
-| D20 | CLI 参数风格与 MCP 传输范围 | CLI 域操作命令一律 `--domain` / `--participant` / `--token` / `--type` flag（不采用设计稿中 `pact enabled <participant>` 式位置参数简写）；连接参数 `--unix` / `--tcp` / `--bearer` 与输出开关 `--json` 为全局 flag；MCP v1 仅 stdio，Streamable HTTP 移交联网演进（v2） | flag 风格消除位置参数歧义、便于脚本化与 `--json` 组合；MCP 经 REST 接入（D19）后 Streamable HTTP 与 REST 同端口价值消失，随 v2 TLS/远程接入一并落地 |
+| D20 | CLI 参数风格与 MCP 传输范围 | CLI 域操作命令一律 `--domain` / `--participant` / `--token` / `--type` flag（不采用设计稿中 `pact enabled <participant>` 式位置参数简写）；连接参数 `--unix` / `--tcp` / `--bearer` 与输出开关 `--json` 为全局 flag；MCP v1 仅 stdio，Streamable HTTP 移交联网演进（v2） | flag 风格消除位置参数歧义、便于脚本化与 `--json` 组合；MCP 经 REST 接入（D19）后 Streamable HTTP 与 REST 同端口价值消失，随 v2 TLS/远程接入一并落地。**v2 已落地（2026-10-22，D35）**：stdio 保留，daemon 另挂 `/mcp` |
 | D21 | rev2 良构约束强制风格与 A.5 重构（用户选定推荐项） | (1) 空 LHS `{ } → T` 解析期语法拒绝（错误指名 Non-Empty LHS 约束），`validate_domain` 另设 `EmptyPrecondLhs` 声明期防御（覆盖程序化构造/组合出的 Domain）；(2) LHS 重复 `{A + A} → B` 在 parser `build_domain` 保留原始 `Vec<TypeName>` 序列时检测（`DuplicatePrecondLhs`）——`&Domain` 的 BTreeSet 会静默去重，此为唯一强制点；RHS 重复由 BTreeMap 键唯一构造性保证；(3) count 字面量 PosNat（`pos_nat()` 拒绝 0 与前导零，`ZeroCountLiteral` 二次防御）；(4) A.5 = `precondition_wf` 三元报告 `{well_formed, violations: Vec<DomainError>, warnings: Vec<WfWarning>}`，违规判定委托 `core::validate_domain`（单一判定源），Seed/Produce 重叠（§1.4.3 Advisory）为 `SeedProduceOverlap` 咨询性警告——**类型级判定**：produced 取全体参与者 produces gate 的并集，非源类型同时被 seed 与被任一人 produce 即告警，`participant` 字段为 seed 持有者；比论文 §1.4.3 的“同一参与者”表述更宽，取假阳性方向不漏报——论文维持参与者级原文，实现登记为参考算法的**保守超集**（2026-10-15 定案；论文曾误改三处、同日经用户裁决回退，规范是否修订由作者另行裁决）；聚合报告字段前置（附录 D：A.5 先于其余分析）；(5) `DomainError::UndeclaredType.referenced_by` 由 `&'static str` 改 `String`，使错误可内嵌进 serde 报告 | 解析期拒绝保持文法忠实；表示层（BTreeSet）无法承载的约束在序列仍在手时检测；A.5 委托避免判定逻辑分裂；前驱互异仅按 TokenId（Rule-P Note），类型级去重由 LHS Uniqueness 良构性免除 |
 | D22 | 通用示例与用户手册作为交付资产 | 新增 `examples/`（领域无关通用域 `domains/`：初版四份，2026-10-18 按 D23 增设第五份 `external_materialization` 物化确认示例 + 两份组合片段 `fragments/` + 离线/在线两条上手脚本各带录制轨迹 + `README.md` 场景导航）与 `docs/manual.md`（权威用户手册，12 章）；**不接入 CI**（不新增遍历 `examples/**/*.pact` 的 cargo test）、**不改任何 crate**；脚本运行产物 `examples/online/run-data`、`examples/offline/out` 入 `.gitignore` | 用户决策（FR14）。示例是教学资产而非回归基线，接入 CI 会把示例漂移变成构建失败源，反而抑制示例演进；手册与示例分工为"参考权威 / 可运行路径"，交叉引用不重复维护同一事实。取证过程中发现的三处实现与文档不一致（CLI `reachability` 行把 `seed_types` 打印为"源类型"、MCP `pact_analyze` description 写"五项静态分析"实为六项、compose 语义在 CLI 只打印而 MCP/REST 会装载）**不改代码**，如实登记于 `docs/manual.md` §11 已知偏差与限制 |
 | D23 | 消耗提交契约与 Rule-E 幂等（2026-10-18，用户裁决） | (1) **提交点 = JSONL fsync**：`store.append` 追加日志即视为已提交；其后步骤（索引投影、定期快照、Terminated 事件、通知）为**尽力而为的派生动作——失败不回滚、不失败本次调用**，索引滞后由启动 seq 一致性校验触发 `rebuild` 自愈。(2) **Consumed 事件自足**：携带 token 全量快照（`exhausted_at` = `ts`、`exhausted_by` = `by`）与可选 `request_id`，重放与审计不再反查同一域实例其他行。(3) **Rule-E 可选幂等**：同一域实例内重复 `request_id` 返回首次归档结果（不重复消费；跨重启由日志重建幂等表生效），同一 `request_id` 用于另一 token → `IdempotencyConflict`。(4) **原子域含 gate 读集**：`rule_e` 对同一内存 `CounterState` 求 GateHolds 并随即 apply，单写者 actor 消除 TOCTOU 与并发双消费。(5) **边界**：引擎不执行外部副作用，`consume` 成功与外部动作成功是**两个独立承诺**；"产物未就位"不应表现为消费回滚，而应前移为 gate 准入条件（`exists` 型见证 token，见 §8.5） | 此前 Rule-E 仅有单步 SOS 语义、未声明实现级原子性；本决策把它显式化为可验证契约。原实现 `Consumed` 只记 `token_id`、重放反查 Counter，使单行日志不自足、与 NFR2（日志即完整审计）不符；原写路径"索引失败即返回 Err"会造成日志/内存瞬态分歧直至重启。拒绝"库事务 / 2PC / 分布式共识"方案：单写者 actor + 事件日志已满足线性化与崩溃一致性，引入它们只增复杂度 |
-| D24 | 生产运行层归属（2026-10-19，用户裁决） | 本仓库新增 crate `pact-runtime`（**已实现，阶段 7 完成**）：参与者驱动循环（订阅/轮询 → `my_gates` / `enabled` → 决策 → 行动）+ 多 agent 编排 + 外部副作用执行器（outbox/saga 消费端）。**引擎保持被动（D5）、MCP 维持 stdio-only（D20）均不变**；依赖方向 `runtime → http（类型化 REST client）/ engine（线上视图）/ core（标识符·token 类型）`，`pact-mcp` 仅作可执行文件由编排 spawn、不作 lib 依赖（详见 §1） | 驱动逻辑与 `Consumed` 事件 schema、`pact_*` 工具面强耦合，须与引擎版本锁定；抽为可复用运行时，避免每个消费方重复实现 P1/P2/P3 自驱策略；engine/store/core 零改动 |
-| D25 | 引擎生产化三项（2026-10-19，用户裁决） | (1) 事件日志压缩与 schema 版本化（pact-store）；(2) 运维接口：health/ready、metrics、PID 文件、信号化优雅停机（pact-http + engine）；(3) 域级授权与审计读视图（pact-http 接口层），读审计**可选开启、默认关闭**。**(2) 已实现（2026-10-20，见 §9.5）**：`GET /health`（存活，不依赖引擎）/ `GET /ready`（就绪，探针 = 一次 `list_domains` 往返）/ `GET /metrics`（Prometheus 文本格式：`pact_domains_declared` / `pact_instances_loaded` / `pact_counter_size` / `pact_archive_size` / `pact_terminated` / `pact_uptime_seconds`）；运维端点**不校验令牌**（仅本地/内网）；可选 `pid_file`（缺省不写；启动写入、退出删除；陈旧文件且 PID 存活 → 拒绝启动）；优雅停机 SIGINT/SIGTERM → 停止接受新连接 → 有界（10s）等待在途 → 终态快照 → 清理。**(1) 已实现（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version` + 日志前缀压缩（快照自足锚 + `logmeta` 水位 + 原子重写）、REST/CLI/MCP 压缩入口、可选启动自动压缩。**(3) 已实现（2026-10-20，见 §9.6）** | 生产部署的可运维性与多租户边界（NFR7）；三者均为存储/接口层增强，不触碰核心语义与 SOS 规则。(3) 修订 D9 默认值表述——D9「审计流扩展位保留」在此落地为配置开关，默认仍不持久化 Rule-R |
+| D24 | 生产运行层归属（2026-10-19，用户裁决） | 本仓库新增 crate `pact-runtime`（**已实现，阶段 7 完成**）：参与者驱动循环（订阅/轮询 → `my_gates` / `enabled` → 决策 → 行动）+ 多 agent 编排 + 外部副作用执行器（outbox/saga 消费端）。**引擎保持被动（D5）不变；MCP 传输范围由 D20 的 stdio-only 经 D35 扩展为 stdio + daemon 内建 `/mcp`（v2），stdio 仍保留**；依赖方向 `runtime → http（类型化 REST client）/ engine（线上视图）/ core（标识符·token 类型）`，`pact-mcp` 仅作可执行文件由编排 spawn、不作 lib 依赖（详见 §1） | 驱动逻辑与 `Consumed` 事件 schema、`pact_*` 工具面强耦合，须与引擎版本锁定；抽为可复用运行时，避免每个消费方重复实现 P1/P2/P3 自驱策略；engine/store/core 零改动 |
+| D25 | 引擎生产化三项（2026-10-19，用户裁决） | (1) 事件日志压缩与 schema 版本化（pact-store）；(2) 运维接口：health/ready、metrics、PID 文件、信号化优雅停机（pact-http + engine）；(3) 域级授权与审计读视图（pact-http 接口层），读审计**可选开启、默认关闭**。**(2) 已实现（2026-10-20，见 §9.9）**：`GET /health`（存活，不依赖引擎）/ `GET /ready`（就绪，探针 = 一次 `list_domains` 往返）/ `GET /metrics`（Prometheus 文本格式：`pact_domains_declared` / `pact_instances_loaded` / `pact_counter_size` / `pact_archive_size` / `pact_terminated` / `pact_uptime_seconds`）；运维端点**不校验令牌**（仅本地/内网）；可选 `pid_file`（缺省不写；启动写入、退出删除；陈旧文件且 PID 存活 → 拒绝启动）；优雅停机 SIGINT/SIGTERM → 停止接受新连接 → 有界（10s）等待在途 → 终态快照 → 清理。**(1) 已实现（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version` + 日志前缀压缩（快照自足锚 + `logmeta` 水位 + 原子重写）、REST/CLI/MCP 压缩入口、可选启动自动压缩。**(3) 已实现（2026-10-20，见 §9.10）** | 生产部署的可运维性与多租户边界（NFR7）；三者均为存储/接口层增强，不触碰核心语义与 SOS 规则。(3) 修订 D9 默认值表述——D9「审计流扩展位保留」在此落地为配置开关，默认仍不持久化 Rule-R |
 | D26 | 分发产物归属（2026-10-19，用户裁决） | 本仓库 `dist/`：Dockerfile、systemd unit、musl 静态二进制打包脚本；不接入 CI 语义测试（同 D22） | 与源码同仓库保证版本一致；registry 推送、k8s 编排模板等外部细节不属本仓库 |
 | D27 | 域双键实例化与形式层裁定（2026-10-20，领域专家裁定 + 用户裁决） | **立项**：把「域」拆为**定义键 domain + 实例键 instance**，同一域声明可并发承载多个 Counter 实例；实现走**路径 β**（`pact-store`/索引显式 `(domain, instance)` 双列 + 引擎**声明注册表**，`declare` 与 `instantiate` 分离）。**论文母本 rev2 → rev3**（用户破例授权），5 处改动：§1.3 增列「**Counter instantiation and partitioning**」条款、§1.4.1 TokenId 作用域措辞、Rule-T 增补 scope note、§4.5 与 §B.2 增补 CPN 作用域、§1.8 及 §4.1–4.3 术语 `domain instance` → `domain declaration`——**零文法变化、零语义变化**（`diff` 已核，9 处增补/替换；G3 就地修订 §1.4.1 Rationale 追加 1 处，**累计 10 处**，见 `docs/design-change.md` 第 20 轮）。**术语登记**：定义键 = 论文 `domain declaration`；实例键 = 论文 `Counter instance`（§1.3 描述性短语，非正式原语）；**中文文档/注释用「域实例」指该实例键**（即论文 `Counter instance`，与论文已废弃的英文 `domain instance` 无关，亦不替代论文术语）。**细节定案（2026-10-20，用户裁决）**：存储布局 = **域子目录** `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `<domain>/<instance>.snapshot.json`、审计流 `<domain>/<instance>.read-audit.jsonl` 同目录）；默认实例名 = **`default`**（不指定实例段 ⇒ 落到 `default` 实例）；声明绑定 = **实例创建时快照声明**（`DomainLoaded` 携声明原文，后续 `declare` 覆盖**不影响已运行实例**，重放自封闭、确定性优先，与 NFR2「日志即完整审计」一致）。**派生细节定案（2026-10-20，用户裁决，阶段 10 实施前置）**：旧日志**不兼容**——双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`，顶层遗留单层文件启动恢复时 **fail-fast**（`StoreError::LegacyLayoutDetected`），须人工迁移；实例键以**路径段**承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` 等价 `default` 实例）；`DomainLoaded` **不新增 `instance` 字段**（实例由文件路径承载）；声明原文另存 `<data_dir>/<domain>/declaration.pact`（`declare` 时写入、`recover` 回填注册表）；**护栏**：`data_dir` 独占 flock（`<data_dir>/pactd.lock`）+ 非空实例（`last_seq > DomainLoaded.seq`）再加载默认拒绝（`DomainBusy`），须 `force`。**已实现（2026-10-20，阶段 10 路径 β，见 §11 阶段 10）** | 触发：两个并行项目共用同一域声明时，既有替换语义会销毁对方 Counter 与快照。专家裁定 Q1(a) 概念承认（以 §1.3 实现自由形式落地）、Q2(a) 术语消歧、Q3(a+c) 限定重述、Q4 保留「globally unique」但作用域收窄至该 Counter（实现以 ULID 加强为跨实例唯一）、Q5 确认**无任何论文级不变量依赖「一个域名至多一本 Counter」**、Q6 确认 CPN 编码需加单实例作用域、Q7 不新增正式术语。据 §1.3「Physical implementation of the Counter」，实例划分属**实现自由**，不触 §13 边界判据 (4)。评估与执行序、咨询简报与答复为**过程产物**，阶段 10 交付后已按用户指示移除（其结论已并入本条与 §11） |
 | D28 | CPN 编码生成器（2026-10-21，用户选定阶段 6） | 新增 `pact-cpn` + CLI `pact cpn <FILE> --out PATH [--instance I] [--bound T=N]…`；输出 CPN Tools XML（`format='6'`）；单实例作用域以实例名命名空间化；颜色 `PACT_TOKEN = TokenId × Participant × ThingRef × PrecondRefs × Timestamp`，Archive 另加 Participant × Timestamp；生产前驱 test arc、读自环、消费归档、种子无输入弧；GateExpr → NNF → DNF，`or` 展开多迁移、`not` 下推为 `count T <= k` 并以互补库所编码（须显式上界）；`not via` 显式拒绝；条件恒假保留迁移 `guard=false`；DNF 上限 1024、count 展开上限 1024；输出经 CPN DTD 校验 + XML 良构/结构测试，CPN Tools GUI 加载人工验收 | 论文 §4.5/§B 只对正片段直出，负条件需已知上界；上界由运行期并发决定、不可从声明推导，故必须由调用方显式提供并承担正确性。`or` 用 DNF 多迁移而非 guard 近似，保持结构等价；`not via` 是实例级依赖关系而非计数，无法用互补库所表达，宁失败不生成错模型。生成器零 IO、零运行时依赖，不进入引擎/存储路径 |
@@ -39,6 +39,9 @@
 | D31 | WASM 本地分发形态条件立项（2026-10-21，P6 裁决 A） | 把 WASM 本地运行登记为**实验性可选分发形态**（Node/桌面宿主），权威仍是原生引擎；`pactd`、NFR4 单静态二进制与 FR18 生产分发承诺不变。ABI 固定 `pact-wasm/0.x` + JSON 字符串，`abi_version` 为探测入口，破坏性变更须升版并记入本变更文档。稳定化前置：Q7 CI → 金标扩面（多实例/组合域/条件分支/压缩恢复）→ 抽取 `pact-engine-kernel` → 宿主边界安全审视。不纳入：浏览器 OPFS/SharedWorker、多用户 ACL/审计、DSH `govern`、NFR6 v2 | P0–P4 证据表明语义与持久化行为可与原生对账（事件逐行相等、日志双向互通、崩溃恢复与单写者测试通过）；但双实现重叠约 300 行、金标覆盖窄，若长期保留必须用 CI 与 kernel 抽取防漂移。选项 B 会让 wasm target/bindgen 随工具链腐烂，选项 C 无需求证据且引入浏览器弱持久化与 v2 安全面，故取条件立项。详见 `docs/wasm-local-spike-feasibility.md` §11 |
 | D32 | 抽取 `pact-engine-kernel`（2026-10-21，用户选定） | 新增纯内核 crate `pact-engine-kernel`（仅依赖 `pact-core`/`pact-parser`/`pact-analysis`/`pact-store-model`/`pact-views`，无 IO、无 tokio）：`Session` 统一持有 `declaration`/`domain`/`state`/`last_seq`/`next_seq`/`dl_seq`/`terminated`/`consumed_requests`，并提供 `fresh`、`recover`（锚点/快照/幂等表/终止态）、`prepare_seed`/`prepare_produce`/`prepare_consume`/`read`、`mark_prepared`/`abort_prepared`、`commit`/`record_terminated`、视图与 `snapshot`/`summary`，以及 `analysis_report`；`KernelError` 由调用方映射为各自错误类型。原生 `InstanceSession` 与 WASM `InstanceSession` 改为通过 `Deref` 嵌入同一 `Session`，各自仅保留自有字段（原生：`events_since_snapshot`/`notify`；WASM：`events`）。行为契约不变：DomainLoaded seq 从 1 起、失败命令仍推进时钟、Rule-T 终止 `seq = last_seq + 1`、压缩水位 `base_seq`、幂等表跨快照恢复 | P3 已量化双实现在 seq 分配、幂等表、Rule-T 终止、恢复锚点四处重复，长期保留会漂移（R1）。抽取把“语义会话”与“IO/actor/宿主编排”分离：内核保持纯函数式状态机，原生与 WASM 仅在错误映射、持久化时机与通知/审计等外围不同。`ConsumePreparation::Prepared` 以 `Box` 承载完整事件以控制枚举尺寸 |
 | D33 | 去除 WASM “实验性”标记（2026-10-21，用户裁决） | `pact-wasm` 由“实验性可选分发形态”转为**受支持的本地分发形态**：稳定化前置 (1) Q7 CI、(2) 金标扩面、(3) `pact-engine-kernel` 抽取、(4) 宿主边界安全审视均已完成。定位与边界不变：权威仍是原生 daemon；仅 Node/桌面本地单用户嵌入；不提供 MCP/HTTP、ACL/审计、浏览器 OPFS/SharedWorker、DSH `govern` 与 NFR6 v2；不进入 `dist/` 产物集，不替代 `pactd`。ABI 仍为 `pact-wasm/0.x` + JSON 字符串，破坏性变更照旧升版记录 | 四项稳定化验收全部完成且 CI 持续约束（wasm32 构建/clippy、Node 冒烟、体积/ABI 断言、7 项金标对账）；继续保留“实验性”会与实际维护承诺不符。去除标记不扩大能力范围，只确认既有 Node/桌面形态可被依赖 |
+| D34 | TLS 与 Ed25519 请求签名身份（NFR6 v2，2026-10-22，用户裁决） | (1) **TLS**：`[tls] certificate/private_key[/client_ca]` 存在即启用，仅对 `listen_tcp` 生效；rustls 终止于 pactd 进程，证书链 PEM + 私钥 PEM（PKCS#8/PKCS#1/SEC1），支持 TLS 1.2/1.3；`client_ca` 存在时以 `WebPkiClientVerifier` 要求客户端证书（mTLS）。启动日志标注 `tls`/`mtls`；握手失败仅记录并继续接受。内置客户端 `Client::https(addr, ca)` 与 `--https/--tls-ca` 仅做服务端认证，不提供客户端证书（mTLS 面向外部客户端）。(2) **签名身份**：`[auth.keys] 参与者 = base64(32 字节 Ed25519 公钥)` 非空即启用；客户端从 `--sign-key`（base64 32 字节 Ed25519 私钥种子）构造 `SigningIdentity`，请求携带 `x-pact-participant/x-pact-timestamp/x-pact-nonce/x-pact-signature`；规范化串 `PACT-SIGNATURE-V1`（方法、路径+查询、SHA-256(body) 小写 hex、时间戳、nonce、参与者，`\n` 分隔无尾换行）；服务端顺序 = 四头齐全 → 时间窗 ±300s → 公钥查表与 Ed25519 验签 → nonce 去重（TTL 300s/上限 8192；验签失败不消耗缓存）→ 写入可信头；body 上限 8 MiB（413），重放 429；先剥离客户端伪造的 `x-pact-verified-principal`。(3) **绑定**：签名与 Bearer 可同时配置；启用签名后 REST 非豁免请求必须签名（Bearer 不能替代，两者同时出现时以签名身份为准）；解析身份必须等于请求 `participant`，否则 401；ACL 照常（`[auth.acl]` 非空时 tokens 或 keys 至少其一）。签名仅护 REST，`/health` `/ready` `/metrics` `/mcp` 与 RFC 9728 元数据豁免；`/validate` 仍需签名。(4) **信任模式**：REST 无令牌且无密钥、MCP 另需无 OIDC 时保持信任声明；签名模式仅在 keys 非空时启用。 | TLS 免除外部反向代理与明文链路；签名把「参与者」从自报字符串升级为可验证身份，且复用现有 Bearer 身份位与 ACL，不触碰引擎。nonce 缓存与时间窗防重放；8 MiB 上限防验签前内存放大；可信头由中间件唯一写入，防止外部伪造。保留 Bearer 兼容既有部署与 `pact-mcp` 远端子进程。内置客户端不做 mTLS 是显式取舍：证书签发/托管不在本仓库（非目标），外部客户端可自行出示证书 |
+| D35 | MCP Streamable HTTP（NFR6 v2，2026-10-22，用户裁决） | 工具层从 `pact-mcp` 下沉到 `pact-http::mcp`（`PactMcp`，17 个工具与输入结构原样迁移），daemon 与 stdio 二进制共用同一实现。daemon `[mcp].enabled = true` 时 `router_with_mcp` 以 `nest_service("/mcp", …)` 挂载 `StreamableHttpService<PactMcp, LocalSessionManager>`（rmcp 配置 builder，`legacy_session_mode(true)`、`allowed_hosts = 回环 + public_url authority`）。鉴权中间件独立于签名：OIDC（FR24）或静态 Bearer；令牌表为空且无 OIDC 时为信任模式（仅单机/回环，启动警告）；`[auth.keys]` 非空而 tokens 为空且无 OIDC ⇒ 拒绝启动。工具内以整个 `Client` 克隆（本地模式带 `x-pact-internal-auth`）调用进程内 tower Router，不发起 TCP 自连接；外部 JWT 不转发给 REST，参与者经 `x-pact-verified-principal` 按请求注入。`pact-mcp` 仅是 stdio 薄封装（`--unix/--tcp/--https/--tls-ca/--sign-key/--sign-as/--bearer|--bearer-file`），仍经 REST 接 daemon。 | MCP 远程接入与 REST 同端口，无需新增进程/端口；工具实现只保留一份，stdio 与 HTTP 行为一致。本地 tower 路由避免自连接与鉴权递归，内部能力令牌使本地调用免签名又不暴露给外部。信任模式只用于单机/回环，打印警告避免误部署。禁止 JWT 转发，防止把 MCP 身份扩展到 REST |
+| D36 | MCP OIDC 资源服务器（NFR6 v2，2026-10-22，用户裁决） | daemon 只验证 IdP 签发的 JWT，不内置授权服务器。`[mcp.oidc]`：`issuer/audience/principal_claim/principal_map/jwks_uri/discovery/allowed_algs/ca/allow_static_tokens/allow_insecure_http`；启用时必须 `[mcp].enabled` 且 `public_url` 为绝对 URL。发现默认 `issuer /.well-known/openid-configuration` → `jwks_uri`；JWKS 缓存 TTL 300s、最多 64 键，未知 `kid` 限频 30s 重取一次。校验：alg 白名单 RS256/ES256/EdDSA 且与 JWK 类型一致，拒绝 `none`/HS*/非空 `crit`；`iss` 精确、`aud` 包含、`exp` 必需、`nbf` 校验、60s leeway；`sub` 必需，`principal_claim` 字符串（或唯一字符串元素数组），映射后 `[A-Za-z0-9_-]{1,128}`。OIDC 仅 `/mcp`；REST 仍为静态 Bearer/签名；令牌不缓存、不转发。`GET /.well-known/oauth-protected-resource` 返回 `{resource, authorization_servers, bearer_methods_supported}`；401 带 `WWW-Authenticate`，IdP 不可达 503。 | 复用企业 IdP 的身份与授权码流程，daemon 不承担签发/登录页/令牌端点（非目标）。仅 `/mcp` 收窄攻击面并保持 REST 既有身份路径；JWKS 有界缓存 + 限频重取兼顾密钥轮换与 IdP 压力；令牌不落盘、不转发，避免把 OIDC 权限扩散到 REST 与日志 |
 
 ## 1. 总体结构
 
@@ -56,8 +59,8 @@ crates/
   pact-engine-kernel # 实例会话语义纯内核（无 IO/tokio，D32）：Rule-S/P/R/E 准备、Rule-T 终止、恢复、视图；原生引擎与 WASM 共用
   pact-engine    # 引擎 actor：命令处理、订阅总线、Rule-T 检测、多域/多域实例会话；状态语义委托 kernel
   pact-wasm      # WASM 本地分发形态（受支持，D30/D31/D33）：内存会话 + 两阶段提交 + 导出/恢复 + wasm-bindgen 导出 + Node 宿主适配层；wasm CI 门禁，非 dist/ 产物
-  pact-mcp       # MCP server（rmcp 实现），工具经 pact-http client 映射到引擎命令
-  pact-http      # axum REST + SSE，路由映射到引擎命令；含类型化 client 与 pactd bin（裸 daemon）
+  pact-mcp       # MCP stdio 薄封装（rmcp 实现）；工具实现已下沉 pact-http::mcp，二者共用
+  pact-http      # axum REST + SSE + 内建 `/mcp`；TLS、Ed25519 签名身份、OIDC 资源服务器；类型化 client 与 pactd bin（裸 daemon）
   pact-cli       # clap 命令行（daemon 控制 + 领域操作 + 离线分析），单二进制 `pact`
   pact-runtime   # 生产运行层（D24）：参与者驱动循环（P1/P2/P3）+ 多 agent 编排（MCP/REST）+ 外部副作用执行器（outbox/saga 消费端）
   pact-cpn       # CPN 编码生成（阶段 6，D12/D28）：域声明 -> CPN Tools XML，离线、零运行时副作用
@@ -607,11 +610,11 @@ Rule-E 的实现级保证（可验证契约）：
 
 ## 9. 接口层（阶段 4，已实现）
 
-三接口共享 §6 线上格式，能力对等；差异仅在传输与形态。接入方式（D19）：daemon 是唯一权威进程（`pact daemon start` 或 `pactd`，REST + SSE）；pact-mcp 与 pact-cli 在线命令均经 `pact_http::client` 走 REST 接入 daemon，不内嵌引擎。
+三类接口（REST / MCP / CLI）共享 §6 线上格式，能力对等；MCP 有 stdio 与 Streamable HTTP 两种传输，差异仅在传输与形态。接入方式（D19）：daemon 是唯一权威进程（`pact daemon start` 或 `pactd`，REST + SSE + 可选 `/mcp`）；pact-mcp 与 pact-cli 在线命令均经 `pact_http::client` 走 REST 接入 daemon，不内嵌引擎。
 
 ### 9.1 pact-mcp（AI agent 主接口，已实现）
 
-MCP server（rmcp），v1 传输仅 stdio（D20；Streamable HTTP 随 v2 联网接入落地）。`pact-mcp --unix <sock>`（或 `--tcp`）由 agent 拉起为子进程，工具经 REST 转发至 daemon。工具清单（前缀 `pact_`）：
+工具实现位于 `pact-http::mcp`（`PactMcp`），stdio 与 daemon 内建 `/mcp` 共用同一份 17 个工具。`pact-mcp` 仅保留 stdio 薄封装（D35）：`--unix <sock>` / `--tcp` / `--https`（配 `--tcp`）/ `--tls-ca` / `--sign-key` / `--sign-as` / `--bearer|--bearer-file`，由 agent 拉起为子进程，工具经 REST 转发至 daemon。工具清单（前缀 `pact_`）：
 
 | 工具 | 语义 |
 |------|------|
@@ -635,7 +638,14 @@ MCP server（rmcp），v1 传输仅 stdio（D20；Streamable HTTP 随 v2 联网�
 
 ### 9.2 pact-http（应用程序接口，已实现）
 
-axum，JSON over HTTP，监听 unix socket（默认，单机安全）与/或 127.0.0.1（可配）。载荷格式一律取 §6。实现注记：`{d}:analyze` / `{d}:compose` 因路由库不支持同段"参数+字面量"，在 `/domains/{d}` 统一入口内按段内冒号后缀分发（对外 URL 不变）；另提供独立 `POST /validate`（声明校验，不触域）与类型化 Rust client（pact-mcp / pact-cli 共用）。
+axum，JSON over HTTP，监听 unix socket（默认，单机安全）与/或 TCP（可配；TLS 见 §9.5）。载荷格式一律取 §6。实现注记：`{d}:analyze` / `{d}:compose` 因路由库不支持同段"参数+字面量"，在 `/domains/{d}` 统一入口内按段内冒号后缀分发（对外 URL 不变）；另提供独立 `POST /validate`（声明校验，不触域）、`GET /health` / `GET /ready` / `GET /metrics`、按需挂载的 `/mcp` 与 `GET /.well-known/oauth-protected-resource`，以及类型化 Rust client（pact-mcp / pact-cli / pact-runtime 共用）。
+
+MCP 线上端点（D35/D36，`[mcp].enabled = true` 时）：
+
+```
+POST/GET/DELETE /mcp                                      MCP Streamable HTTP（17 工具）
+GET             /.well-known/oauth-protected-resource    RFC 9728 元数据（仅 OIDC 启用时）
+```
 
 ```
 POST   /domains                       {name, declaration}
@@ -671,12 +681,12 @@ GET    /domains                       域清单（Vec<DomainListing{name, instan
 - 实例键以**路径段**承载；`DomainLoaded` 事件**不新增 `instance` 字段**（实例由文件路径承载）。
 - 键名谓词 `[A-Za-z0-9_-]{1,128}`（`validate_domain_name` / `validate_instance_name`）在 `engine.instantiate` / `load_domain`（唯一触盘入口）强制，防路径穿越；未实例化键的动作端点返回 `InstanceNotFound`(404)，不触盘。
 - 错误码扩展：`InstanceNotFound`(404) / `DomainNotDeclared`(404) / `InstanceExists`(409) / `DomainBusy`(409)（非空实例再加载未带 `force`）/ `InvalidDomainName`(400) / `InvalidInstanceName`(400)。
-- 认证：实例级与默认级共享同一 `*_inner` handler，`authorize` 统一在 `*_inner` 内完成，实例路由同样受令牌约束。
-- **域级 ACL（D25 子项 3，已实现）**：`[auth.acl]` 非空即启用。实例级端点（生命周期、四类动作、查询、compact、读审计视图）按 `(domain, instance)` 校验；定义级 `:analyze` 要求对该域任一授权；`GET /domains` 按授权过滤（空域剔除）。无令牌 `401`，越权 `403`；ACL 空表时全部检查短路（既有行为不变）。
+- 认证：实例级与默认级共享同一 `*_inner` handler，`authorize` 统一在 `*_inner` 内完成，实例路由同样受令牌/签名身份约束。
+- **域级 ACL（D25 子项 3，已实现）**：`[auth.acl]` 非空即启用。实例级端点（生命周期、四类动作、查询、compact、读审计视图）按 `(domain, instance)` 校验；定义级 `:analyze` 要求对该域任一授权；`GET /domains` 按授权过滤（空域剔除）。无有效身份 401，身份不匹配 401，越权 403；ACL 空表时全部域级检查短路（签名/令牌中间件仍生效）。
 
 ### 9.3 pact-cli（人类接口，已实现）
 
-单二进制 `pact`（D20：域操作一律 `--domain` / `--participant` / `--token` / `--type` flag，不用位置参数简写）。全局 flag：`--unix <sock>`（缺省 ./pact.sock）/ `--tcp <addr>`（优先于 --unix）/ `--bearer <token>` / `--json`（§6 线上格式输出）。
+单二进制 `pact`（D20：域操作一律 `--domain` / `--participant` / `--token` / `--type` flag，不用位置参数简写）。全局 flag：`--unix <sock>`（缺省 ./pact.sock）/ `--tcp <addr>`（优先于 --unix）/ `--https`（须配 `--tcp`，TLS 连接）/ `--tls-ca <pem>` / `--sign-key <file>` + `--sign-as <participant>`（成对；base64 32 字节 Ed25519 种子）/ `--bearer <token>` / `--bearer-file <path>`（与 `--bearer` 互斥，便于 secret 挂载）/ `--json`（§6 线上格式输出）。
 
 - 注入点：`pact domain validate <file.pact>`；`pact domain load <file.pact> [--name N] [--instance I] [--force]`；`pact seed --domain D --participant P --type T [--thing-ref R]`。
 - 领域操作：`pact produce --domain D --participant P --type T [--predecessors id1,id2] [--thing-ref R]`；`pact read --domain D --participant P --token ID`；`pact consume --domain D --participant P --token ID [--request-id R]`；`pact counter ls --domain D [--type T]`；`pact archive ls --domain D [--type T]`；`pact gates show --domain D --participant P`；`pact enabled --domain D --participant P`；`pact status --domain D`；`pact compact --domain D [--instance I] [--keep-last N]`（日志前缀压缩，D25 子项 1）。
@@ -685,31 +695,100 @@ GET    /domains                       域清单（Vec<DomainListing{name, instan
 - daemon 控制：`pact daemon start --config pact.toml`（前台运行，与裸 `pactd` bin 等价）。
 - 在线命令经 unix socket 调 REST API（复用 `pact_http::client`）；错误按 §6.3 结构化输出，exit code 非 0。
 
-### 9.4 配置与身份（D11）
+### 9.4 配置与身份（D11，NFR6 v2 扩展）
 
-`pact.toml`：
+`pact.toml`（全部字段可选；`deny_unknown_fields`）：
 
 ```toml
 data_dir = "./data"
 listen_unix = "./pact.sock"        # 默认；listen_tcp 可选
+listen_tcp = "0.0.0.0:7654"        # TLS 仅作用于 TCP 监听
 compact_on_start = false           # 可选：恢复后自动压缩全部实例日志（D25 子项 1）
 compact_keep_last = 0              # 可选：自动压缩保留的尾部事件条数
 read_audit = false                 # 可选：持久化 Rule-R 读审计（D25 子项 3；fail-closed）
-[mcp] enabled = true
+pid_file = "/run/pactd.pid"        # 可选
+
+# D34：TLS 终止（缺省关闭）；client_ca 存在即要求客户端证书（mTLS）
+[tls]
+certificate = "/etc/pact/server-chain.pem"
+private_key = "/etc/pact/server.key"
+# client_ca = "/etc/pact/client-ca.pem"
+
+# D34：Ed25519 公钥表；非空即启用请求签名（值 = base64 的 32 字节公钥）
+[auth.keys]
+architect = "<base64-32B-pubkey>"   # 32 字节公钥 base64
+
 [auth]
-# 可选：参与者令牌表；缺省 = 信任声明模式
+# 可选：按参与者静态令牌；与 [auth.keys] 可并存；启用签名后 REST 请求必须签名
 [auth.tokens]
-architect = "…"   # Authorization: Bearer
-# 可选：域级授权（D25 子项 3）；非空时必须同时配置令牌表
+architect = "<token>"             # Authorization: Bearer
+# 可选：域级授权（D25 子项 3）；非空时 tokens 或 keys 至少其一
 [auth.acl]
 architect = ["proj/*", "other/default"]
+
+# D35：MCP Streamable HTTP
+[mcp]
+enabled = true
+public_url = "https://pact.example.com"   # OIDC 启用时必填；亦用于 allowed_hosts
+
+# D36：MCP OIDC 资源服务器（仅 /mcp）
+[mcp.oidc]
+issuer = "https://idp.example.com"
+audience = "pact-mcp"
+principal_claim = "sub"            # 缺省 sub
+principal_map = { "auth0|alice" = "alice" }  # 可选：claim 值 -> 参与者名
+# jwks_uri = "https://idp.example.com/.well-known/jwks.json"
+discovery = true                   # 缺省 true；false 时必须显式 jwks_uri
+allowed_algs = ["RS256", "ES256", "EdDSA"]   # 缺省即这三项
+# ca = "/etc/pact/idp-ca.pem"      # IdP TLS 自定义 CA
+allow_static_tokens = true         # 允许非 JWT 静态令牌并存
+allow_insecure_http = false        # 仅本地/测试可设 true
 ```
 
-接口层在命令进入引擎前完成参与者身份校验；核心与引擎不感知认证方式（联网版只换此层）。ACL 启用后的身份来源：动作端点 = body/query 的 `participant`（须与 Bearer 令牌归属一致）；生命周期与查询端点 = Bearer 令牌反查的参与者。`Config::validate()` 在 daemon 启动前拒绝「ACL 非空 + 令牌表为空」及非法条目。
+接口层在命令进入引擎前完成参与者身份校验；核心与引擎不感知认证方式。身份来源（v2）：
 
-### 9.5 运维接口（D25 子项 2，已实现）
+- **REST 动作端点**：启用 `[auth.keys]` 时取 Ed25519 签名身份（除豁免端点外必须签名，Bearer 不能替代）；未启用签名时取 Bearer 静态令牌。请求 `participant` 必须等于解析身份，否则 `401`。
+- **REST 生命周期/查询端点**：启用签名时取签名身份；否则取 Bearer 令牌反查的参与者。
+- **`/mcp`**：OIDC JWT（D36）或静态 Bearer；OIDC 与静态令牌都不存在时为信任模式。Ed25519 签名**不用于** `/mcp`；OIDC 令牌**不用于** REST。
 
-daemon 在域端点之外暴露三个**免令牌**运维端点（仅本地/内网，探活与抓取惯例）：
+`Config::validate()` 在 daemon 启动前拒绝：ACL 非空但 tokens 与 keys 均为空；签名密钥非 32 字节/base64 非法；TLS 配置不完整或缺少 `listen_tcp`；`[mcp].enabled` 且 keys 非空但 tokens 为空且无 OIDC；OIDC 启用但未 `enabled` 或缺 `public_url`；issuer/JWKS 非 https（除非 `allow_insecure_http`）、带查询或片段；空 audience/issuer；非法 `principal_claim`/映射目标；未知 alg。
+
+### 9.5 TLS（D34，已实现）
+
+- **启用条件**：`[tls] certificate` 与 `private_key` 同时存在，且必须配置 `listen_tcp`；否则启动失败。`listen_unix` 始终明文（本地 socket）。
+- **实现**：rustls + axum-server，TLS 1.2/1.3；证书链 PEM、私钥 PEM（PKCS#8/PKCS#1/SEC1）。`client_ca` 存在时以 `WebPkiClientVerifier` 校验客户端证书（mTLS）；握手失败记录后继续接受，不影响已有连接。
+- **客户端**：`pact_http::client::Client::https(addr, ca)`（返回 `Result`）；CLI/MCP/runtime 的 `--https` 与 `--tls-ca` 均落到该构造。内置客户端**不发送客户端证书**；需要 mTLS 的外部客户端须自备证书，否则握手失败。
+- **观测**：启动日志标注监听方式（`unix` / `tcp` / `tls` / `mtls`），不记录私钥与令牌。
+
+### 9.6 Ed25519 请求签名身份（D34，已实现）
+
+- **配置**：`[auth.keys] 参与者 = base64(32B Ed25519 公钥)`；非空即启用，空表即关闭。ACL 可仅依赖 keys（tokens 与 keys 至少其一）。**启用后除豁免端点外的 REST 请求必须签名；Bearer 不能替代签名**（两者同时配置时，带签名的请求以签名身份为准）。
+- **请求头**：`x-pact-participant` / `x-pact-timestamp`（Unix 秒）/ `x-pact-nonce` / `x-pact-signature`（Ed25519 原始签名 base64）。客户端每请求生成新 ULID nonce；`Client::with_signing` 对所有非豁免 REST 请求（含 GET）生效。
+- **规范化串**：`PACT-SIGNATURE-V1\n<METHOD>\n<path?query>\n<sha256(body) 小写 hex>\n<timestamp>\n<nonce>\n<participant>`，无尾换行；body 为空串时 hash 为空体 SHA-256。
+- **服务端顺序**：中间件先移除客户端 `x-pact-verified-principal` → 四头齐全 → 时间窗 `±300s`（绝对差）→ 公钥查表与 Ed25519 验签 → nonce 去重（TTL 300s、容量 8192；满则以 429 拒绝新 nonce；验签失败不写入缓存，避免未认证请求污染防重放缓存）→ 注入可信头。`body` 超过 8 MiB 返回 `413`（验签前拦截）。
+- **失败语义**：缺头/未知参与者/时间戳越界/签名错误 → `401`；nonce 重放或缓存满 → `429`；body 超限或读取失败 → `413`；ACL 越权 → `403`；请求 `participant` 与身份不一致 → `401`。
+- **豁免**：`/health`、`/ready`、`/metrics`、`/mcp` 与 `GET /.well-known/oauth-protected-resource` 不验签；`/validate` 仍需签名。REST 信任模式（无 keys 且无 tokens；OIDC 仅影响 `/mcp`，不影响 REST）保持自报参与者并允许无身份请求。
+- **内部能力**：daemon 内建 `/mcp` 调本地 REST 时使用 `x-pact-internal-auth`（随机 32 字节 hex，进程内生成、只驻留内存），验签/令牌中间件识别后仅接受进程内注入的可信参与者；外部请求即使伪造该头也需猜中随机值。该头与令牌均不写入日志。
+
+### 9.7 MCP Streamable HTTP（D35，已实现）
+
+- **挂载**：`pact_http::server::router_with_mcp(state, mcp_enabled)`；`[mcp].enabled = true` 时在基路由上 `nest_service("/mcp", StreamableHttpService<PactMcp, LocalSessionManager>)`，同一监听端口/同一 TLS 终止。`public_url` 提供 authority，与回环名单一起传给 rmcp `allowed_hosts`（Host 头保护）；未配置 `public_url` 时仅回环 Host 可通过。
+- **会话**：rmcp 配置以 builder 构造，启用 `legacy_session_mode(true)`（兼容旧 `mcp-session-id` 客户端），其余取默认。
+- **工具与本地调用**：`PactMcp` 持有 `Client` 克隆；本地模式走 `tower::ServiceExt::oneshot` 调进程内 Router，不发起网络自连接、不重复 TLS/签名。工具身份由当前请求的 `x-pact-verified-principal` 每调用注入，禁止跨会话缓存。
+- **stdio 保留**：`pact-mcp` 仍是 stdio 薄封装，经 REST 接 daemon；签名/TLS/Bearer 参数与 CLI 同名。`pact-runtime` 的 MCP 子进程仅透传 TLS 与 Bearer。
+- **信任模式**：`enabled` 且无 OIDC 且 tokens 为空 ⇒ 放行无 Authorization 的请求（仅单机/回环），启动打印 `WARN`；若请求携带任意令牌则 `401`（避免误把令牌当有效身份）。
+
+### 9.8 MCP OIDC 资源服务器（D36，已实现）
+
+- **配置与发现**：`[mcp.oidc]` 见 §9.4。`discovery = true`（缺省）时拉取 `<issuer>/.well-known/openid-configuration` 取 `jwks_uri`；`discovery = false` 时必须显式 `jwks_uri`。发现与 JWKS 均缓存 300s；JWKS 最多保留 64 键；未知 `kid` 触发限频重取（同一 30s 窗口最多一次）。
+- **JWT 校验**：仅接受 `allowed_algs`（缺省 RS256/ES256/EdDSA）且 JWK alg/类型匹配；拒绝 `none`、HS*、非空 `crit`；`iss` 精确匹配、`aud` 包含 `audience`、`exp` 必需、`nbf` 存在时校验，leeway 60s；`sub` 必需。`principal_claim` 可为字符串或唯一字符串元素数组，经 `principal_map` 映射后须匹配 `[A-Za-z0-9_-]{1,128}`，否则 `401`。
+- **线上契约**：`GET /.well-known/oauth-protected-resource` → `{resource: public_url, authorization_servers: [issuer], bearer_methods_supported: ["header"]}`；OIDC 未启用时该路径 `404`。`/mcp` 失败返回 `401` + `WWW-Authenticate: Bearer resource_metadata="<public_url>/.well-known/oauth-protected-resource"`（`public_url` 存在时）。
+- **错误与边界**：令牌缺失/格式非法/签名或 claim 不符 → `401`；IdP 发现或 JWKS 拉取不可达 → `503`；REST 不调用 IdP，故 IdP 故障不影响 REST。OIDC 令牌仅在 `/mcp` 请求内校验，不缓存、不落盘、不转发给 REST；`allow_static_tokens = false` 时 `/mcp` 只接受 JWT。
+- **并发**：JWKS/发现缓存按需刷新，失败时不提供陈旧密钥（fail-closed），返回 `503`。
+
+### 9.9 运维接口（D25 子项 2，已实现）
+
+daemon 在域端点之外暴露三个**免身份**运维端点（仅本地/内网，探活与抓取惯例）：
 
 | 端点 | 语义 | 响应 |
 |------|------|------|
@@ -723,19 +802,19 @@ daemon 在域端点之外暴露三个**免令牌**运维端点（仅本地/内�
 
 **优雅停机**：SIGINT 或 SIGTERM 均走同一路径——广播停机 → 各监听循环停止接受新连接 → **有界（10s）**等待在途连接归零 → `engine.shutdown()`（终态快照）→ 清理 PID 文件与套接字。SSE 长连接会占满宽限窗口，故必须设有界超时（超时后强制进入终态快照，不阻塞退出）。
 
-### 9.6 域级 ACL 与读审计（D25 子项 3，已实现）
+### 9.10 域级 ACL 与读审计（D25 子项 3，已实现）
 
 **ACL 模型**：`[auth.acl] principal = ["domain/instance", "domain/*"]`。匹配仅限两种形态（拒绝 `proj`、`proj/*/x`、路径穿越等）；启用后所有域作用域端点先鉴权再进引擎：
 
 | 端点类别 | 身份来源 | 授权键 |
 |----------|----------|--------|
-| load / instantiate / unload / compact / compose | Bearer 令牌反查参与者 | `(domain, instance)`（compose/默认路径 = `default`） |
-| seed / produce / read / consume / gates / enabled | body/query `participant`（令牌归属须一致） | `(domain, instance)` |
-| counter / archive / status / events / read-audit | Bearer 令牌反查参与者 | `(domain, instance)` |
-| `:analyze`（定义级） | Bearer 令牌反查参与者 | 该域任一授权 |
-| `GET /domains` | Bearer 令牌反查参与者 | 逐实例过滤，空域剔除 |
+| load / instantiate / unload / compact / compose | 启用签名时取签名身份；否则 Bearer 令牌反查参与者 | `(domain, instance)`（compose/默认路径 = `default`） |
+| seed / produce / read / consume / gates / enabled | body/query `participant`（须与令牌/签名身份一致） | `(domain, instance)` |
+| counter / archive / status / events / read-audit | 启用签名时取签名身份；否则 Bearer 令牌反查参与者 | `(domain, instance)` |
+| `:analyze`（定义级） | 启用签名时取签名身份；否则 Bearer 令牌反查参与者 | 该域任一授权 |
+| `GET /domains` | 启用签名时取签名身份；否则 Bearer 令牌反查参与者 | 逐实例过滤，空域剔除 |
 
-无令牌 → `401 Unauthorized`；令牌有效但无该键授权 → `403 Forbidden`（结构化 §6.3 错误体）。ACL 空表时上述检查全部短路，保持既有信任声明行为。daemon 启动前 `Config::validate()` 拒绝「ACL 非空 + 令牌表为空」（无法判定身份）及非法条目。`/health` `/ready` `/metrics` `/validate` 不属于域作用域，保持免令牌。
+无身份 → `401 Unauthorized`；身份有效但无该键授权 → `403 Forbidden`（结构化 §6.3 错误体）。ACL 空表时上述检查全部短路，保持既有信任声明行为。daemon 启动前 `Config::validate()` 拒绝「ACL 非空 + 令牌表与密钥表均为空」（无法判定身份）及非法条目。`/health` `/ready` `/metrics` `/validate` 不属于域作用域、不做 ACL；其中 `/validate` 在签名启用时仍需签名（仅运维三端点与 `/mcp`/元数据豁免验签）。
 
 **读审计流**（FR17，默认关闭）：`read_audit = true` 时，每次 Rule-R 成功读取后由引擎 actor（单写者）向 `<data_dir>/<domain>/<instance>.read-audit.jsonl` 追加一行并 `fsync`：
 
@@ -756,6 +835,7 @@ daemon 在域端点之外暴露三个**免令牌**运维端点（仅本地/内�
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
 | 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程 | 阶段 4/5 的 e2e 测试 |
+| v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
 | WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试 | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |
 
 ## 11. 实现阶段
@@ -765,20 +845,28 @@ daemon 在域端点之外暴露三个**免令牌**运维端点（仅本地/内�
 | 1 | pact-core + pact-parser + 黄金轨迹/属性测试 | 论文全部示例轨迹通过；core 纯度约束清单（§2.1）逐条满足 | **已完成（2026-08-25，2026-08-26 按 rev1 更新）**：27 项测试全绿（11 单元含源类型约束专项 + 2 属性 × 512 用例 + 5 黄金 + 9 parser）；纯度核验（依赖树仅 serde、禁用 API 扫描零命中）；D15 已回滚、D17 生效（论文 rev1 源生产约束）；已知缺口：容器内无 rustfmt/clippy 组件（无 rustup/sudo），待环境补齐后补跑 |
 | 2 | pact-analysis + pact-compose | 六项分析对论文域输出正确；组合一致性冲突可检出 | **已完成（2026-08-26）**：20 项测试全绿（analysis 12：四论文域验证 + 死锁/馈入/不可达/循环保守/间接祖先/嵌套 via 用例；compose 8：论文 §1.8 示例逐字段比对 + 四条件冲突各型 + 单位元/交换律/幂等合并）；D18 落定（C2 实践语义） |
 | 3 | pact-store + pact-engine | 重放等价、崩溃恢复、多域会话 | **已完成（2026-08-26；2026-10-18 按 D23 补充消耗提交契约）**：新增 31 项测试全绿——store 18（事件 JSON 往返、**Consumed 自足（空 Counter 上重放）**、**幂等键序列化**、seq 逐行 +1、域名校验、索引滞后重建、快照原子写重启存活、日志清洗）；engine 单元 4（ISO-8601 纪元含闰日、逻辑时钟单调、顺序/ULID id）；集成 11（全生命周期 + 通知时序 seq/规模断言、快照路径与纯重放路径状态逐字段等价、崩溃半行截断后可续作、索引丢失重建、中部损坏 fail-fast、多域隔离、8 并发 seed 串行化、域替换恢复、validate/analyze/compose 命令、Clock/IdGen 确定性注入、**Rule-E request_id 幂等与跨重启生效**）。纯度核验：pact-core 依赖树仅 serde，IO/时钟/随机 API 扫描零命中。D23 落定（提交点 = 日志 fsync；索引投影尽力而为；Consumed 自足；Rule-E 可选幂等） |
-| 4 | pact-http + pact-cli + pact-mcp（stdio）（D19：pact-http 提前） | 人类与 agent 均可走完生命周期 | **已完成（2026-09-04）**：pact-http（axum daemon：unix socket 默认/TCP 可选、§6.3 类型化错误体、SSE 通知流、类型化 client、pactd bin）+ pact-mcp（rmcp stdio，15 个 `pact_` 工具，经 REST 接入，schemars 派生 schema）+ pact-cli（单二进制 `pact`：daemon start + 在线命令经 client + 离线 analyze/compose/replay + `--json`）。e2e 三绿：HTTP daemon 全生命周期（含 404/错误码映射、SSE、compose/unload）；CLI 真实子进程 daemon 全生命周期 + 错误路径 + 离线命令 + 事件日志回放对照；MCP 真实 stdio 子进程 15 工具全生命周期 + 3 错误路径。workspace 累计 95 项测试全绿。D19/D20 落定 |
-| 5 | 无人值守场景验证（pact-http 已提前至阶段 4 交付） | 多 agent 经 MCP 自驱完成 ReAct/软件工程域，全程无介入至 Terminated；含 MCP Streamable HTTP 与否由联网演进决定（D20：v1 不做） | **已完成（2026-09-05；2026-09-09 修正场景 B 卫生断言）**：`pact-mcp/tests/unattended_e2e.rs` 单测试内顺序验证两场景，测试进程只做"外部启动机制"（拉起 daemon + N 个真实 `pact-mcp` stdio 子进程），此后零 Rule-S/P/R/E 介入。场景 A（ReAct）：user 播种 + agent 私有生产预算 7，自驱两轮循环至 Terminated，7 产/8 消/7 读、Counter 恒 ≤2（单 agent 串行，真不变量）、archive 序两轮同构；场景 B（软件工程生命周期）：external_stakeholder 播种 + 5 worker 并发自驱接力至 Terminated，4 产/5 消/4 读、角色分工与溯源链 requirement→…→deployment 逐项核验、Counter ≤ 类型数 5（结构上界；典型调度 ≤2，但 CI 慢调度下下一阶段可在上一阶段 produce→consume 窗口内合法生产，窗口因 produces 门无条件子句而语义上不可消除，2026-09-09 CI 实测 max_counter=3 后断言修正为结构上界）。agent 自驱策略 P1 生产优先/P2 汇消费/P3 等待（订阅推送 + 轮询兜底，Rule-W）。修复两类自驱竞态：①播种前过早终止（域加载与种子注入间 Counter=∅ 使 `termination_holds` 平凡为真，worker 误判退出）→ 仅当 `archive_size>0` 才承认终止（符合 §"Terminated 信息性、不锁定域"，修复落在 agent 驱动层非引擎）；②Terminated 一次性推送与轮询判定竞态 → 终止后 500ms 宽限窗口排空在途推送。合并为单 runtime 顺序执行以规避 tokio 多 runtime 子进程回收陷阱。D20 生效（v1 不做 Streamable HTTP） |
+| 4 | pact-http + pact-cli + pact-mcp（stdio）（D19：pact-http 提前） | 人类与 agent 均可走完生命周期 | **已完成（2026-09-04）**：pact-http（axum daemon：unix socket 默认/TCP 可选、§6.3 类型化错误体、SSE 通知流、类型化 client、pactd bin）+ pact-mcp（rmcp stdio，17 个 `pact_` 工具，经 REST 接入，schemars 派生 schema）+ pact-cli（单二进制 `pact`：daemon start + 在线命令经 client + 离线 analyze/compose/replay + `--json`）。e2e 三绿：HTTP daemon 全生命周期（含 404/错误码映射、SSE、compose/unload）；CLI 真实子进程 daemon 全生命周期 + 错误路径 + 离线命令 + 事件日志回放对照；MCP 真实 stdio 子进程 15 工具全生命周期 + 3 错误路径。workspace 累计 95 项测试全绿。D19/D20 落定 |
+| 5 | 无人值守场景验证（pact-http 已提前至阶段 4 交付） | 多 agent 经 MCP 自驱完成 ReAct/软件工程域，全程无介入至 Terminated；含 MCP Streamable HTTP 与否由联网演进决定（D20：v1 不做） | **已完成（2026-09-05；2026-09-09 修正场景 B 卫生断言）**：`pact-mcp/tests/unattended_e2e.rs` 单测试内顺序验证两场景，测试进程只做"外部启动机制"（拉起 daemon + N 个真实 `pact-mcp` stdio 子进程），此后零 Rule-S/P/R/E 介入。场景 A（ReAct）：user 播种 + agent 私有生产预算 7，自驱两轮循环至 Terminated，7 产/8 消/7 读、Counter 恒 ≤2（单 agent 串行，真不变量）、archive 序两轮同构；场景 B（软件工程生命周期）：external_stakeholder 播种 + 5 worker 并发自驱接力至 Terminated，4 产/5 消/4 读、角色分工与溯源链 requirement→…→deployment 逐项核验、Counter ≤ 类型数 5（结构上界；典型调度 ≤2，但 CI 慢调度下下一阶段可在上一阶段 produce→consume 窗口内合法生产，窗口因 produces 门无条件子句而语义上不可消除，2026-09-09 CI 实测 max_counter=3 后断言修正为结构上界）。agent 自驱策略 P1 生产优先/P2 汇消费/P3 等待（订阅推送 + 轮询兜底，Rule-W）。修复两类自驱竞态：①播种前过早终止（域加载与种子注入间 Counter=∅ 使 `termination_holds` 平凡为真，worker 误判退出）→ 仅当 `archive_size>0` 才承认终止（符合 §"Terminated 信息性、不锁定域"，修复落在 agent 驱动层非引擎）；②Terminated 一次性推送与轮询判定竞态 → 终止后 500ms 宽限窗口排空在途推送。合并为单 runtime 顺序执行以规避 tokio 多 runtime 子进程回收陷阱。D20 生效（v1 不做 Streamable HTTP；v2 已由 D35 增加 `/mcp`，stdio 薄封装保留） |
 | 6（可选，已实现） | pact-cpn：CPN 编码生成（正片段直出，not 条件走互补库所编码）；**按实例独立编码**（论文 §4.5/§B.2 单实例作用域：每实例各自编码，库所/迁移不跨实例共享，跨实例协同不入 `N(D)`；源域为域声明、实例划分属运行期，见 G1/D27） | CPN Tools 可加载验证；单实例作用域符合 §4.5/§B.2 | **已完成（2026-10-21，D28）**：新增 crate `pact-cpn`（`generate(&Domain, &CpnOptions) -> CpnModel`）+ CLI `pact cpn`；每类型库所 + Archive、`PACT_TOKEN` 五元颜色、生产前驱 test arc、读自环、消费归档、种子无输入弧；`GateExpr → NNF → DNF`（or 多迁移、not 互补库所 + `--bound`、not via 显式拒绝、恒假 guard=false、DNF 上限 1024）；实例命名空间 `i_<instance>__`；输出 CPN Tools XML format 6。验证：11 项 crate 测试 + CLI 离线 e2e（结构/错误路径/实例前缀），全量 **166 项**测试全绿；`examples/domains/*.pact` 生成物全部通过 CPN DTD 校验（xmllint）。**限制**：沙箱无 CPN Tools GUI，实际图形加载需人工验收；`--bound` 正确性由调用方承担（运行期并发上界不可从声明推导） |
 | 重构（2026-09-09） | 论文 rev2 对齐：良构约束六项化（新增 LHS Uniqueness / Non-Empty LHS / PosNat 解析期与声明期强制）、A.5 重构为 precondition_wf 三元报告（D21）、DomainError 自有 String | rev2 专项测试（`{A+A}→B` / `{ }→B` / count 0 / 前导零拒绝、自环接受、EmptyPrecondLhs / ZeroCountLiteral / SeedProduceOverlap 用例）+ 三接口 e2e 断言更新全绿 | **已完成**：workspace 103 项测试全绿（净增 6 项）；fmt/clippy 清零 |
 | 7 | pact-runtime：参与者驱动运行时（D24，设备生产化） | 可复用自驱循环：给定参与者名 + 门，实现 P1/P2/P3 策略并驱动至 Terminated；多 agent 编排可拉起 N 个真实 MCP/HTTP 客户端；外部副作用执行器消费 `Consumed` 并追加补偿事实 | **已完成（2026-10-19）**：新增 crate `pact-runtime`（lib + bin `pact-runtime`）——传输层抽象（`ParticipantClient` trait / `RestClient` 包装 `pact_http::client` / `McpClient` rmcp stdio 子进程）+ 驱动循环 `drive()`（P1 生产优先/P2 汇消费/P3 等待；订阅推送 + 轮询兜底；`pristine` 守卫 + 500ms 终止宽限，与 `unattended_e2e` 逐条同构）+ 编排 `Orchestrator`（每 agent `tokio::spawn`，REST/MCP 两具体 client 装箱统一、不引入 dyn）+ 执行器 `SideEffectExecutor`（archive 游标增量、失败以 Rule-S 追加补偿事实）+ TOML 配置驱动 bin。集成 1 项（单 `#[tokio::test]` 内 in-process daemon 上顺序跑 REST 编排 SE 生命周期 / ReAct 循环 / 副作用执行器）+ 单元 4 项；workspace **110 项**测试全绿（基线 105 + 本轮 5），fmt/clippy 清零。修复两处（见 design-change 第 17 轮）：①执行器与编排并发启动下域未就绪 → 执行器增域发现轮询；②驱动 P1 需 `read` 产出见证前驱 → 测试域 `worker` 补 `reads task` 门 |
-| 8 | 引擎生产化三项（D25） | 事件日志压缩与 schema 版本化；health/ready + metrics + PID 文件 + 信号化优雅停机；域级 ACL + 可选审计读视图（默认关闭）。**验收项与 D27 实例化耦合**：(1) 的压缩部分与 (3) 全部须按双键重述，`:compact` 路由须随实例段重设计 | **子项 (2) 运维接口已完成（2026-10-20，见 §9.5）**：`/health` `/ready` `/metrics`（Prometheus 文本）+ 可选 `pid_file`（陈旧检测）+ SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → 终态快照）；workspace **131 项**测试全绿（基线 123 + 本轮 8）。**子项 (1) 日志压缩与 schema 版本化已完成（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version`（+ `Notification` 顶层 `version`）+ 旧日志/快照缺省按 v1 兼容、更高版本 fail-fast；前缀压缩（全量自足快照 → `logmeta` 水位 → 原子重写 → 裁剪索引）、快照承载 `declaration`/`dl_seq`/`consumed_requests`（幂等表随快照存活）、恢复 `snapshot_is_anchor` 分支与 `SnapshotRequiredForCompactedLog` 护栏；REST `POST /domains/{d}[/instances/{i}]/compact`、CLI `pact compact`、MCP `pact_compact`、`pact.toml` 可选 `compact_on_start`/`compact_keep_last`；workspace **145 项**测试全绿（基线 131 + 本轮 14）。**子项 (3) 域级 ACL 与审计读视图 已完成（2026-10-20，见 §9.6）**：`[auth.acl]` 实例级条目（`domain/instance` / `domain/*`）覆盖生命周期、四类动作、查询、compact 与读审计视图，`GET /domains` 按授权过滤；ACL 非空而令牌表为空 ⇒ 拒绝启动；可选 `read_audit = true` 写独立审计流（`<instance>.read-audit.jsonl`，append+fsync，fail-closed）并提供 `GET .../read-audit?limit=` 只读视图；workspace **155 项**测试全绿（基线 145 + 本轮 10） |
+| 8 | 引擎生产化三项（D25） | 事件日志压缩与 schema 版本化；health/ready + metrics + PID 文件 + 信号化优雅停机；域级 ACL + 可选审计读视图（默认关闭）。**验收项与 D27 实例化耦合**：(1) 的压缩部分与 (3) 全部须按双键重述，`:compact` 路由须随实例段重设计 | **子项 (2) 运维接口已完成（2026-10-20，见 §9.9）**：`/health` `/ready` `/metrics`（Prometheus 文本）+ 可选 `pid_file`（陈旧检测）+ SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → 终态快照）；workspace **131 项**测试全绿（基线 123 + 本轮 8）。**子项 (1) 日志压缩与 schema 版本化已完成（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version`（+ `Notification` 顶层 `version`）+ 旧日志/快照缺省按 v1 兼容、更高版本 fail-fast；前缀压缩（全量自足快照 → `logmeta` 水位 → 原子重写 → 裁剪索引）、快照承载 `declaration`/`dl_seq`/`consumed_requests`（幂等表随快照存活）、恢复 `snapshot_is_anchor` 分支与 `SnapshotRequiredForCompactedLog` 护栏；REST `POST /domains/{d}[/instances/{i}]/compact`、CLI `pact compact`、MCP `pact_compact`、`pact.toml` 可选 `compact_on_start`/`compact_keep_last`；workspace **145 项**测试全绿（基线 131 + 本轮 14）。**子项 (3) 域级 ACL 与审计读视图 已完成（2026-10-20，见 §9.10）**：`[auth.acl]` 实例级条目（`domain/instance` / `domain/*`）覆盖生命周期、四类动作、查询、compact 与读审计视图，`GET /domains` 按授权过滤；ACL 非空而令牌表与密钥表均为空 ⇒ 拒绝启动；可选 `read_audit = true` 写独立审计流（`<instance>.read-audit.jsonl`，append+fsync，fail-closed）并提供 `GET .../read-audit?limit=` 只读视图；workspace **155 项**测试全绿（基线 145 + 本轮 10） |
 | 9 | 分发产物 `dist/`（D26） | Dockerfile、systemd unit、musl 静态二进制打包脚本，可构建可运行 | **已完成（2026-10-20）**：`dist/Dockerfile`（多阶段 `rust:1.98-alpine` 构建 musl 静态四 bin → `alpine:3.22` 运行；非 root uid 10001、`/var/lib/pact` 数据卷、`/health` HEALTHCHECK、入口 `pactd --config /etc/pact/pact.toml`）+ `Dockerfile.dockerignore`（构建上下文排除 `docs/pact*`、examples、target 等）；`dist/pactd.service`（`User=pact`、`StateDirectory`/`RuntimeDirectory`、SIGTERM 优雅停机、`ProtectSystem=strict` 与空 capability 集等加固）；`dist/build-static.sh`（`x86_64-unknown-linux-musl`、`--locked --bins`、strip + `readelf` 静态链接核验、tar + `SHA256SUMS` 复现打包）；配置示例 `dist/pact.toml.example`（systemd）与 `dist/pact.container.toml`（容器）。离线校验：脚本语法、两份 TOML 解析、systemd unit 语义校验；按 D26 不接入 CI 语义测试。**注**：当前开发沙箱无 musl C 工具链与容器运行时，静态打包与镜像构建仅做到脚本/配置层面校验；实际构建需在装有 `musl-gcc` 的主机或 Docker 中执行 |
 | 10 | 域双键实例化（D27，路径 β） | 定义键/实例键落地：存储 `(domain, instance)` 双列 + 域子目录布局 + 引擎声明注册表（`declare` / `instantiate` 分离，实例创建时快照声明）+ 接口全链（REST / CLI / MCP / `pact-runtime`）+ 默认实例 `default` + 旧日志 fail-fast + 通用护栏（`data_dir` flock 独占锁、非空实例 load 默认拒绝）；阶段 8 的耦合项随之一并完成 | **已完成（2026-10-20，路径 β）**：`pact-store` `InstanceKey{domain,instance}` + 域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、声明原文 `declaration.pact`）+ 索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键，`open()` 自愈重建）；`pact-engine` 声明注册表（`declarations` / `instances` 两表，`declare` / `instantiate` 私有方法 + 公开命令 `LoadDomain` / `Instantiate`，`InstanceSession.is_occupied = last_seq > dl_seq`）——错误码 `InstanceNotFound` / `DomainNotDeclared` / `InstanceExists` / `DomainBusy`；接口全链：REST 默认族 + 实例镜像族（`/domains/{d}/instances/{i}/…`）+ `InstantiateReq` + `DomainListing`，CLI `--instance`/`--force`/`instantiate`/`instances`，MCP 16 工具（新增 `pact_domain_instantiate`），`pact-runtime` 实例透传（`ParticipantClient::instance` + `bound_ready`）；护栏 `flock`（`fs4`，`<data_dir>/pactd.lock`）+ `DomainBusy`；键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` **零改动**（形式语义不变）。workspace **123 项**测试全绿（基线 110 + β 专项），fmt/clippy 清零 |
 
 ## 12. 联网演进路径（NFR6）
 
-v1 → v2 的变化被限制在接口层：TLS 终结、真实参与者凭据（签名密钥替代 bearer token）、MCP Streamable HTTP 远程接入。引擎、存储、核心语义零改动——因为 Counter 单权威不因联网改变（client/server，无共识）。turso 的 MVCC 并发写能力为 v2 多客户端并发查询提供余量。
+v2 的变化被限制在接口层：TLS 终结、真实参与者凭据（Ed25519 签名替代/补充 Bearer）、MCP Streamable HTTP 远程接入、MCP OIDC 资源服务器。引擎、存储、核心语义零改动——因为 Counter 单权威不因联网改变（client/server，无共识）。turso 的 MVCC 并发写能力为 v2 多客户端并发查询提供余量。
 
-**MCP 提供形态（2026-10-19 确认，D24）**：v1 维持 stdio-only（D20 不变）到 v2；服务端形态（daemon 内建 MCP Streamable HTTP）随 v2 落地。`pact-mcp` 是**传输适配器/客户端**而非权威，权威恒为 daemon；它随本仓库交付（独立 bin），由 agent 宿主在 MCP 配置中拉起（`command=pact-mcp, args=--unix …`）。**不把 MCP server 拆为独立项目**——它与线上格式/事件 schema 强耦合。
+**v2 已实现（2026-10-22，D34–D36）**：
+
+- **传输**：daemon 在同一 `listen_tcp` 上可选 TLS 1.2/1.3 与 mTLS（§9.5）；unix socket 仍是本地默认，不受 TLS 配置影响。
+- **REST 身份**：静态 Bearer 保留；新增 Ed25519 请求签名（§9.6）；启用签名后非豁免 REST 请求必须签名（Bearer 不能替代），并与 ACL 共用同一参与者身份位。失败语义 401/403/413/429。
+- **MCP**：daemon 内建 `/mcp`（§9.7），OIDC 资源服务器（§9.8）或静态 Bearer；`pact-mcp` 的 stdio 形态保留为薄封装，面向本地宿主与 `pact-runtime`。
+- **外部依赖**：仅在启用 OIDC 时新增 IdP 与 JWKS 依赖；REST、CLI、stdio MCP 不访问 IdP，IdP 故障不影响它们。
+- **不在 v2**：daemon 内授权服务器/授权码 + PKCE、OIDC 令牌向 REST 透传、多租户配额/WAF、内置客户端 mTLS 证书管理。
+
+**MCP 提供形态（2026-10-19 确认，D24；2026-10-22 按 D35 更新）**：stdio 与 Streamable HTTP 并存。`pact-mcp` 是**传输适配器/客户端**而非权威，权威恒为 daemon；它随本仓库交付（独立 bin），由 agent 宿主在 MCP 配置中拉起（`command=pact-mcp, args=--unix …`）。**不把 MCP server 拆为独立项目**——它与线上格式/事件 schema 强耦合；HTTP 形态直接复用 `pact-http::mcp` 的实现。
 
 ## 13. 生产运行层与生产化边界（D24–D26，2026-10-19 裁决）
 
@@ -807,7 +895,7 @@ v1 → v2 的变化被限制在接口层：TLS 终结、真实参与者凭据（
 
 **工具链前置**：`rustup target add x86_64-unknown-linux-musl` 与 musl C 工具链（turso 的 C 依赖需编译；Fedora `musl-gcc`、Debian `musl-tools`、Alpine `musl-dev gcc`）。脚本对缺失前置**显式失败**，不回退到 glibc 构建。
 
-**安全边界**：容器与 systemd 均以非 root 运行且数据目录 0700；容器默认只暴露 8787 且文档要求 `-p 127.0.0.1:8787:8787`；v1 无 TLS，跨主机访问须外部 TLS 终结并启用 `[auth.tokens]` / `[auth.acl]`（§9.4/§9.6）。
+**安全边界**：容器与 systemd 均以非 root 运行且数据目录 0700；容器默认只暴露 8787 且文档要求 `-p 127.0.0.1:8787:8787`。v2 起可选用 daemon 内 TLS/mTLS（§9.5）与 Ed25519 签名/静态令牌（§9.6）；若仍由外部反向代理终结 TLS，则后端应只监听回环并启用 `[auth.tokens]` / `[auth.keys]` / `[auth.acl]`（§9.4/§9.10）。内置客户端不支持 mTLS 客户端证书，需要 mTLS 的部署须由外部客户端出示证书。
 
 **非目标**：不推送镜像仓库、不提供 k8s/Compose 编排模板、不做自动更新或打包签名；这些属外部发行细节。
 

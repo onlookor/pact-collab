@@ -50,6 +50,7 @@ impl From<ClientError> for RuntimeError {
             ClientError::UnexpectedStatus(s) => {
                 RuntimeError::Protocol(format!("非预期状态码：{s}"))
             }
+            ClientError::Config(m) => RuntimeError::Transport(format!("客户端配置错误：{m}")),
         }
     }
 }

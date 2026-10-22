@@ -11,6 +11,7 @@ use pact_http::client::{Client, ClientError};
 use pact_http::config::Config;
 use pact_http::daemon::run_daemon;
 use pact_http::dto::{conflicts_detail, problem_detail, ErrorBody, ErrorDetail};
+use pact_http::sign::SigningIdentity;
 use pact_store::{apply_event, ApplyOutcome, Event, WireEvent};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,6 +28,21 @@ struct Cli {
     /// 参与者令牌（Authorization: Bearer；信任声明模式下可省略）
     #[arg(long, global = true)]
     bearer: Option<String>,
+    /// 从文件首行读取 Bearer 令牌（与 --bearer 互斥，避免令牌出现在进程参数）
+    #[arg(long = "bearer-file", global = true)]
+    bearer_file: Option<PathBuf>,
+    /// 连接 HTTPS daemon（需同时 `--tcp`）
+    #[arg(long, global = true)]
+    https: bool,
+    /// 自定义 CA PEM（仅 `--https` 时允许）
+    #[arg(long = "tls-ca", global = true)]
+    tls_ca: Option<PathBuf>,
+    /// Ed25519 签名种子文件（内容为 base64(32 字节)）
+    #[arg(long = "sign-key", global = true)]
+    sign_key: Option<PathBuf>,
+    /// 签名参与者名（必须与 `--sign-key` 同时提供）
+    #[arg(long = "sign-as", global = true)]
+    sign_as: Option<String>,
     /// 以 §6 线上格式输出 JSON
     #[arg(long, global = true)]
     json: bool,
@@ -294,15 +310,39 @@ fn main() -> ExitCode {
         .block_on(async { run(cli).await })
 }
 
+/// 构造在线客户端；配置/连接失败时按 `--json` 统一输出错误体并退出。
+macro_rules! online {
+    ($conn:expr, $json:expr) => {
+        match $conn.client() {
+            Ok(c) => c,
+            Err(e) => return fail($json, client_error_detail(e)),
+        }
+    };
+}
+
 async fn run(cli: Cli) -> ExitCode {
     let Cli {
         unix,
         tcp,
         bearer,
+        bearer_file,
+        https,
+        tls_ca,
+        sign_key,
+        sign_as,
         json,
         command,
     } = cli;
-    let conn = ConnArgs { unix, tcp, bearer };
+    let conn = ConnArgs {
+        unix,
+        tcp,
+        bearer,
+        bearer_file,
+        https,
+        tls_ca,
+        sign_key,
+        sign_as,
+    };
     match command {
         // —— daemon 控制 ——
         Command::Daemon {
@@ -342,7 +382,7 @@ async fn run(cli: Cli) -> ExitCode {
                 Ok(t) => t,
                 Err(c) => return c,
             };
-            let c = conn.client();
+            let c = online!(conn, json);
             done(json, c.validate(&text).await, |r| {
                 println!(
                     "ok: types={} participants={} gates={} seed_authority={}",
@@ -369,7 +409,7 @@ async fn run(cli: Cli) -> ExitCode {
                 Err(c) => return c,
             };
             let name = name.unwrap_or_else(|| default_name(&file));
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.load_domain(&name, &text, instance.as_deref(), force)
@@ -385,7 +425,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Domain {
             cmd: DomainCmd::Instantiate { domain, instance },
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(json, c.instantiate(&domain, &instance).await, |r| {
                 println!(
                     "instantiated {}: types={} gates={} seed_authority={} last_seq={}",
@@ -396,7 +436,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Domain {
             cmd: DomainCmd::List,
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(json, c.list_domains().await, |r| {
                 if r.domains.is_empty() {
                     println!("(无域)");
@@ -410,7 +450,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Domain {
             cmd: DomainCmd::Instances { domain },
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             // JSON 输出该域的实例清单（缺省域不存在时为空间量）
             let res = c.list_domains().await.map(|r| {
                 r.domains
@@ -432,7 +472,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Domain {
             cmd: DomainCmd::Info { domain, instance },
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.domain_info(&domain, instance.as_deref()).await,
@@ -447,7 +487,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Domain {
             cmd: DomainCmd::Unload { domain, instance },
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.unload_domain(&domain, instance.as_deref()).await,
@@ -465,7 +505,7 @@ async fn run(cli: Cli) -> ExitCode {
             ty,
             thing_ref,
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.seed(
@@ -487,7 +527,7 @@ async fn run(cli: Cli) -> ExitCode {
             predecessors,
             thing_ref,
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.produce(
@@ -508,7 +548,7 @@ async fn run(cli: Cli) -> ExitCode {
             participant,
             token,
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.read_token(&domain, instance.as_deref(), &participant, &token)
@@ -523,7 +563,7 @@ async fn run(cli: Cli) -> ExitCode {
             token,
             request_id,
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.consume(
@@ -555,7 +595,7 @@ async fn run(cli: Cli) -> ExitCode {
                     ty,
                 },
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.counter(&domain, instance.as_deref(), ty.as_deref()).await,
@@ -584,7 +624,7 @@ async fn run(cli: Cli) -> ExitCode {
                     ty,
                 },
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.archive(&domain, instance.as_deref(), ty.as_deref()).await,
@@ -607,7 +647,7 @@ async fn run(cli: Cli) -> ExitCode {
                     participant,
                 },
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.gates(&domain, instance.as_deref(), &participant).await,
@@ -632,7 +672,7 @@ async fn run(cli: Cli) -> ExitCode {
             instance,
             participant,
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.enabled(&domain, instance.as_deref(), &participant).await,
@@ -653,7 +693,7 @@ async fn run(cli: Cli) -> ExitCode {
             )
         }
         Command::Status { domain, instance } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(json, c.status(&domain, instance.as_deref()).await, |r| {
                 println!(
                     "{}: counter={} archive={} terminated={}",
@@ -666,7 +706,7 @@ async fn run(cli: Cli) -> ExitCode {
             instance,
             keep_last,
         } => {
-            let c = conn.client();
+            let c = online!(conn, json);
             done(
                 json,
                 c.compact(&domain, instance.as_deref(), keep_last).await,
@@ -699,28 +739,92 @@ async fn run(cli: Cli) -> ExitCode {
 
 // ============ 在线辅助 ============
 
-/// 连接参数（全局 --unix / --tcp / --bearer）。
+/// 连接参数（全局 `--unix/--tcp/--https/--tls-ca/--bearer/--bearer-file`
+/// /`--sign-key/--sign-as`）。
 struct ConnArgs {
     unix: Option<PathBuf>,
     tcp: Option<String>,
     bearer: Option<String>,
+    bearer_file: Option<PathBuf>,
+    https: bool,
+    tls_ca: Option<PathBuf>,
+    sign_key: Option<PathBuf>,
+    sign_as: Option<String>,
 }
 
 impl ConnArgs {
-    fn client(&self) -> Client {
-        let c = match &self.tcp {
-            Some(addr) => Client::tcp(addr.clone()),
-            None => Client::unix(
+    fn client(&self) -> Result<Client, ClientError> {
+        if self.bearer.is_some() && self.bearer_file.is_some() {
+            return Err(ClientError::Config(
+                "--bearer 与 --bearer-file 互斥".to_owned(),
+            ));
+        }
+        let bearer = match &self.bearer_file {
+            Some(path) => Some(read_bearer_file(path)?),
+            None => self.bearer.clone(),
+        };
+        if self.https && self.tcp.is_none() {
+            return Err(ClientError::Config("--https 需要同时指定 --tcp".to_owned()));
+        }
+        if self.tls_ca.is_some() && !self.https {
+            return Err(ClientError::Config(
+                "--tls-ca 仅在 --https 时可用".to_owned(),
+            ));
+        }
+
+        let c = match (&self.tcp, self.https) {
+            (Some(addr), true) => Client::https(addr.clone(), self.tls_ca.clone())?,
+            (Some(addr), false) => Client::tcp(addr.clone()),
+            (None, _) => Client::unix(
                 self.unix
                     .clone()
                     .unwrap_or_else(|| PathBuf::from("./pact.sock")),
             ),
         };
-        match &self.bearer {
-            Some(t) => c.with_bearer(t.clone()),
+        let c = match bearer {
+            Some(t) => c.with_bearer(t),
             None => c,
-        }
+        };
+
+        let signing = match (&self.sign_key, &self.sign_as) {
+            (Some(path), Some(name)) => {
+                let seed = std::fs::read_to_string(path).map_err(|e| {
+                    ClientError::Config(format!(
+                        "读取 --sign-key 文件 {} 失败：{e}",
+                        path.display()
+                    ))
+                })?;
+                Some(
+                    SigningIdentity::from_seed_base64(name, seed.trim())
+                        .map_err(|e| ClientError::Config(e.to_string()))?,
+                )
+            }
+            (None, None) => None,
+            _ => {
+                return Err(ClientError::Config(
+                    "--sign-key 与 --sign-as 必须同时提供".to_owned(),
+                ))
+            }
+        };
+        Ok(match signing {
+            Some(id) => c.with_signing(id),
+            None => c,
+        })
     }
+}
+
+/// 读取 `--bearer-file` 首行作为令牌；不把文件内容放进错误信息。
+fn read_bearer_file(path: &Path) -> Result<String, ClientError> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        ClientError::Config(format!("读取 --bearer-file {} 失败：{e}", path.display()))
+    })?;
+    let token = text.lines().next().unwrap_or("").trim();
+    if token.is_empty() {
+        return Err(ClientError::Config(
+            "--bearer-file 首行为空（期望 Bearer 令牌）".to_owned(),
+        ));
+    }
+    Ok(token.to_owned())
 }
 
 /// 统一结果处理：`--json` 序列化成功值 / §6.3 错误体；否则人类可读输出。
@@ -764,6 +868,11 @@ fn client_error_detail(e: ClientError) -> ErrorDetail {
             code: "UnexpectedStatus".into(),
             detail: serde_json::json!({ "status": s.as_u16() }),
             message: format!("daemon 返回非预期状态码 {s}"),
+        },
+        ClientError::Config(msg) => ErrorDetail {
+            code: "Config".into(),
+            detail: serde_json::Value::Null,
+            message: msg,
         },
     }
 }

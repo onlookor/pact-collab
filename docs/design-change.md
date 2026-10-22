@@ -1,5 +1,27 @@
 # 设计变更记录
 
+## 2026-10-22（第 39 轮，NFR6 v2：D34 TLS/签名、D35 MCP HTTP、D36 OIDC）
+
+- **新增 D34 TLS 与 Ed25519 请求签名身份**：`[tls] certificate/private_key/client_ca`，仅 TCP 生效，rustls 终止于 pactd，`client_ca` 即 mTLS；`[auth.keys]` 非空启用签名，四头 + `PACT-SIGNATURE-V1` 规范串、±300s、nonce TTL 300s/8192、8 MiB、401/403/413/429；签名与 Bearer 并存且签名优先；可信头 `x-pact-verified-principal` 与内部能力头 `x-pact-internal-auth`。ACL 身份来源扩展为「Bearer 或签名」。
+- **新增 D35 MCP Streamable HTTP**：工具层下沉 `pact-http::mcp`（17 工具），daemon `[mcp].enabled` 挂 `/mcp`（rmcp `StreamableHttpService` + `LocalSessionManager` + legacy session mode）；本地 tower 调用自身 REST；`pact-mcp` 保留 stdio 薄封装；`allowed_hosts = 回环 + public_url authority`；信任模式仅无 OIDC/无令牌时启用并告警。
+- **新增 D36 MCP OIDC 资源服务器**：`[mcp.oidc]` 全套配置；发现/JWKS 缓存 300s、最多 64 键、未知 kid 限频 30s；alg 白名单、iss/aud/exp/nbf、60s leeway、claim→principal 白名单；`GET /.well-known/oauth-protected-resource` 与 401 `WWW-Authenticate`；IdP 不可达 503；仅 `/mcp`、不缓存、不转发 REST。
+- **配置文档**：§9.4 扩为完整 `pact.toml` 示例（`[tls]`、`[auth.keys]`、`[auth.tokens]`、`[auth.acl]`、`[mcp]`、`[mcp.oidc]`），并列出 `Config::validate()` 的拒绝条件。
+- **表述澄清**：启用 `[auth.keys]` 后 REST 非豁免请求必须签名，Bearer 不能替代签名；两者同时出现时以签名身份为准（§9.4/§9.6/§9.10 同步）。
+- **章节重排**：新增 §9.5 TLS、§9.6 签名身份、§9.7 MCP HTTP、§9.8 OIDC；原 §9.5 运维接口、§9.6 域级 ACL 顺延为 §9.9、§9.10，相关交叉引用同步（D25、§11 阶段 8）。§9.2 端点表补 `/mcp` 与元数据；§12 改为 v2 已实现；§14 安全边界删除「v1 无 TLS」。
+- **实现回填（与 spec 的偏差/补充）**：
+  - **偏差 1（spec §5.8）**：`pact_http::mcp::http_service(client, allowed_hosts)` 比 spec 多一个 `allowed_hosts` 参数——Host 头保护需要回环 + `public_url` authority，不能在函数内部从 `Client` 获取。
+  - **偏差 2（spec §5.8）**：rmcp `StreamableHttpServerConfig` 以 **builder**（`StreamableHttpServerConfig::default().with_legacy_session_mode(true).with_allowed_hosts(...)`）构造，spec 的字段式构造不存在。
+  - **接口补充（spec §5.6）**：`ServerState::with_identity(engine, tokens, keys, acl, oidc, public_url)` 比 spec 多 `public_url`，用于 `/mcp` 的 `WWW-Authenticate` 与元数据 `resource`。
+  - **接口补充（spec §5.9）**：`router_with_mcp(state, mcp_enabled)` 只接收状态与开关，内部调用 `router(state)` 建基路由并从状态取 `public_url` 组装 `allowed_hosts`（回环 + 该 authority）；`/mcp` 鉴权中间件为 `require_mcp_auth`，与 `enforce_identity` 分离。
+  - **接口注记（spec §5.7）**：`ProtectedResourceMetadata` 未包含可选的 `scopes_supported`；实现只返回 `resource` / `authorization_servers` / `bearer_methods_supported`（RFC 9728 允许省略）。
+  - **已知限制（spec §5.11）**：`pact-runtime` 的 stdio MCP 子进程当前只透传 `--https/--tls-ca/--bearer`，未透传 `--sign-key/--sign-as`；`AgentSpec/BootstrapSpec` 也未提供每 agent 签名身份。连接签名 daemon 的 runtime MCP 通道需改用 REST 或 TLS+Bearer。
+- **测试**：新增 `crates/pact-http/tests/nfr6_v2.rs`（TLS/mTLS、签名/重放/篡改、MCP Bearer、OIDC 正负、元数据、IdP 不可达）；`cargo test --workspace` 219 项通过。
+- **安全审视加固（18 项逐条核验）**：
+  - 签名中间件顺序调整为「公钥查表 → Ed25519 验签 → nonce 去重」：未通过签名的请求不能写入防重放缓存，消除未认证请求填满 8192 条缓存导致的 429 拒绝服务放大。
+  - 进程内能力令牌优先从 `/dev/urandom` 读取 32 字节；不可用时退化为两枚 ULID（160 位随机熵），与文档「32 字节随机」一致。
+  - OIDC 的 `jwks_uri`（含发现文档返回值）强制 `https://`，仅 `allow_insecure_http = true` 时允许 `http://`，防止 IdP 响应导致的明文降级/非 HTTP(S) 目标。
+  - 其余项（无 `unsafe`、私钥只读、常量时间比较、可信头剥离、豁免精确匹配、CLI 无密钥回显、依赖均来自 crates.io）核验通过。
+
 ## 2026-10-22（第 38 轮，CI 修复：wasm job 工作流解析失败）
 
 - **现象**：run 39616524738（39c210d）与 39617616804（6dba5e3）均在启动前失败，未产生任何 job。

@@ -8,6 +8,7 @@
 
 use clap::Parser;
 use pact_core::ArchiveEntry;
+use pact_http::sign::SigningIdentity;
 use pact_runtime::{
     AgentSpec, Bootstrap, Compensation, Endpoint, ExecutorConfig, ExecutorReport, Orchestrator,
     RestClient, SideEffectExecutor, SideEffectHandler, StopSignal, DEFAULT_EXECUTOR_POLL,
@@ -55,13 +56,32 @@ struct EndpointCfg {
     unix: Option<PathBuf>,
     #[serde(default)]
     tcp: Option<String>,
+    /// 经 HTTPS 连接 TCP 端点（D34）。
+    #[serde(default)]
+    https: bool,
+    /// 自定义 CA PEM（仅 `https = true` 时允许）。
+    #[serde(default)]
+    tls_ca: Option<PathBuf>,
 }
 
 impl EndpointCfg {
     fn resolve(self) -> Result<Endpoint, String> {
         match (self.unix, self.tcp) {
-            (Some(p), None) => Ok(Endpoint::unix(p)),
-            (None, Some(a)) => Ok(Endpoint::tcp(a)),
+            (Some(p), None) => {
+                if self.https || self.tls_ca.is_some() {
+                    return Err("endpoint.https / endpoint.tls_ca 仅适用于 tcp 端点".to_owned());
+                }
+                Ok(Endpoint::unix(p))
+            }
+            (None, Some(a)) => {
+                if self.https {
+                    Ok(Endpoint::https(a, self.tls_ca))
+                } else if self.tls_ca.is_some() {
+                    Err("endpoint.tls_ca 需要同时设置 endpoint.https = true".to_owned())
+                } else {
+                    Ok(Endpoint::tcp(a))
+                }
+            }
             _ => Err("endpoint 必须且只能提供 unix 或 tcp 之一".to_owned()),
         }
     }
@@ -155,12 +175,24 @@ struct Args {
     /// 运行时 TOML 配置路径。
     #[arg(long)]
     config: PathBuf,
+    /// 以 HTTPS 连接 TCP 端点（覆盖 `endpoint.https`）。
+    #[arg(long)]
+    https: bool,
+    /// 自定义 CA PEM（仅 `--https` 时可用）。
+    #[arg(long = "tls-ca")]
+    tls_ca: Option<PathBuf>,
+    /// Ed25519 签名种子文件（内容为 base64(32 字节)）。
+    #[arg(long = "sign-key")]
+    sign_key: Option<PathBuf>,
+    /// 签名参与者名（必须与 `--sign-key` 同时提供）。
+    #[arg(long = "sign-as")]
+    sign_as: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let args = Args::parse();
-    match run(&args.config).await {
+    match run(&args.config, &args).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("[pact-runtime] 失败：{e}");
@@ -169,14 +201,15 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(config_path: &Path, args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(config_path)
         .map_err(|e| format!("读取配置 {config_path:?} 失败：{e}"))?;
     let cfg: FileConfig = toml::from_str(&text).map_err(|e| format!("解析配置失败：{e}"))?;
     let declaration = std::fs::read_to_string(&cfg.declaration)
         .map_err(|e| format!("读取域声明 {:?} 失败：{e}", cfg.declaration))?;
-    let endpoint = cfg.endpoint.resolve()?;
+    let endpoint = apply_cli_tls(cfg.endpoint.resolve()?, args)?;
     let bearer = cfg.bearer.clone();
+    let signing = load_signing(args)?;
 
     let mut orch = Orchestrator::new(cfg.domain.clone());
     if let Some(i) = &cfg.instance {
@@ -204,6 +237,9 @@ async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         };
         if let Some(t) = &bearer {
             spec = spec.with_bearer(t.clone());
+        }
+        if let Some(id) = &signing {
+            spec = spec.with_signing(id.clone());
         }
         if let Some(b) = &a.seed {
             spec = spec.with_bootstrap(Bootstrap {
@@ -237,7 +273,10 @@ async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         }),
         poll: DEFAULT_EXECUTOR_POLL,
     };
-    let mut client = RestClient::from_endpoint(&endpoint, &cfg.domain, bearer.as_deref());
+    let mut client = RestClient::from_endpoint(&endpoint, &cfg.domain, bearer.as_deref())?;
+    if let Some(id) = &signing {
+        client = client.with_signing(id.clone());
+    }
     if let Some(i) = &cfg.instance {
         client = client.with_instance(i.clone());
     }
@@ -254,6 +293,45 @@ async fn run(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let executor: ExecutorReport = exec_res.map_err(|e| e.to_string())?;
     print_report(&serde_json::json!({ "agents": agents, "executor": executor }))?;
     Ok(())
+}
+
+/// 应用命令行 TLS 覆盖（`--https` / `--tls-ca`）。
+fn apply_cli_tls(endpoint: Endpoint, args: &Args) -> Result<Endpoint, String> {
+    if !args.https && args.tls_ca.is_none() {
+        return Ok(endpoint);
+    }
+    match endpoint {
+        Endpoint::Tcp {
+            addr,
+            https,
+            tls_ca,
+        } => {
+            let https = https || args.https;
+            let tls_ca = args.tls_ca.clone().or(tls_ca);
+            if tls_ca.is_some() && !https {
+                return Err("--tls-ca 仅在 --https 时可用".to_owned());
+            }
+            Ok(Endpoint::Tcp {
+                addr,
+                https,
+                tls_ca,
+            })
+        }
+        Endpoint::Unix(_) => Err("--https / --tls-ca 仅适用于 tcp 端点".to_owned()),
+    }
+}
+
+/// 读取全局 `--sign-key/--sign-as` 并构造签名身份（两者必须成对）。
+fn load_signing(args: &Args) -> Result<Option<SigningIdentity>, Box<dyn std::error::Error>> {
+    match (&args.sign_key, &args.sign_as) {
+        (Some(path), Some(name)) => {
+            let seed = std::fs::read_to_string(path)
+                .map_err(|e| format!("读取 --sign-key {} 失败：{e}", path.display()))?;
+            Ok(Some(SigningIdentity::from_seed_base64(name, seed.trim())?))
+        }
+        (None, None) => Ok(None),
+        _ => Err("--sign-key 与 --sign-as 必须同时提供".into()),
+    }
 }
 
 fn print_report(value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {

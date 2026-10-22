@@ -4,7 +4,7 @@
 //! D25 子项 2：可选 PID 文件（含陈旧检测）、SIGTERM/SIGINT 优雅停机（有界 drain）。
 
 use crate::config::Config;
-use crate::server::{router, serve_tcp, serve_unix, ConnTracker, ServerState};
+use crate::server::{router_with_mcp, serve_tcp, serve_unix, ConnTracker, ServerState};
 use fs4::fs_std::FileExt;
 use pact_engine::{Engine, EngineConfig, SystemClock, UlidGen};
 use pact_store::Store;
@@ -46,8 +46,46 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(UlidGen),
         engine_config,
     );
-    let state = ServerState::with_acl(engine.clone(), cfg.auth_tokens(), cfg.acl());
-    let app = router(state);
+
+    // D34/D35/D36：签名公钥、OIDC 验证器与 `/mcp` 挂载点。
+    let keys = cfg.auth_keys()?;
+    let oidc_settings = cfg.oidc_settings();
+    let oidc = oidc_settings
+        .clone()
+        .map(crate::oidc::OidcValidator::new)
+        .transpose()?;
+    let state = ServerState::with_identity(
+        engine.clone(),
+        cfg.auth_tokens(),
+        keys,
+        cfg.acl(),
+        oidc.clone(),
+        cfg.mcp_public_url().map(str::to_owned),
+    );
+    let mcp_enabled = cfg.mcp.as_ref().is_some_and(|m| m.enabled);
+    let app = router_with_mcp(state, mcp_enabled);
+    if mcp_enabled && oidc.is_none() && cfg.auth_tokens().is_empty() {
+        eprintln!("pactd: 警告：/mcp 处于信任模式，仅限单机/回环");
+    }
+    if let Some(s) = &oidc_settings {
+        // 仅打印 issuer/audience，不打印任何令牌。
+        println!(
+            "pactd: /mcp OIDC issuer={} audience={}",
+            s.issuer, s.audience
+        );
+    }
+
+    // D34：配置 [tls] 时在进程内终止 TLS；client_ca 存在即要求 mTLS。
+    let tls = cfg
+        .tls
+        .as_ref()
+        .map(crate::tls::server_acceptor)
+        .transpose()?;
+    let mtls = cfg.tls.as_ref().is_some_and(|t| {
+        t.client_ca
+            .as_ref()
+            .is_some_and(|p| !p.as_os_str().is_empty())
+    });
 
     let unix = cfg.listen_unix();
     let tcp = cfg.listen_tcp.clone();
@@ -62,7 +100,13 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
                 .map(|p| format!(" unix:{}", p.display()))
                 .unwrap_or_default(),
             tcp.as_ref()
-                .map(|t| format!(" tcp:{t}"))
+                .map(|t| {
+                    if tls.is_some() {
+                        format!(" tcp:{t} ({})", if mtls { "tls+mtls" } else { "tls" })
+                    } else {
+                        format!(" tcp:{t}")
+                    }
+                })
                 .unwrap_or_default(),
         ]
         .join(",")
@@ -74,6 +118,7 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         app,
         unix.as_deref(),
         tcp.as_deref(),
+        tls,
         shutdown_rx,
         tracker.clone(),
     );
@@ -225,6 +270,7 @@ async fn serve_listeners(
     app: axum::Router,
     unix: Option<&std::path::Path>,
     tcp: Option<&str>,
+    tls: Option<tokio_rustls::TlsAcceptor>,
     shutdown: watch::Receiver<bool>,
     tracker: ConnTracker,
 ) -> std::io::Result<()> {
@@ -234,7 +280,9 @@ async fn serve_listeners(
             let t = t.to_owned();
             let (tcp_shutdown, tcp_tracker) = (shutdown.clone(), tracker.clone());
             let tcp_task =
-                tokio::spawn(async move { serve_tcp(app2, &t, tcp_shutdown, tcp_tracker).await });
+                tokio::spawn(
+                    async move { serve_tcp(app2, &t, tls, tcp_shutdown, tcp_tracker).await },
+                );
             tokio::select! {
                 r = serve_unix(app, u, shutdown, tracker) => r,
                 r = tcp_task => {
@@ -243,7 +291,7 @@ async fn serve_listeners(
             }
         }
         (Some(u), None) => serve_unix(app, u, shutdown, tracker).await,
-        (None, Some(t)) => serve_tcp(app, t, shutdown, tracker).await,
+        (None, Some(t)) => serve_tcp(app, t, tls, shutdown, tracker).await,
         (None, None) => Ok(()),
     }
 }

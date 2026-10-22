@@ -36,6 +36,21 @@ toml = { workspace = true }
 clap = { workspace = true }
 # data_dir 独占锁（D27：单权威为进程级保证）
 fs4 = "0.13"
+# NFR6 v2：TLS / 请求签名 / MCP（stdio + Streamable HTTP）/ OIDC。
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+hyper-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+tower = { workspace = true }
+jsonwebtoken = { workspace = true }
+ulid = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+rcgen = "0.13"

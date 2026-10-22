@@ -7,6 +7,7 @@ use pact_core::{ArchiveEntry, Token};
 use pact_engine::views::{CounterView, DomainListing, GateClause, StatusView};
 use pact_http::client::Client;
 use pact_http::dto::EnabledOption;
+use pact_http::sign::SigningIdentity;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -38,17 +39,29 @@ impl RestClient {
         Self::new(Client::tcp(addr), domain)
     }
 
-    /// 按端点与可选 bearer 构造。
-    pub fn from_endpoint(endpoint: &Endpoint, domain: &str, bearer: Option<&str>) -> Self {
+    /// 按端点与可选 bearer 构造（HTTPS 端点失败时返回 [`RuntimeError::Transport`]）。
+    pub fn from_endpoint(
+        endpoint: &Endpoint,
+        domain: &str,
+        bearer: Option<&str>,
+    ) -> Result<Self, RuntimeError> {
         let client = match endpoint {
             Endpoint::Unix(p) => Client::unix(p.clone()),
-            Endpoint::Tcp(a) => Client::tcp(a.clone()),
+            Endpoint::Tcp {
+                addr,
+                https: true,
+                tls_ca,
+            } => Client::https(addr.clone(), tls_ca.clone())
+                .map_err(|e| RuntimeError::Transport(e.to_string()))?,
+            Endpoint::Tcp {
+                addr, https: false, ..
+            } => Client::tcp(addr.clone()),
         };
         let client = match bearer {
             Some(t) => client.with_bearer(t),
             None => client,
         };
-        Self::new(client, domain)
+        Ok(Self::new(client, domain))
     }
 
     /// 绑定实例键（缺省 `default` 实例，D27）。
@@ -61,6 +74,15 @@ impl RestClient {
     pub fn with_bearer(self, token: impl Into<String>) -> Self {
         Self {
             client: self.client.with_bearer(token),
+            domain: self.domain,
+            instance: self.instance,
+        }
+    }
+
+    /// D34：注入 Ed25519 请求签名身份。
+    pub fn with_signing(self, id: SigningIdentity) -> Self {
+        Self {
+            client: self.client.with_signing(id),
             domain: self.domain,
             instance: self.instance,
         }

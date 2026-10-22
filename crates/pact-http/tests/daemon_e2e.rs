@@ -323,6 +323,7 @@ async fn tcp_listener_equivalent() {
         let _ = pact_http::server::serve_tcp(
             app,
             addr,
+            None,
             watch::channel(false).1,
             ConnTracker::default(),
         )
