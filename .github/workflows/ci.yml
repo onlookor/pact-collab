@@ -43,9 +43,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       WASM_BINDGEN_VERSION: 0.2.127
-      PACT_WASM_PKG: ${{ runner.temp }}/pact-wasm-pkg
     steps:
       - uses: actions/checkout@v5
+
+      - name: 准备 wasm 临时目录
+        run: echo "PACT_WASM_PKG=${RUNNER_TEMP}/pact-wasm-pkg" >> "$GITHUB_ENV"
 
       - name: 安装 Rust 工具链（stable + wasm32-unknown-unknown）
         uses: dtolnay/rust-toolchain@stable
