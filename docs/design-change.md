@@ -1,5 +1,13 @@
 # 设计变更记录
 
+## 2026-10-22（第 38 轮，CI 修复：wasm job 工作流解析失败）
+
+- **现象**：run 39616524738（39c210d）与 39617616804（6dba5e3）均在启动前失败，未产生任何 job。
+- **根因**：`.github/workflows/ci.yml` 在 **job 级 `env`** 中使用 `${{ runner.temp }}`；GitHub Actions 仅在 step 级允许 `runner` 上下文，解析期报 `Unrecognized named-value: 'runner'`。
+- **修复**：移除 job 级 `PACT_WASM_PKG`，新增准备步骤将 `PACT_WASM_PKG=${RUNNER_TEMP}/pact-wasm-pkg` 写入 `$GITHUB_ENV`，后续 bindgen/冒烟/Node 测试继承该变量。
+- **验证**：run 39763458339（22a5517）成功；`wasm32 构建 / ABI 与体积门禁 / Node 冒烟` 与 `build / test / fmt / clippy` 两个 job 均为 success。
+- **不变**：工作流职责、门禁阈值与 job 划分不变。
+
 ## 2026-10-21（第 37 轮，D33：去除 WASM “实验性”标记，转为受支持本地分发形态）
 
 - **触发**：FR21 稳定化验收 (1) Q7 CI、(2) 金标扩面、(3) `pact-engine-kernel` 抽取、(4) 宿主边界安全审视全部完成；用户裁决去除“实验性”标记。
