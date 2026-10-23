@@ -42,6 +42,8 @@
 | D34 | TLS 与 Ed25519 请求签名身份（NFR6 v2，2026-10-22，用户裁决） | (1) **TLS**：`[tls] certificate/private_key[/client_ca]` 存在即启用，仅对 `listen_tcp` 生效；rustls 终止于 pactd 进程，证书链 PEM + 私钥 PEM（PKCS#8/PKCS#1/SEC1），支持 TLS 1.2/1.3；`client_ca` 存在时以 `WebPkiClientVerifier` 要求客户端证书（mTLS）。启动日志标注 `tls`/`mtls`；握手失败仅记录并继续接受。内置客户端 `Client::https(addr, ca)` 与 `--https/--tls-ca` 仅做服务端认证，不提供客户端证书（mTLS 面向外部客户端）。(2) **签名身份**：`[auth.keys] 参与者 = base64(32 字节 Ed25519 公钥)` 非空即启用；客户端从 `--sign-key`（base64 32 字节 Ed25519 私钥种子）构造 `SigningIdentity`，请求携带 `x-pact-participant/x-pact-timestamp/x-pact-nonce/x-pact-signature`；规范化串 `PACT-SIGNATURE-V1`（方法、路径+查询、SHA-256(body) 小写 hex、时间戳、nonce、参与者，`\n` 分隔无尾换行）；服务端顺序 = 四头齐全 → 时间窗 ±300s → 公钥查表与 Ed25519 验签 → nonce 去重（TTL 300s/上限 8192；验签失败不消耗缓存）→ 写入可信头；body 上限 8 MiB（413），重放 429；先剥离客户端伪造的 `x-pact-verified-principal`。(3) **绑定**：签名与 Bearer 可同时配置；启用签名后 REST 非豁免请求必须签名（Bearer 不能替代，两者同时出现时以签名身份为准）；解析身份必须等于请求 `participant`，否则 401；ACL 照常（`[auth.acl]` 非空时 tokens 或 keys 至少其一）。签名仅护 REST，`/health` `/ready` `/metrics` `/mcp` 与 RFC 9728 元数据豁免；`/validate` 仍需签名。(4) **信任模式**：REST 无令牌且无密钥、MCP 另需无 OIDC 时保持信任声明；签名模式仅在 keys 非空时启用。 | TLS 免除外部反向代理与明文链路；签名把「参与者」从自报字符串升级为可验证身份，且复用现有 Bearer 身份位与 ACL，不触碰引擎。nonce 缓存与时间窗防重放；8 MiB 上限防验签前内存放大；可信头由中间件唯一写入，防止外部伪造。保留 Bearer 兼容既有部署与 `pact-mcp` 远端子进程。内置客户端不做 mTLS 是显式取舍：证书签发/托管不在本仓库（非目标），外部客户端可自行出示证书 |
 | D35 | MCP Streamable HTTP（NFR6 v2，2026-10-22，用户裁决） | 工具层从 `pact-mcp` 下沉到 `pact-http::mcp`（`PactMcp`，17 个工具与输入结构原样迁移），daemon 与 stdio 二进制共用同一实现。daemon `[mcp].enabled = true` 时 `router_with_mcp` 以 `nest_service("/mcp", …)` 挂载 `StreamableHttpService<PactMcp, LocalSessionManager>`（rmcp 配置 builder，`legacy_session_mode(true)`、`allowed_hosts = 回环 + public_url authority`）。鉴权中间件独立于签名：OIDC（FR24）或静态 Bearer；令牌表为空且无 OIDC 时为信任模式（仅单机/回环，启动警告）；`[auth.keys]` 非空而 tokens 为空且无 OIDC ⇒ 拒绝启动。工具内以整个 `Client` 克隆（本地模式带 `x-pact-internal-auth`）调用进程内 tower Router，不发起 TCP 自连接；外部 JWT 不转发给 REST，参与者经 `x-pact-verified-principal` 按请求注入。`pact-mcp` 仅是 stdio 薄封装（`--unix/--tcp/--https/--tls-ca/--sign-key/--sign-as/--bearer|--bearer-file`），仍经 REST 接 daemon。 | MCP 远程接入与 REST 同端口，无需新增进程/端口；工具实现只保留一份，stdio 与 HTTP 行为一致。本地 tower 路由避免自连接与鉴权递归，内部能力令牌使本地调用免签名又不暴露给外部。信任模式只用于单机/回环，打印警告避免误部署。禁止 JWT 转发，防止把 MCP 身份扩展到 REST |
 | D36 | MCP OIDC 资源服务器（NFR6 v2，2026-10-22，用户裁决） | daemon 只验证 IdP 签发的 JWT，不内置授权服务器。`[mcp.oidc]`：`issuer/audience/principal_claim/principal_map/jwks_uri/discovery/allowed_algs/ca/allow_static_tokens/allow_insecure_http`；启用时必须 `[mcp].enabled` 且 `public_url` 为绝对 URL。发现默认 `issuer /.well-known/openid-configuration` → `jwks_uri`；JWKS 缓存 TTL 300s、最多 64 键，未知 `kid` 限频 30s 重取一次。校验：alg 白名单 RS256/ES256/EdDSA 且与 JWK 类型一致，拒绝 `none`/HS*/非空 `crit`；`iss` 精确、`aud` 包含、`exp` 必需、`nbf` 校验、60s leeway；`sub` 必需，`principal_claim` 字符串（或唯一字符串元素数组），映射后 `[A-Za-z0-9_-]{1,128}`。OIDC 仅 `/mcp`；REST 仍为静态 Bearer/签名；令牌不缓存、不转发。`GET /.well-known/oauth-protected-resource` 返回 `{resource, authorization_servers, bearer_methods_supported}`；401 带 `WWW-Authenticate`，IdP 不可达 503。 | 复用企业 IdP 的身份与授权码流程，daemon 不承担签发/登录页/令牌端点（非目标）。仅 `/mcp` 收窄攻击面并保持 REST 既有身份路径；JWKS 有界缓存 + 限频重取兼顾密钥轮换与 IdP 压力；令牌不落盘、不转发，避免把 OIDC 权限扩散到 REST 与日志 |
+| D37 | DSH Agent Loop 集成（阶段 11，2026-10-22，用户裁决） | 新增仓库内 JS 包 `plugins/dsh/`（`@pact/dsh-plugin`，ESM、零运行时依赖）：(1) **选择性工厂接管**——`cordis.patch.yml` 禁用原始 `agent-loop` 行并插入 `pact-agent-loop`（同一 `agentLoop` 服务，`@pact/dsh-plugin/loop`）；DSH patch 只按 `id` 覆盖/禁用、`name` 仅作校验，不能改名；`PactAgentLoop extends AgentLoop` 只覆写 `createAgent`/`resume`，`agentPreset` 以 `pact-` 开头才在 agent scope 安装钩子，其余原样 `super`；(2) **两档**——`observe` 镜像 `session/event`（有界缓冲 + 可选 JSONL），`govern` 在 `agent/pre-step` / `tools/pre-execute` 查询门，拒绝返回 `{kind:'reject'}` / `{kind:'deny'}`，`tools/post-execute` 与 `agent/turn-stopping` 只审计（终止 steer 可选）；(3) **后端注入**——`PactBackend` 契约 + `FakePactBackend`（测试）+ 惰性 `WasmPactBackend`（`openPactHost`），不改 Rust、不拉守护进程；(4) **审计最小化**——只落 `type/seq/工具名/call id`，实例键由 session id 消毒为 `[A-Za-z0-9_-]{1,128}`；(5) **失败策略**——`govern` fail-closed，`observe` fail-open 并留痕；配置由 `PACT_DSH_CONFIG`（文件或内联 JSON）注入，不改 `AgentLoop.Config`。`@deepseek-ai/dsh-agent-loop` 声明为 peer，由 DSH 运行时解析。 | 共享讨论结论：PACT 可接管控制流但不能接管模型调用；全量重写 `ReactLoopAgent`（约 2.5k 行、DSH developer preview API）收益低、漂移风险高，故复用官方状态机、只替换 factory 注册者并按 preset 路由。插件与 Rust workspace 隔离，`pnpm`/wasm 产物缺失不影响本地单测；已在 `@deepseek-ai/dsh@0.2.1-rc.2` 完成真实装配（`ctx.agentLoop` 为 `PactAgentLoop`）；已知限制（resume 首步、无 token 级工具映射、未触发 live 门控）显式登记，阶段 12 再评估 |
+
 
 ## 1. 总体结构
 
@@ -853,6 +855,8 @@ daemon 在域端点之外暴露三个**免身份**运维端点（仅本地/内�
 | 8 | 引擎生产化三项（D25） | 事件日志压缩与 schema 版本化；health/ready + metrics + PID 文件 + 信号化优雅停机；域级 ACL + 可选审计读视图（默认关闭）。**验收项与 D27 实例化耦合**：(1) 的压缩部分与 (3) 全部须按双键重述，`:compact` 路由须随实例段重设计 | **子项 (2) 运维接口已完成（2026-10-20，见 §9.9）**：`/health` `/ready` `/metrics`（Prometheus 文本）+ 可选 `pid_file`（陈旧检测）+ SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → 终态快照）；workspace **131 项**测试全绿（基线 123 + 本轮 8）。**子项 (1) 日志压缩与 schema 版本化已完成（2026-10-20，见 §7.5）**：`WireEvent` 顶层 `version`（+ `Notification` 顶层 `version`）+ 旧日志/快照缺省按 v1 兼容、更高版本 fail-fast；前缀压缩（全量自足快照 → `logmeta` 水位 → 原子重写 → 裁剪索引）、快照承载 `declaration`/`dl_seq`/`consumed_requests`（幂等表随快照存活）、恢复 `snapshot_is_anchor` 分支与 `SnapshotRequiredForCompactedLog` 护栏；REST `POST /domains/{d}[/instances/{i}]/compact`、CLI `pact compact`、MCP `pact_compact`、`pact.toml` 可选 `compact_on_start`/`compact_keep_last`；workspace **145 项**测试全绿（基线 131 + 本轮 14）。**子项 (3) 域级 ACL 与审计读视图 已完成（2026-10-20，见 §9.10）**：`[auth.acl]` 实例级条目（`domain/instance` / `domain/*`）覆盖生命周期、四类动作、查询、compact 与读审计视图，`GET /domains` 按授权过滤；ACL 非空而令牌表与密钥表均为空 ⇒ 拒绝启动；可选 `read_audit = true` 写独立审计流（`<instance>.read-audit.jsonl`，append+fsync，fail-closed）并提供 `GET .../read-audit?limit=` 只读视图；workspace **155 项**测试全绿（基线 145 + 本轮 10） |
 | 9 | 分发产物 `dist/`（D26） | Dockerfile、systemd unit、musl 静态二进制打包脚本，可构建可运行 | **已完成（2026-10-20）**：`dist/Dockerfile`（多阶段 `rust:1.98-alpine` 构建 musl 静态四 bin → `alpine:3.22` 运行；非 root uid 10001、`/var/lib/pact` 数据卷、`/health` HEALTHCHECK、入口 `pactd --config /etc/pact/pact.toml`）+ `Dockerfile.dockerignore`（构建上下文排除 `docs/pact*`、examples、target 等）；`dist/pactd.service`（`User=pact`、`StateDirectory`/`RuntimeDirectory`、SIGTERM 优雅停机、`ProtectSystem=strict` 与空 capability 集等加固）；`dist/build-static.sh`（`x86_64-unknown-linux-musl`、`--locked --bins`、strip + `readelf` 静态链接核验、tar + `SHA256SUMS` 复现打包）；配置示例 `dist/pact.toml.example`（systemd）与 `dist/pact.container.toml`（容器）。离线校验：脚本语法、两份 TOML 解析、systemd unit 语义校验；按 D26 不接入 CI 语义测试。**注**：当前开发沙箱无 musl C 工具链与容器运行时，静态打包与镜像构建仅做到脚本/配置层面校验；实际构建需在装有 `musl-gcc` 的主机或 Docker 中执行 |
 | 10 | 域双键实例化（D27，路径 β） | 定义键/实例键落地：存储 `(domain, instance)` 双列 + 域子目录布局 + 引擎声明注册表（`declare` / `instantiate` 分离，实例创建时快照声明）+ 接口全链（REST / CLI / MCP / `pact-runtime`）+ 默认实例 `default` + 旧日志 fail-fast + 通用护栏（`data_dir` flock 独占锁、非空实例 load 默认拒绝）；阶段 8 的耦合项随之一并完成 | **已完成（2026-10-20，路径 β）**：`pact-store` `InstanceKey{domain,instance}` + 域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、声明原文 `declaration.pact`）+ 索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键，`open()` 自愈重建）；`pact-engine` 声明注册表（`declarations` / `instances` 两表，`declare` / `instantiate` 私有方法 + 公开命令 `LoadDomain` / `Instantiate`，`InstanceSession.is_occupied = last_seq > dl_seq`）——错误码 `InstanceNotFound` / `DomainNotDeclared` / `InstanceExists` / `DomainBusy`；接口全链：REST 默认族 + 实例镜像族（`/domains/{d}/instances/{i}/…`）+ `InstantiateReq` + `DomainListing`，CLI `--instance`/`--force`/`instantiate`/`instances`，MCP 16 工具（新增 `pact_domain_instantiate`），`pact-runtime` 实例透传（`ParticipantClient::instance` + `bound_ready`）；护栏 `flock`（`fs4`，`<data_dir>/pactd.lock`）+ `DomainBusy`；键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` **零改动**（形式语义不变）。workspace **123 项**测试全绿（基线 110 + β 专项），fmt/clippy 清零 |
+| 11 | DSH Agent Loop 集成（D37，仅 `plugins/dsh/`，不改 Rust） | 交付 `@pact/dsh-plugin`：observe 镜像、govern 门控、`pact-*` preset 选择性工厂接管、可注入后端与假实现；非 pact agent 行为与官方一致；Node 单测全绿 | **已完成（2026-10-22/23）**：`plugins/dsh/` 11 个运行时文件 + 7 个测试文件；`node --test` **47 项**通过、`node --check` 全部通过；7 类测试覆盖配置/命名/假后端/WASM 适配/观察者/治理/路由。**真实装配已验证**（`@deepseek-ai/dsh@0.2.1-rc.2`）：profile 安装、`--dump-config` 组合、运行时 `ctx.agentLoop` 为 `PactAgentLoop`。**真实模型门控已验证**（`deepseek-official/deepseek-flash`）：允许 / `denyTools` 拒绝 / `fakeEnabled=false` 预检拒绝。**WASM 后端已 live（2026-10-23）**：`wasm-bindgen 0.2.127` 产物 + `open-host.js` 组装，在 headless profile 中复跑三条路径均通过 |
+
 
 ## 12. 联网演进路径（NFR6）
 
@@ -978,4 +982,85 @@ PACT_COMPL   = int          // 互补库所只承载计数不变量
 
 - 稳定化验收（**全部完成，2026-10-21**）：Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）→ 金标扩面（多实例、组合域、条件分支、压缩后恢复）→ 抽取 `pact-engine-kernel` 消除双实现 → 宿主边界安全审视。四项通过后按 D33 去除“实验性”标记。
 - 维护约束：`wasm` CI job 持续执行 wasm32 clippy/build、bindgen、`ci-smoke` 与 Node 7 项测试；任何语义改动必须同时通过原生与 WASM 金标对账。
-- 不纳入：浏览器 OPFS/SharedWorker（Q6；兼容性评估已完成，未实现）、多用户 ACL/读审计、turso 索引与压缩、DSH `govern`（Q5）、NFR6 v2 远端模式。触发条件见 `docs/wasm-local-spike-feasibility.md` §11.2。
+- 不纳入：浏览器 OPFS/SharedWorker（Q6；兼容性评估已完成，未实现）、多用户 ACL/读审计、turso 索引与压缩、NFR6 v2 远端模式。DSH `govern` 已由阶段 11 的仓库内插件实现（FR25/D37），但不由 WASM 内核承担，也不改变本节边界。触发条件见 `docs/wasm-local-spike-feasibility.md` §11.2。
+
+## 17. DSH 插件（阶段 11，D37）
+
+### 17.1 定位与边界
+
+- 插件包 `plugins/dsh/` 是 PACT 仓库内的**独立 JS 包**，不进入 Cargo workspace、不进入 `dist/`、不修改任何 Rust crate。
+- PACT 只接管**控制流**：决定每一步是否允许开始、每次工具调用是否允许执行；不接管模型调用、流式输出、工具执行、压缩、重试与会话持久化。
+- 仅 `agentPreset` 以 `pact-` 开头的 agent 受治理；其余 agent 原样委托官方 loop，行为不变。
+- 权威边界：插件是宿主侧执行器，Counter 的权威仍是本地 PACT 实现（WASM 或原生 daemon）；插件不复制状态机。
+
+### 17.2 包布局
+
+| 文件 | 责任 |
+|---|---|
+| `package.json` | `@pact/dsh-plugin`、ESM、零运行时依赖、`dsh.bundle.patch` 指向 patch；`@deepseek-ai/dsh-agent-loop` 为 peer |
+| `cordis.patch.yml` | 禁用原始 `agent-loop` 行；插入 `pact-agent-loop`（同一 `agentLoop` 服务）与 `dsh-pact-observe` 行 |
+| `loop.js` | 顶层入口：读取 `PACT_DSH_CONFIG`、构造后端、`createPactLoop(AgentLoop)` 默认导出 |
+| `index.js` | host 插件 `apply(ctx)`：注册 `session/event` 审计镜像 |
+| `src/config.js` | 默认值、`PACT_DSH_CONFIG`（文件或内联 JSON）、校验 |
+| `src/names.js` | preset 判定、session→实例键消毒、participant 解析 |
+| `src/pact-backend.js` | `PactBackend` 契约、`PactBackendError`、`FakePactBackend` |
+| `src/wasm-backend.js` | 惰性 `openPactHost(options)` 适配，缺失时 `BackendUnavailable`；`enabled` 收窄为布尔 |
+| `src/observer.js` | 有界环形缓冲、字段裁剪、JSONL `FileSink`（`0700`/`0600`） |
+| `src/govern.js` | 四个钩子处理器与失败策略 |
+| `src/loop.js` | `createPactLoop(Base, deps)`：路由、setup 组合、resume 事后安装 |
+
+宿主侧组装入口位于 `crates/pact-wasm/js/open-host.js`（CommonJS）：把 wasm-bindgen 产物、`FileStore` 与 `(domain, instance)` 组装为 `PactHost`，插件按文件路径动态 import 后调用 `openPactHost`。
+
+### 17.3 配置
+
+- 唯一入口 `PACT_DSH_CONFIG`：文件路径或内联 JSON；缺省 `{mode:'observe', backend:'fake', domain:'dsh', defaultParticipant:'agent', presetPrefix:'pact-', mirrorLimit:256, denyTools:[], stopOnTermination:false, failClosed:true, fakeEnabled:true}`。
+- `mode=govern` 时 `failClosed` 强制 `true`；`backend=wasm` 时 `wasmModule` 必填。
+- `wasmOptions`（可选纯对象）原样透传给 `openPactHost`，用于提供 `module`（wasm-bindgen out-dir）、`storeRoot`、`declaration`、`ts` 等宿主参数；插件只校验其为对象，键由宿主模块自校验。
+- `fakeEnabled=false` 让 `FakePactBackend` 对所有参与者返回未启用，用于在无 PACT 引擎时预演 `agent/pre-step` 拒绝；仅对 `backend=fake` 生效。
+- `participants` 把 preset 映射为 PACT 参与者；缺省用 `defaultParticipant`。
+- 配置错误在插件加载期 fail-fast（`PactConfigError`），不带病运行。
+
+### 17.4 路由与钩子映射
+
+| DSH 事件 | 处理器 | 非 pact | pact + 允许 | pact + 拒绝 | 后端异常 |
+|---|---|---|---|---|---|
+| `agent/pre-step` | `onPreStep` | `next()` | `next()` | `{kind:'reject'}` | govern 拒绝 / observe 放行 |
+| `tools/pre-execute` | `onPreTool` | `next()` | `next()` | `{kind:'deny', reason}` | govern 拒绝 / observe 放行 |
+| `tools/post-execute` | `onPostTool` | `next()` | 先 `next()` 再审计 | 同左 | 不改变结果 |
+| `agent/turn-stopping` | `onTurnStopping` | 无动作 | `terminated && stopOnTermination` → `steer` | 同左 | 吞掉异常，不阻断收尾 |
+| `session/event` | `index.js` 观察者 | 记录裁剪字段 | 同左 | 同左 | sink 失败不影响 harness |
+
+- 钩子安装在 **agent scope**（`agentCtx.effect`），不安装在 root，天然只覆盖目标 agent。
+- `createAgent` 只在 `mode=govern` 且 preset 命中时组合 `setup`；调用方原始 `setup` 先执行，其 `commit` 原样返回。
+- `resume` 在会话发布后按 `session.header.meta.agentPreset` 安装钩子；**恢复后的首步不受门控**（已知限制）。
+
+### 17.5 后端与失败策略
+
+- 契约方法：`enabled/gates/status/seed/produce/consume/close`，键为 `domain/instance`。
+- `FakePactBackend` 只模拟插件消费的表面（参与者启用、token 存在性、request_id 幂等），不是 PACT 引擎，不解释门表达式。
+- `WasmPactBackend` 惰性导入模块并要求 `openPactHost(options)`；WASM 产物缺失时在首次治理调用显式失败，不影响进程启动。
+- WASM 宿主由 `crates/pact-wasm/js/open-host.js` 组装：动态 `require` wasm-bindgen 产物 → `PactWasm` 工厂，`FileStore(storeRoot)` 提供事件日志与实例级 flock，`PactHost` 负责 `prepare → append+fsync → commit`。宿主返回的 `enabled` 是 Rule-W 可生产选项数组，适配层收窄为布尔（非空即“当前可执行”），与插件契约一致。
+- 实例键与 session 一一映射：首个治理调用打开实例并获取锁；进程退出不显式 `close` 时锁文件残留，下次打开按 pid 存活检测回收（已验证同一实例跨进程复跑可用）。
+- 失败策略：`govern` fail-closed（拒绝），`observe` fail-open（放行并写审计）；`turn-stopping` 永不因 PACT 读失败而阻断收尾。
+
+### 17.6 验证与限制
+
+- 验证：Node 22 内置 `node:test` 7 个文件（含 `wasm-backend.test.js`）**47 项**通过；`node --check` 全部通过；无 Rust 改动，故不跑 `cargo test`；`pact-wasm` 侧新增 `ci-smoke.js` 的 `openPactHost` 持久化往返（新建 → seed → 重开恢复）随 CI wasm job 执行。
+- 真实装配已验证（`@deepseek-ai/dsh@0.2.1-rc.2`，2026-10-22）：`dsh plugin --profile pact-web add` 安装 bundle；`--dump-config` 显示原 `agent-loop` 行 `disabled: true` 且新增 `pact-agent-loop`/`dsh-pact-observe`；启动 web profile 后探针确认 `ctx.agentLoop instanceof PactAgentLoop`，且子类继承官方 `AgentLoop`、`Config` 同一。DSH 运行时按 peer 解析 `@deepseek-ai/dsh-agent-loop`。
+- **真实会话门控验证（2026-10-22，本地 mock 模型）**：在 `@deepseek-ai/dsh@0.2.1-rc.2` 的 headless profile 中注册 `pact-demo` preset、确定性 mock LLM 与临时驱动插件，通过 `ctx.agents.create({meta:{agentPreset:'pact-demo'}})` 驱动真实 agent turn：
+  - `govern` + 允许：`bash` 正常执行，工具结果 `PACT_TOOL_OK`，`turn/end` 正常；
+  - `govern` + `denyTools:["bash"]`：`tools/pre-execute` 返回拒绝，工具结果为 `Error: pact: tool denied by policy`，turn 继续到模型收尾；
+  - `govern` + `fakeEnabled:false`：`agent/pre-step` 返回 `{kind:'reject'}`，会话在 `turn/start` 后直接 `turn/end`，未发起模型请求。
+- **真实模型复跑（2026-10-23，`deepseek-official/deepseek-flash`，凭据仅经环境变量注入、不落盘）**：
+  - 允许：bash 执行成功，工具结果 `PACT_TOOL_OK`，模型最终回复 `PACT_TOOL_OK`；
+  - `denyTools:["bash"]`：工具结果 `Error: pact: tool denied by policy`（`isError:true`），模型据此收尾；
+  - `fakeEnabled:false`：会话事件仅 `turn/start → turn/end`，无 `request/header`、无 step、无工具调用，模型请求未发起。
+  - 结论：真实模型供应商下三条门控路径与 mock 结果一致。
+- **WASM 后端 live（2026-10-23）**：以 `cargo build -p pact-wasm --target wasm32-unknown-unknown --profile wasm-release` + 官方 `wasm-bindgen 0.2.127`（`--target nodejs`）产出 Node 包；`PACT_DSH_CONFIG` 设 `backend:"wasm"`、`wasmModule:".../crates/pact-wasm/js/open-host.js"`、`wasmOptions:{module:<out-dir>, storeRoot:<dir>, declaration, ts}`。在 headless profile 中复跑三条路径：
+  - 允许（实例预置 observation seed）：`agent/pre-step` 与 `tools/pre-execute` 通过，bash 实际执行，工具结果 `isError:false`、输出 `PACT_TOOL_OK`；
+  - `denyTools:["bash"]`：工具结果 `Error: pact: tool denied by policy`，turn 正常收尾；
+  - 预检拒绝（全新实例、Counter 为空）：`enabled('agent') → []`，会话仅 `turn/start → turn/end`，无 `request/header`、无工具调用；该实例的 `DomainLoaded` 日志由插件运行时通过 WASM 宿主创建，证明路径真实经过 WASM 内核。
+  - 结论：`backend=wasm` 与 `backend=fake` 在相同 DSH 装配下行为一致，WASM 内核、`FileStore` 与插件门控全链贯通。验证使用确定性 mock provider（临时 profile 文件，不入仓库）。
+- 禁用 `agent-loop` 行会丢弃其 config（当前 `agents: []`，与 DSH base patch 一致）；profile 若配置了 `agents`，须在 `pact-agent-loop` 行重写，否则会被清空。
+- 后续（阶段 12 候选）：token 级工具映射（工具成功/失败对应 produce/consume 与补偿）、`resume` 首步门控、PACT 原生工具、真实 DSH 冒烟。
+

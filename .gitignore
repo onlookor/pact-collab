@@ -14,3 +14,6 @@ pact.sock
 
 # IDE/工具目录（Trae 会话产物）
 /.trae/
+
+# JS 插件依赖（plugins/dsh 本地安装）
+node_modules/

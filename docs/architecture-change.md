@@ -1,5 +1,39 @@
 # 架构变更记录
 
+## 2026-10-23（第 28 轮，D37 WASM 后端接缝落地）
+
+- **接缝**：新增 `crates/pact-wasm/js/open-host.js`（CommonJS）作为“WASM 产物 + `FileStore` + 声明 → `PactHost`”的组装入口；DSH 插件以配置中的文件路径动态 import，不形成 ESM 包依赖，`crates/` 仍不被 `plugins/` 依赖。
+- **§7 更新**：新增“WASM 后端接缝”条目，登记 `backend=wasm` 下三条路径的实跑结果与实例日志/锁由 DSH 进程内 WASM 宿主创建。
+- **无结构性变更**：进程内拓扑、依赖方向、权威边界、单写者与 `dist/` 产物均不变；插件不新增端口、不拉起子进程。
+
+## 2026-10-23（第 27 轮，D37 真实模型门控复跑补充）
+
+- **验证补充**：以 `deepseek-official/deepseek-flash` 在 headless profile 中复跑 `pact-demo` preset 的真实 agent turn，允许、`denyTools` 工具拒绝、`fakeEnabled=false` 预检拒绝三条路径均按设计生效。
+- **§7 更新**：“装配与门控验证”条目补入真实模型供应商复跑，确认 `pact-*` preset → `PactAgentLoop` → agent scope 钩子 → 模型/tool 的完整控制流。
+- **无结构性变更**：进程内拓扑、依赖方向、权威边界、单写者与 `dist/` 产物均不变；凭据未进入架构或仓库。
+
+## 2026-10-22（第 26 轮，D37 真实会话门控验证补充）
+
+- **验证补充**：在 `@deepseek-ai/dsh@0.2.1-rc.2` 的 headless profile 中以 `pact-demo` preset 与本地确定性 mock LLM 驱动真实 agent turn，验证 `govern` 允许、`denyTools` 工具拒绝、`fakeEnabled=false` 预检拒绝三条路径均按设计生效。
+- **§7 更新**：“装配验证”条目扩为“装配与门控验证”，登记真实 `ctx.agents.create` → `PactAgentLoop` → agent scope 钩子 → 模型/tool 的完整路径。
+- **无结构性变更**：进程内拓扑、依赖方向、权威边界、单写者与 `dist/` 产物均不变；插件不新增端口或子进程。
+
+## 2026-10-22（第 25 轮，D37 真实 DSH 装配验证）
+
+- **装配事实**：在 `@deepseek-ai/dsh@0.2.1-rc.2` 的 web profile 中安装 `plugins/dsh/` 并启动；`--dump-config` 显示原 `agent-loop` 行 `disabled: true`，`pact-agent-loop` 与 `dsh-pact-observe` 插入；运行时 `ctx.agentLoop` 为 `PactAgentLoop`，继承官方 `AgentLoop`。
+- **§7 图注**：`agent-loop 行（被 cordis.patch.yml 覆盖）` 修正为 `agent-loop（原行 disabled，pact-agent-loop 接管）`；新增“装配验证”条目。
+- **依赖方向**：`@deepseek-ai/dsh-agent-loop` 明确为 peer，由 DSH 安装解析；拓扑、进程/端口、权威边界与 `dist/` 产物不变。
+- **未变**：crate 拓扑与依赖边、单一状态变更通道（D6/D19）、引擎被动性（D5）、权威边界（原生 daemon 唯一权威）。
+
+## 2026-10-22（第 24 轮，DSH 宿主集成层：`plugins/dsh/`）
+
+- **新增宿主侧控制层**：`plugins/dsh/`（`@pact/dsh-plugin`，非 Cargo）与 `crates/` 并列，作为 DSH 进程内的控制流适配器；不在原 L1/L2/L3 分层内，不改变 daemon、引擎、存储与 `dist/` 拓扑。
+- **依赖方向**：`plugins/dsh → DSH SDK（agent-loop/agent/tools/session-projection）+ PactBackend`；不被任何 Rust crate 依赖；不新增监听端口、不拉起子进程。
+- **组件角色**：`PactAgentLoop extends AgentLoop` 接管 `AgentFactory` 槽位，仅对 `pact-*` preset 安装 agent 级钩子；独立观察行镜像 `session/event`；门判定委托 `FakePactBackend`/`WasmPactBackend`，插件不持有语义状态。
+- **§1 总览**：新增“宿主集成层（非 Cargo，阶段 11）”约束。
+- **新增 §7**：DSH 宿主集成视图（进程内拓扑、依赖方向、权威边界、失败方向、归属）。
+- **未变**：crate 拓扑与依赖边、单一状态变更通道（D6/D19）、引擎被动性（D5）、权威边界（原生 daemon 唯一权威）、`dist/` 产物集。
+
 ## 2026-10-22（第 23 轮，NFR6 v2 架构落地）
 
 - **§1 总览**：daemon 由「单机单进程」表述更新为「单权威进程，unix 默认 / TCP+TLS 可选」；接口图补 MCP Streamable HTTP 与身份层（Bearer/签名/OIDC）；新增「身份止于接口层」约束。

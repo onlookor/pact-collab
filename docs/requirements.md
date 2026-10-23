@@ -185,6 +185,16 @@
 - **校验**：alg 白名单（缺省 RS256/ES256/EdDSA，拒绝 `none` / HS* / 非空 `crit`）；`iss` 精确匹配、`aud` 包含配置值、`exp` 必需、`nbf` 存在时校验，允许 60s 时钟偏移；JWKS 缓存 TTL 300s、最多 64 键，未知 `kid` 限频（最短 30s）重取一次；`principal_claim` 取值须为字符串（或唯一字符串元素的数组），经 `principal_map` 映射后须匹配 `[A-Za-z0-9_-]{1,128}`。
 - **线上契约**：`GET /.well-known/oauth-protected-resource` 返回 `{resource, authorization_servers, bearer_methods_supported}`；`/mcp` 的 401 响应携带 `WWW-Authenticate: Bearer resource_metadata="<public_url>/.well-known/oauth-protected-resource"`；令牌非法 `401`，IdP 发现/JWKS 不可达 `503`，**REST 不受 IdP 故障影响**。
 
+### FR25 DSH Agent Loop 集成（D37，阶段 11）
+
+- **定位**：在 PACT 仓库内交付 DSH（DeepSeek Harness）插件包 `plugins/dsh/`（`@pact/dsh-plugin`，零 npm 依赖），把 PACT 门控接入 DSH 的 agent step 与 tool 边界；**不重写** DSH 的 `ReactLoopAgent` 调度，也不接管模型调用、工具执行与对话式 ReAct。
+- **两档运行**：`observe`（缺省）只镜像 `session/event` 到有界审计缓冲（可选 JSONL，目录 `0700`/文件 `0600`），不阻断任何动作；`govern` 在 `agent/pre-step` 与 `tools/pre-execute` 查询 PACT 门，未启用或策略拒绝时分别返回 `{kind:'reject'}` / `{kind:'deny'}`，后端异常时 fail-closed（`observe` 档 fail-open 并留痕）。
+- **选择性工厂接管**：`cordis.patch.yml` 禁用原始 `agent-loop` 行，并插入使用同一 `agentLoop` 服务的 `pact-agent-loop` 行（`@pact/dsh-plugin/loop`）；DSH patch 不能改写行的 `name`，只能按 `id` 覆盖或禁用。该子类复用官方 `AgentLoop`，仅对 `agentPreset` 以 `pact-` 开头的 agent 组合 `setup` 并安装 agent 作用域钩子，其余 agent 原样委托，行为与官方一致。
+- **后端可注入**：插件只依赖 `PactBackend` 契约（`enabled/gates/status/seed/produce/consume/close`），本轮提供内存 `FakePactBackend` 与惰性 `WasmPactBackend` 适配层（`openPactHost(options)`），WASM 产物未就绪时以 `BackendUnavailable` 显式失败；不引入守护进程、端口或网络依赖。WASM 适配把宿主的 `enabled`（Rule-W 可生产选项数组）收窄为布尔语义——非空即“当前可执行”，与插件契约一致。
+- **审计边界**：只记录 `type/seq/工具名/call id`，**不记录**工具参数、结果内容、密钥或用户数据；实例键由 session id 消毒后生成（`[A-Za-z0-9_-]{1,128}`）。
+- **已知限制**：`resume` 的钩子在会话发布后安装，恢复后的首步不受门控；本轮不做 token 级工具映射、saga 补偿与 PACT 原生工具注册（阶段 12 评估）；依赖 DSH 预发布 API，DSH 升级须复核。
+- **实现状态**：已实现（2026-10-22，阶段 11），Node 22 内置测试 47 项通过；已在 `@deepseek-ai/dsh@0.2.1-rc.2` 上完成真实装配验证（profile 安装、`--dump-config` 组合、启动后 `ctx.agentLoop` 为 `PactAgentLoop`）。已在真实 `deepseek-official/deepseek-flash` 模型会话中验证 `pact-*` 门控三条路径：允许（bash 执行并返回 `PACT_TOOL_OK`）、`denyTools:["bash"]`（工具结果 `Error: pact: tool denied by policy`）、`fakeEnabled=false`（`agent/pre-step` 拒绝，`turn/start` 后直接 `turn/end`，无模型请求）。**WASM 后端已 live（2026-10-23）**：以官方 `wasm-bindgen 0.2.127` 构建 `pact-wasm` Node 产物，经新增 `crates/pact-wasm/js/open-host.js` 组装 `PactHost + FileStore`，在 DSH headless profile 中复跑同一三条路径——允许（bash 实际执行，`isError:false`）、`denyTools` 拒绝、空 Counter 实例的 `agent/pre-step` 拒绝（仅 `turn/start → turn/end`），WASM 存储日志由插件运行时创建。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。
@@ -202,4 +212,4 @@
 - 多机分布式 Counter、OR 分支、时间约束、概率行为（范式本身不可表达）。
 - 分布式事务 / 2PC / 共识协议，以及由引擎执行的外部副作用：引擎不执行副作用（FR10/FR15）；单写者 actor + 事件日志已满足线性化与崩溃一致性，引入这些机制只增复杂度（决策 D23）。
 - 示例接入 CI 回归：`examples/**/*.pact` 不由 cargo test 遍历校验；示例脚本为教学资产，其正确性由人工执行与录制轨迹对照保证（决策 D22）。
-- WASM 浏览器本地运行时（OPFS/SharedWorker）、多用户 ACL/读审计、DSH loop 治理与 NFR6 v2 远端模式：WASM 本地分发形态只覆盖本地单用户 Node/桌面宿主（FR21）；上述能力待触发条件满足后另立范围。
+- WASM 浏览器本地运行时（OPFS/SharedWorker）、多用户 ACL/读审计、DSH 团队级原生运行时与 NFR6 v2 远端模式：WASM 本地分发形态只覆盖本地单用户 Node/桌面宿主（FR21）；DSH 集成只覆盖 observe/govern 与 `pact-*` preset 的治理型 loop 接管（FR25），不含团队级运行时；上述能力待触发条件满足后另立范围。

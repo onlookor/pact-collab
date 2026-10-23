@@ -1078,6 +1078,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 11. **压缩会牺牲前缀审计**（D25）：被丢弃前缀不再可查，审计视图 = 自足快照 + 保留尾部事件；不做自动周期性轮转，压缩为运维显式动作或启动开关（§7.4）。
 12. **CPN 编码的边界**（D28，§7.7）：负条件依赖调用方给出的 `--bound` 真实并发上界（不可从声明推导）；`not via` 不支持；CPN Tools GUI 内的实际加载/状态空间实验需人工验收，CI 只保证 XML/DTD 与结构断言；TokenId 生成器使用 CPN ML `ref` 副作用，状态空间工具可能将其视为非纯表达式。
 13. **MCP `/mcp` 请求体上限**：rmcp 的 Streamable HTTP 默认请求体上限独立于签名 8 MiB 限制；超限由 MCP 层拒绝（非签名错误）。
+14. **DSH 插件已完成真实装配与真实模型门控验证**（D37，阶段 11）：`plugins/dsh/` 通过 Node 内置测试验证配置、治理与路由逻辑（41 项），已在 `@deepseek-ai/dsh@0.2.1-rc.2` 上完成 profile 安装、`--dump-config` 组合与启动验证（运行时 `ctx.agentLoop` 为 `PactAgentLoop`），并在 `deepseek-official/deepseek-flash` 会话中验证允许、`denyTools` 拒绝、`fakeEnabled=false` 预检拒绝三条路径。WASM 产物尚未构建；`resume` 的首步不受门控（§13）。
 
 ---
 
@@ -1104,7 +1105,104 @@ PreconditionMismatch { ty: TypeName("deployment"),
 |------|------|
 | [`docs/pactv1_rev3.md`](pactv1_rev3.md) | 范式规范母本：六原语、六规则、§2 适用性、§3 文法、Appendix A 分析算法 |
 | [`docs/requirements.md`](requirements.md) | 需求与范围（含明确的范围外项） |
-| [`docs/design.md`](design.md) | 实现设计：D1–D36 决策记录、§6 线上格式、§9 接口与身份（TLS/签名/MCP HTTP/OIDC） |
-| [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复 |
+| [`docs/design.md`](design.md) | 实现设计：D1–D37 决策记录、§6 线上格式、§9 接口与身份（TLS/签名/MCP HTTP/OIDC）、§17 DSH 插件 |
+| [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复、§7 DSH 宿主集成 |
 | [`docs/skill-adaptation.md`](skill-adaptation.md) | 领域适配层示例（RE / SE 技能），与本手册正交 |
 | [`examples/README.md`](../examples/README.md) | 五份通用域 + 两条可复现轨迹的逐例讲解 |
+| [`plugins/dsh/README.md`](../plugins/dsh/README.md) | DSH 插件安装、配置与限制 |
+
+## 13. DSH 插件（阶段 11，D37）
+
+`plugins/dsh/` 是 DeepSeek Harness（DSH）的 PACT 治理插件。它**替换 agent loop 的工厂注册者**，但机械的 turn/step/工具执行仍由 DSH 官方 `ReactLoopAgent` 完成；PACT 只决定“这一步能不能开始、这个工具能不能执行”。
+
+### 13.1 能力与档位
+
+| 档位 | 行为 | 是否阻断 |
+|---|---|---|
+| `observe`（缺省） | 把 `session/event` 裁剪为 `type/seq/工具名/call id` 写入有界缓冲；配置 `mirrorDir` 时追加 JSONL | 否 |
+| `govern` | 在 `agent/pre-step` 与 `tools/pre-execute` 查询 PACT 门；未启用返回 `reject` / `deny` | 是 |
+
+只有 `agentPreset` 以 `pact-` 开头的 agent 进入治理；其他 agent（含 DSH 默认 preset）完全旁路，行为与官方 loop 一致。`tools/post-execute` 与 `agent/turn-stopping` 只做审计；`stopOnTermination = true` 时 Rule-T 终止后会 steer 收尾。
+
+### 13.2 装载
+
+1. 把 `plugins/dsh/` 作为 bundle 加入 DSH 的 profile：`dsh plugin --profile <name> add <本目录绝对路径>`。插件通过 `cordis.patch.yml` **禁用**原 `agent-loop` 行，并插入 `pact-agent-loop` 与观察行；DSH 的 patch 不能改写行的 `name`。
+2. 包内零运行时依赖；`@deepseek-ai/dsh-agent-loop` 是 peer，由 DSH 安装解析。
+3. 若使用 WASM 后端，先构建产物（与 CI 同一条命令，`wasm-bindgen` 版本须为 `0.2.127`）：
+
+```bash
+cargo build --locked -p pact-wasm --target wasm32-unknown-unknown --profile wasm-release
+wasm-bindgen --target nodejs --out-dir /tmp/pact-wasm-pkg \
+  target/wasm32-unknown-unknown/wasm-release/pact_wasm.wasm
+```
+
+   再把 `wasmModule` 指向仓库内的组装入口 `crates/pact-wasm/js/open-host.js`，由它把产物、`FileStore` 与声明组装成 `PactHost`；产物或参数缺失时治理调用返回 `BackendUnavailable`（fail-closed 拒绝，不崩溃）。
+
+已在 `@deepseek-ai/dsh@0.2.1-rc.2` 上验证的真实装载步骤：
+
+```bash
+npm install --prefix ~/.local pnpm@11.28.5
+export PATH="$HOME/.local/node_modules/.bin:$PATH"
+export DSH_HOME=/tmp/dsh-home
+npx -y @deepseek-ai/dsh@0.2.1-rc.2 --profile pact-web --from-default-profile web --dump-config
+npx -y @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile pact-web add /home/wgz/projects/pact/plugins/dsh
+npx -y @deepseek-ai/dsh@0.2.1-rc.2 --profile pact-web --dump-config   # 确认 disabled + pact-agent-loop
+npx -y @deepseek-ai/dsh@0.2.1-rc.2 --profile pact-web --no-open       # 启动
+```
+
+注意：禁用原行会丢弃其 config（当前 base 为 `agents: []`）；若 profile 配置了 `agents`，请写进插件的 `pact-agent-loop` 行。
+
+### 13.3 配置
+
+配置只从环境变量 `PACT_DSH_CONFIG` 读取：值可以是 JSON 文件路径，也可以直接是内联 JSON。缺省为 `observe` + `fake` 后端。
+
+```json
+{
+  "mode": "govern",
+  "backend": "fake",
+  "domain": "dsh",
+  "defaultParticipant": "agent",
+  "presetPrefix": "pact-",
+  "participants": { "pact-review": "reviewer" },
+  "mirrorDir": "/home/me/.pact/dsh-audit",
+  "mirrorLimit": 256,
+  "denyTools": ["shell"],
+  "stopOnTermination": false,
+  "fakeEnabled": true
+}
+```
+
+- `mode=govern` 时 fail-closed 强制开启：后端不可用即拒绝，不会放行。
+- `backend=wasm` 时必须提供 `wasmModule`（模块路径或包名），并通常配合 `wasmOptions`：
+
+```json
+{
+  "backend": "wasm",
+  "wasmModule": "/home/me/pact/crates/pact-wasm/js/open-host.js",
+  "wasmOptions": {
+    "module": "/tmp/pact-wasm-pkg",
+    "storeRoot": "/home/me/.pact/dsh-wasm",
+    "declaration": "types { … } rules { … }",
+    "ts": "2026-10-23T00:00:00.000Z"
+  }
+}
+```
+
+  `wasmOptions` 原样透传给 `openPactHost`：`module` 为 wasm-bindgen out-dir（或 `pact_wasm.js`），`storeRoot` 为事件日志根目录（布局与原生 daemon 一致），`declaration`/`ts` 仅在首次新建实例时使用，已有日志则忽略。插件只校验 `wasmOptions` 是对象，具体键由宿主模块校验。
+- `fakeEnabled=false` 让假后端对所有参与者返回未启用，用于预演 `agent/pre-step` 拒绝；仅对 `backend=fake` 生效。
+- 配置非法（未知 mode/backend、非法域名或参与者名、mirrorLimit 越界、坏 JSON）会在插件加载期直接报错。
+
+### 13.4 审计与隐私
+
+- 只记录事件类型、序号、工具名与调用 id；**不记录**工具参数、结果、源码或用户内容。
+- `mirrorDir` 目录 `0700`、文件 `0600`；不新增监听端口、不拉起子进程。
+- 实例键由 session id 消毒（非 `[A-Za-z0-9_-]` 替换为 `_`，上限 128 字符），避免路径穿越。
+
+### 13.5 已知限制
+
+- `resume` 的钩子在会话发布后安装，**恢复后的第一步不受门控**。
+- 本轮不做 token 级工具映射（工具成功/失败对应 produce/consume 与补偿）、不注册 PACT 原生工具。
+- 依赖 DSH 预发布 API；DSH 升级后需复核 `AgentLoop` 继承与钩子签名。
+- 真实装配已验证到“插件加载 + `agentLoop` 服务替换”；并在真实 `deepseek-official/deepseek-flash` 会话中验证了 `pact-*` 门控三条路径（允许 / `denyTools` 拒绝 / `fakeEnabled=false` 预检拒绝）。
+- `backend=wasm` 已在 headless profile 中用 `wasm-bindgen 0.2.127` 产物复跑同一三条路径（允许时 bash 实际执行、`denyTools` 拒绝、空 Counter 实例的 `pre-step` 拒绝），WASM 实例日志由插件运行时创建。验证用模型为临时 mock provider，不随仓库分发。
+- 插件进程退出时不显式关闭 WASM 宿主，实例锁文件可能残留；下次打开按 pid 存活检测自动回收（同一实例跨进程复跑已验证）。

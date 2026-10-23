@@ -63,3 +63,31 @@ assert(gzip.length <= MAX_GZIP_BYTES, `gzip 体积 ${gzip.length} B 超过上限
 console.log(
   `ci-smoke 通过：ABI ${abi}，raw ${raw.length} B，gzip ${gzip.length} B`,
 );
+
+// openPactHost 组装层（产物 + FileStore）的持久化往返：新建 → seed → 关闭 → 重开恢复。
+const os = require('node:os');
+const { openPactHost } = require('./open-host');
+
+const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'pact-wasm-store-'));
+const hostOptions = {
+  module: PKG,
+  storeRoot,
+  domain: 'ci',
+  instance: 'smoke',
+  declaration: DECL,
+  ts: '2026-01-01T00:00:00.000Z',
+};
+
+const first = openPactHost(hostOptions);
+assert(first.enabled('architect').length === 0, '新实例不应有可生产项');
+first.seed('external', 'requirement', undefined, 'req-1', '2026-01-01T00:00:01.000Z');
+assert(first.enabled('architect').length > 0, 'seed 后 architect 应可生产设计');
+first.close();
+
+// 日志已存在时以日志为准：即便声明非法也不应影响恢复。
+const second = openPactHost({ ...hostOptions, declaration: 'types { bogus }' });
+assert(second.status().counter_size === 1, '恢复后 Counter 应为 1');
+assert(second.enabled('architect').length > 0, '恢复后 architect 应仍可生产');
+second.close();
+fs.rmSync(storeRoot, { recursive: true, force: true });
+console.log('openPactHost 持久化往返通过');
