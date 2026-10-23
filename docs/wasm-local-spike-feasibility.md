@@ -1,7 +1,7 @@
 # PACT WASM 本地 Spike 可行性报告与实施计划
 
 - 日期：2026-10-21
-- 状态：**已转正式、受支持的本地分发形态（2026-10-21，D33：去除“实验性”标记）**；Q1/Q2/Q3/Q5/Q6 已于 2026-10-21 冻结；P0 编译探针、P1 纯类型层拆分、P2/S0 WASM 门面、P3/S1 内存语义与对账、P4/S2 Node 持久化已完成（2026-10-21）；P6 决策门评估已产出（§11）并裁决 A；立项已登记于 `requirements.md` FR21 / `design.md` D31+D33 / `architecture.md` §1 及其变更文档；**Q7 CI、金标扩面、`pact-engine-kernel` 抽取与宿主边界安全审视均已完成（2026-10-21，D32）**；**P5 浏览器兼容性评估已完成（2026-10-21，结论：技术可行、未实现，触发条件见 §P5/§11.2）**；**DSH 插件 observe/govern 与 `pact-*` preset 治理型 loop 接管已于 2026-10-22 在 `plugins/dsh/` 落地（FR25/D37，阶段 11），并在 `@deepseek-ai/dsh@0.2.1-rc.2` 完成真实装配；WASM 后端接线与 live 门控待后续**
+- 状态：**已转正式、受支持的本地分发形态（2026-10-21，D33：去除“实验性”标记）**；Q1/Q2/Q3/Q5/Q6 已于 2026-10-21 冻结；P0 编译探针、P1 纯类型层拆分、P2/S0 WASM 门面、P3/S1 内存语义与对账、P4/S2 Node 持久化已完成（2026-10-21）；P6 决策门评估已产出（§11）并裁决 A；立项已登记于 `requirements.md` FR21 / `design.md` D31+D33 / `architecture.md` §1 及其变更文档；**Q7 CI、金标扩面、`pact-engine-kernel` 抽取与宿主边界安全审视均已完成（2026-10-21，D32）**；**P5 浏览器兼容性评估已完成（2026-10-21，结论：技术可行、未实现，触发条件见 §P5/§11.2）**；**DSH 插件 observe/govern 与 `pact-*` preset 治理型 loop 接管已于 2026-10-22 落地（FR25/D37，阶段 11；2026-10-23 迁至独立仓库 `onlookor/pact-dsh`），并在 `@deepseek-ai/dsh@0.2.1-rc.2` 完成真实装配；WASM 后端已于 2026-10-23 live**
 - 范围：PACT 语义核心的 WASM 本地嵌入，优先 Node/DSH 宿主，其次浏览器
 - 结论：**核心语义层高度可行；本地引擎中等偏高；浏览器完整本地运行时中等；整个 `pactd` 编译进 WASM 不可行**
 
@@ -308,7 +308,7 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   3. 需要治理时再进入 `govern` 模式（`agent/pre-step`、`tools/pre-execute`）；
   4. 真正的 loop 替换只对 `pact-*` preset 开放，不全局替换。
 - WASM 不要求 DSH 先完成 loop 替换；DSH 插件也不要求 PACT 先有原生 daemon。
-- **2026-10-22 状态更新（阶段 11，FR25/D37）**：用户明确要求推进 loop 替换，已在 `plugins/dsh/` 落地 observe/govern 两档与 `pact-*` preset 的选择性工厂接管；`PactBackend` 可注入，`FakePactBackend` 与 `WasmPactBackend` 均已完成，Node 测试 **47 项**通过；已在 `@deepseek-ai/dsh@0.2.1-rc.2` 上完成真实装配（profile 安装、`--dump-config`、运行时 `ctx.agentLoop` 为 `PactAgentLoop`），并用 `deepseek-official/deepseek-flash` 验证 `pact-*` 允许、工具拒绝与预检拒绝三条路径。
+- **2026-10-22 状态更新（阶段 11，FR25/D37）**：用户明确要求推进 loop 替换，已在 `plugins/dsh/` 落地（2026-10-23 迁至独立仓库 `onlookor/pact-dsh`） observe/govern 两档与 `pact-*` preset 的选择性工厂接管；`PactBackend` 可注入，`FakePactBackend` 与 `WasmPactBackend` 均已完成，Node 测试 **47 项**通过；已在 `@deepseek-ai/dsh@0.2.1-rc.2` 上完成真实装配（profile 安装、`--dump-config`、运行时 `ctx.agentLoop` 为 `PactAgentLoop`），并用 `deepseek-official/deepseek-flash` 验证 `pact-*` 允许、工具拒绝与预检拒绝三条路径。
 - **2026-10-23 状态更新（WASM 后端 live）**：以 `wasm-bindgen 0.2.127` 生成 Node 产物，新增 `crates/pact-wasm/js/open-host.js` 作为组装入口（`PactWasm` 工厂 + `FileStore` + 声明 → `PactHost`）；DSH 插件以 `backend=wasm`、`wasmModule` 指向该入口复跑同一三条路径：允许（bash 实际执行，`isError:false`）、`denyTools` 拒绝、空 Counter 实例的 `agent/pre-step` 拒绝（仅 `turn/start → turn/end`）。实例事件日志由插件运行时经 WASM 宿主创建，证明“本地 WASM 内核 + 宿主内控制层”链路可用；浏览器共享/多 tab 仍按 §5 的 OPFS + Dedicated Worker 方案另评。
 
 ### 6.2 NFR6 v2 联网
@@ -539,7 +539,7 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
 | 问题 | 结论 | 理由与触发条件 |
 |---|---|---|
 | Q4 抽取 `pact-engine-kernel` | **已抽取（2026-10-21，D32）**；立项后列为第一优先工程项并完成 | P3 已量化双实现在 seq 分配、幂等表、Rule-T 终止、恢复锚点四处重复（R1）。金标扩面完成后，`pact-engine-kernel` 以纯 `Session` 统一实例会话语义，原生与 WASM 仅保留持久化/通知/审计/错误映射等外围差异；约 300 行双实现漂移消除，全量 184 项测试与 parity 7 项通过 |
-| Q5 DSH 推进到 `govern` | **已完成（2026-10-22/23，阶段 11，用户裁决；FR25/D37）** | 用户明确要求推进 loop 替换，接受 DSH developer preview 的 API 漂移风险（R10）。落地为 `plugins/dsh/`：observe 镜像 + govern 门控 + `pact-*` preset 选择性工厂接管（`PactAgentLoop extends AgentLoop`），其余 agent 旁路；后端可注入，`FakePactBackend` 与 `WasmPactBackend` 均已接线。真实 DSH 装配已在 `@deepseek-ai/dsh@0.2.1-rc.2` 验证；`backend=wasm` 以 `wasm-bindgen 0.2.127` 产物在 headless profile 中实跑允许/工具拒绝/预检拒绝三条路径并通过 |
+| Q5 DSH 推进到 `govern` | **已完成（2026-10-22/23，阶段 11，用户裁决；FR25/D37）** | 用户明确要求推进 loop 替换，接受 DSH developer preview 的 API 漂移风险（R10）。落地为独立仓库 `onlookor/pact-dsh`（当时位于本仓库 `plugins/dsh/`）：observe 镜像 + govern 门控 + `pact-*` preset 选择性工厂接管（`PactAgentLoop extends AgentLoop`），其余 agent 旁路；后端可注入，`FakePactBackend` 与 `WasmPactBackend` 均已接线。真实 DSH 装配已在 `@deepseek-ai/dsh@0.2.1-rc.2` 验证；`backend=wasm` 以 `wasm-bindgen 0.2.127` 产物在 headless profile 中实跑允许/工具拒绝/预检拒绝三条路径并通过 |
 | NFR6 v2 远端模式 | **不需要** | 本地 WASM 单用户模式无 v2 依赖；v2 只服务跨设备/共享团队/多用户 ACL 与审计。触发条件：出现浏览器共享团队或跨设备协作需求 |
 | 是否正式立项 | **A. 条件立项**，2026-10-21 用户裁决；同日按 D33 去除“实验性”标记、转为受支持形态 | 按 11.4 边界登记为 FR21/D31/D33；Q7 CI、金标扩面、kernel 抽取与安全审视均已完成 |
 

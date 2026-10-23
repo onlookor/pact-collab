@@ -187,9 +187,9 @@
 
 ### FR25 DSH Agent Loop 集成（D37，阶段 11）
 
-- **定位**：在 PACT 仓库内交付 DSH（DeepSeek Harness）插件包 `plugins/dsh/`（`@pact/dsh-plugin`，零 npm 依赖），把 PACT 门控接入 DSH 的 agent step 与 tool 边界；**不重写** DSH 的 `ReactLoopAgent` 调度，也不接管模型调用、工具执行与对话式 ReAct。
+- **定位**：交付 DSH（DeepSeek Harness）插件包 `dsh-plugin-pact`（独立仓库 `onlookor/pact-dsh`，零运行时 npm 依赖；2026-10-23 自本仓库 `plugins/dsh/` 迁出，运行时行为未改），把 PACT 门控接入 DSH 的 agent step 与 tool 边界；**不重写** DSH 的 `ReactLoopAgent` 调度，也不接管模型调用、工具执行与对话式 ReAct。
 - **两档运行**：`observe`（缺省）只镜像 `session/event` 到有界审计缓冲（可选 JSONL，目录 `0700`/文件 `0600`），不阻断任何动作；`govern` 在 `agent/pre-step` 与 `tools/pre-execute` 查询 PACT 门，未启用或策略拒绝时分别返回 `{kind:'reject'}` / `{kind:'deny'}`，后端异常时 fail-closed（`observe` 档 fail-open 并留痕）。
-- **选择性工厂接管**：`cordis.patch.yml` 禁用原始 `agent-loop` 行，并插入使用同一 `agentLoop` 服务的 `pact-agent-loop` 行（`@pact/dsh-plugin/loop`）；DSH patch 不能改写行的 `name`，只能按 `id` 覆盖或禁用。该子类复用官方 `AgentLoop`，仅对 `agentPreset` 以 `pact-` 开头的 agent 组合 `setup` 并安装 agent 作用域钩子，其余 agent 原样委托，行为与官方一致。
+- **选择性工厂接管**：`cordis.patch.yml` 禁用原始 `agent-loop` 行，并插入使用同一 `agentLoop` 服务的 `pact-agent-loop` 行（`dsh-plugin-pact/loop`）；DSH patch 不能改写行的 `name`，只能按 `id` 覆盖或禁用。该子类复用官方 `AgentLoop`，仅对 `agentPreset` 以 `pact-` 开头的 agent 组合 `setup` 并安装 agent 作用域钩子，其余 agent 原样委托，行为与官方一致。
 - **后端可注入**：插件只依赖 `PactBackend` 契约（`enabled/gates/status/seed/produce/consume/close`），本轮提供内存 `FakePactBackend` 与惰性 `WasmPactBackend` 适配层（`openPactHost(options)`），WASM 产物未就绪时以 `BackendUnavailable` 显式失败；不引入守护进程、端口或网络依赖。WASM 适配把宿主的 `enabled`（Rule-W 可生产选项数组）收窄为布尔语义——非空即“当前可执行”，与插件契约一致。
 - **审计边界**：只记录 `type/seq/工具名/call id`，**不记录**工具参数、结果内容、密钥或用户数据；实例键由 session id 消毒后生成（`[A-Za-z0-9_-]{1,128}`）。
 - **已知限制**：`resume` 的钩子在会话发布后安装，恢复后的首步不受门控；本轮不做 token 级工具映射、saga 补偿与 PACT 原生工具注册（阶段 12 评估）；依赖 DSH 预发布 API，DSH 升级须复核。

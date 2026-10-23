@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "PACT Governance",
-    "description": "Gates DeepSeek Harness agent steps and tool calls with a PACT counter, and mirrors session events for audit."
-  }
-}

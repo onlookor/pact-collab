@@ -1,5 +1,12 @@
 # 架构变更记录
 
+## 2026-10-23（第 29 轮，DSH 插件独立为外部仓库）
+
+- 宿主集成层由“本仓库内 `plugins/dsh/` 目录”改为“独立仓库 `pact-dsh`（包名 `dsh-plugin-pact`）”；依赖方向仍为单向 `pact-dsh → DSH SDK / PactBackend`，本仓库 `crates/` 不依赖插件。
+- `crates/pact-wasm/js/open-host.js` 保留在本仓库，作为 WASM 宿主组装入口；插件以配置中的绝对路径动态 import，二者不构成构建期依赖。
+- 本仓库目录结构不再包含 `plugins/`；`dist/`、Cargo workspace 与 CI 的 Rust/wasm job 均不受影响。
+- 文档层面 `docs/architecture.md` §1/§7 的归属与依赖描述已同步；历史记录保留迁移前的拓扑。
+
 ## 2026-10-23（第 28 轮，D37 WASM 后端接缝落地）
 
 - **接缝**：新增 `crates/pact-wasm/js/open-host.js`（CommonJS）作为“WASM 产物 + `FileStore` + 声明 → `PactHost`”的组装入口；DSH 插件以配置中的文件路径动态 import，不形成 ESM 包依赖，`crates/` 仍不被 `plugins/` 依赖。

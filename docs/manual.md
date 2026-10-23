@@ -1078,7 +1078,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 11. **压缩会牺牲前缀审计**（D25）：被丢弃前缀不再可查，审计视图 = 自足快照 + 保留尾部事件；不做自动周期性轮转，压缩为运维显式动作或启动开关（§7.4）。
 12. **CPN 编码的边界**（D28，§7.7）：负条件依赖调用方给出的 `--bound` 真实并发上界（不可从声明推导）；`not via` 不支持；CPN Tools GUI 内的实际加载/状态空间实验需人工验收，CI 只保证 XML/DTD 与结构断言；TokenId 生成器使用 CPN ML `ref` 副作用，状态空间工具可能将其视为非纯表达式。
 13. **MCP `/mcp` 请求体上限**：rmcp 的 Streamable HTTP 默认请求体上限独立于签名 8 MiB 限制；超限由 MCP 层拒绝（非签名错误）。
-14. **DSH 插件已完成真实装配与真实模型门控验证**（D37，阶段 11）：`plugins/dsh/` 通过 Node 内置测试验证配置、治理与路由逻辑（41 项），已在 `@deepseek-ai/dsh@0.2.1-rc.2` 上完成 profile 安装、`--dump-config` 组合与启动验证（运行时 `ctx.agentLoop` 为 `PactAgentLoop`），并在 `deepseek-official/deepseek-flash` 会话中验证允许、`denyTools` 拒绝、`fakeEnabled=false` 预检拒绝三条路径。WASM 产物尚未构建；`resume` 的首步不受门控（§13）。
+14. **DSH 插件已完成真实装配与真实模型门控验证**（D37，阶段 11）：插件包 `dsh-plugin-pact`（独立仓库 `onlookor/pact-dsh`）通过 Node 内置测试验证配置、治理与路由逻辑（47 项），已在 `@deepseek-ai/dsh@0.2.1-rc.2` 上完成 profile 安装、`--dump-config` 组合与启动验证（运行时 `ctx.agentLoop` 为 `PactAgentLoop`），并在 `deepseek-official/deepseek-flash` 会话中验证允许、`denyTools` 拒绝、`fakeEnabled=false` 预检拒绝三条路径。WASM 后端已 live（`wasm-bindgen 0.2.127`）；`resume` 的首步不受门控（§13）。
 
 ---
 
@@ -1109,11 +1109,11 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复、§7 DSH 宿主集成 |
 | [`docs/skill-adaptation.md`](skill-adaptation.md) | 领域适配层示例（RE / SE 技能），与本手册正交 |
 | [`examples/README.md`](../examples/README.md) | 五份通用域 + 两条可复现轨迹的逐例讲解 |
-| [`plugins/dsh/README.md`](../plugins/dsh/README.md) | DSH 插件安装、配置与限制 |
+| [`dsh-plugin-pact`](https://github.com/onlookor/pact-dsh#readme) | DSH 插件安装、配置与限制（独立仓库） |
 
 ## 13. DSH 插件（阶段 11，D37）
 
-`plugins/dsh/` 是 DeepSeek Harness（DSH）的 PACT 治理插件。它**替换 agent loop 的工厂注册者**，但机械的 turn/step/工具执行仍由 DSH 官方 `ReactLoopAgent` 完成；PACT 只决定“这一步能不能开始、这个工具能不能执行”。
+`dsh-plugin-pact`（独立仓库 `onlookor/pact-dsh`）是 DeepSeek Harness（DSH）的 PACT 治理插件。它**替换 agent loop 的工厂注册者**，但机械的 turn/step/工具执行仍由 DSH 官方 `ReactLoopAgent` 完成；PACT 只决定“这一步能不能开始、这个工具能不能执行”。
 
 ### 13.1 能力与档位
 
@@ -1126,7 +1126,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 
 ### 13.2 装载
 
-1. 把 `plugins/dsh/` 作为 bundle 加入 DSH 的 profile：`dsh plugin --profile <name> add <本目录绝对路径>`。插件通过 `cordis.patch.yml` **禁用**原 `agent-loop` 行，并插入 `pact-agent-loop` 与观察行；DSH 的 patch 不能改写行的 `name`。
+1. 把 `dsh-plugin-pact` 作为 bundle 加入 DSH 的 profile：`dsh plugin --profile <name> add github:onlookor/pact-dsh`（或 `link:<本地克隆路径>`）。插件通过 `cordis.patch.yml` **禁用**原 `agent-loop` 行，并插入 `pact-agent-loop` 与观察行；DSH 的 patch 不能改写行的 `name`。
 2. 包内零运行时依赖；`@deepseek-ai/dsh-agent-loop` 是 peer，由 DSH 安装解析。
 3. 若使用 WASM 后端，先构建产物（与 CI 同一条命令，`wasm-bindgen` 版本须为 `0.2.127`）：
 
@@ -1145,7 +1145,7 @@ npm install --prefix ~/.local pnpm@11.28.5
 export PATH="$HOME/.local/node_modules/.bin:$PATH"
 export DSH_HOME=/tmp/dsh-home
 npx -y @deepseek-ai/dsh@0.2.1-rc.2 --profile pact-web --from-default-profile web --dump-config
-npx -y @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile pact-web add /home/wgz/projects/pact/plugins/dsh
+npx -y @deepseek-ai/dsh@0.2.1-rc.2 plugin --profile pact-web add github:onlookor/pact-dsh
 npx -y @deepseek-ai/dsh@0.2.1-rc.2 --profile pact-web --dump-config   # 确认 disabled + pact-agent-loop
 npx -y @deepseek-ai/dsh@0.2.1-rc.2 --profile pact-web --no-open       # 启动
 ```

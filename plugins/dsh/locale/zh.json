@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "PACT 治理",
-    "description": "用 PACT Counter 对 DeepSeek Harness 的 step 与工具调用做准入，并镜像会话事件用于审计。"
-  }
-}

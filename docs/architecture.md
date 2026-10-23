@@ -56,7 +56,7 @@
 - **身份止于接口层**：Bearer、Ed25519 签名与 MCP OIDC 均在 pact-http 中间件解析为参与者名，之后与信任模式共用同一 ACL/参与者字段；核心、引擎与存储不感知认证方式。OIDC 仅作用于 `/mcp`，REST 不接受 OIDC 令牌。
 - **语义集中在纯函数层**：pact-core 的规则函数是范式的唯一权威实现；引擎只做编排（查域、调用、应用效果、持久化、通知），不含任何语义判断。
 - **零隐式动作的编译期保障**：规则函数签名以 `&CounterState` 为入参、效果为返回值——接口层无法绕过规则直接改状态（Rust 所有权强制，见 design.md D1）。
-- **宿主集成层（非 Cargo，阶段 11）**：`plugins/dsh/` 是 DSH 侧的控制流适配器，只经 `PactBackend` 契约访问 PACT（WASM 或假实现），不嵌入引擎、不写事件日志、不持有语义状态；依赖方向单向 `plugins/dsh → DSH SDK / PactBackend`，不反向进入任何 Rust crate。
+- **宿主集成层（非 Cargo，阶段 11）**：独立仓库 `pact-dsh`（包名 `dsh-plugin-pact`）是 DSH 侧的控制流适配器，只经 `PactBackend` 契约访问 PACT（WASM 或假实现），不嵌入引擎、不写事件日志、不持有语义状态；不反向进入任何 Rust crate。
 - **纯模型可移植**：`pact-store-model`（事件/快照/实例键）、`pact-views`（查询/分析视图）与 `pact-engine-kernel`（实例会话语义）只依赖纯 crate（`pact-core`/`pact-parser`/`pact-analysis`/`serde`），可编译到 `wasm32-unknown-unknown`；`pact-store`/`pact-engine` 通过 re-export 保持既有 API（D29）。原生 `pact-engine` 与 `pact-wasm` 的实例会话均通过 `Deref` 嵌入同一个 `pact_engine_kernel::Session`，仅在持久化、通知、审计与错误映射等外围不同（D32）。`pact-wasm` 在其上提供 **WASM 本地分发形态（受支持，D31/D33）**：内存实例会话 + 两阶段提交 + 日志/快照导出恢复；Node 宿主适配层（`crates/pact-wasm/js/`）负责 JSONL+fsync、快照 tmp/rename 与 lockfile 单写者，磁盘布局与原生共用。**权威仍是原生 daemon**——WASM 为进程内单用户嵌入形态，不提供 MCP/HTTP 服务、不承担 ACL/审计与多用户边界，不进入 `dist/` 产物集。稳定化验收（Q7 CI、金标扩面、kernel 抽取、宿主边界安全审视）已全部完成（2026-10-21），故按 D33 去除“实验性”标记；浏览器持久化（OPFS/SharedWorker）与 DSH/v2 集成仍未接入（FR21）。
 
 ## 2. 关键数据流
@@ -322,11 +322,11 @@ DSH 宿主进程
 └──────────────────────────────────────────────────────────┘
 ```
 
-- **依赖方向**：`plugins/dsh → DSH SDK（agent-loop/agent/tools/session-projection，DSH 安装内解析）+ PactBackend`；不依赖任何 Rust crate，不被 `crates/` 依赖，不进入 `Cargo.toml`。
+- **依赖方向**：`pact-dsh → DSH SDK（agent-loop/agent/tools/session-projection，DSH 安装内解析）+ PactBackend`；不依赖任何 Rust crate，不被 `crates/` 依赖，不进入 `Cargo.toml`。
 - **权威边界**：插件不复制 Counter 状态机；门判定委托后端（WASM 内核或原生 daemon）。插件只决定“是否允许开始/执行”，不执行语义规则。
 - **失败方向**：`govern` 后端不可用 → 拒绝（fail-closed）；`observe` → 放行并留痕；`turn-stopping` 读失败 → 不阻断收尾。
 - **进程与端口**：不新增监听端口、不拉起子进程；审计文件仅由操作者配置的 `mirrorDir` 写入。
-- **归属**：`plugins/dsh/` 与 `crates/` 并列，独立 ESM 包，不进入 `dist/`；阶段 12 的 token 级工具映射与真实 DSH 冒烟另行评估。
+- **归属**：`pact-dsh` 已迁出为独立仓库（2026-10-23），与 `crates/` 解耦，不进入 `dist/`；阶段 12 的 token 级工具映射与真实 DSH 冒烟另行评估。
 - **装配与门控验证（2026-10-22/23）**：在 `@deepseek-ai/dsh@0.2.1-rc.2` 上以 web profile 完成安装与启动；`--dump-config` 显示原 `agent-loop` 禁用、`pact-agent-loop` 插入；运行时 `ctx.agentLoop` 为 `PactAgentLoop`，DSH 按 peer 解析 `@deepseek-ai/dsh-agent-loop`。另在 headless profile 中以 `pact-demo` preset 和 `deepseek-official/deepseek-flash` 驱动真实 agent turn，验证允许、工具拒绝与预检拒绝三条路径；拓扑与依赖方向不变。
 - **WASM 后端接缝（2026-10-23）**：组装入口 `crates/pact-wasm/js/open-host.js`（CommonJS）把 wasm-bindgen 产物、`FileStore` 与声明组装为 `PactHost`；插件通过配置里的文件路径动态 import，**不形成 ESM 包依赖**，`crates/` 仍不被 `plugins/` 依赖。已在同一 headless profile 中以 `backend=wasm` 复跑三条路径：允许（bash 实际执行）、`denyTools` 拒绝、空 Counter 实例的 `pre-step` 拒绝；实例日志与锁由 WASM 宿主在 DSH 进程内创建，拓扑仍为“宿主内控制层 + 本地文件存储”。
 

@@ -1,5 +1,14 @@
 # 设计变更记录
 
+## 2026-10-23（第 46 轮，DSH 插件拆分为独立仓库）
+
+- **决策**：按用户裁决采用路径 1，将 DSH 插件从本仓库 `plugins/dsh/` 迁出为独立公开仓库 `onlookor/pact-dsh`，包名由 `@pact/dsh-plugin` 改为未占用的 `dsh-plugin-pact`，版本 `0.1.0`。
+- **理由**：插件分发需要包根即仓库根（`dsh plugin add github:...` 与 npm 发布均如此）；GitHub `dsh-plugin` topic 是 repo 级，挂在 Rust 主仓会让整个引擎出现在插件目录中；独立 repo 也使 issue、版本与 DSH 兼容矩阵可以独立演进。
+- **新仓库内容**：`plugins/dsh` 的 11 个运行时文件与 7 个测试文件原样迁出，运行时行为未改；`package.json` 补齐 `repository/homepage/bugs/keywords/engines.dsh`，移除 `private`，许可统一为 MIT（原为 Apache-2.0，与仓库 LICENSE 冲突）；新增 `LICENSE`、`.gitignore`、Node 20/22 测试工作流与 `npm run check|test` 脚本；README 重写安装段（npm / `github:onlookor/pact-dsh` / `link:`），并注明来源。
+- **本仓库处置**：删除 `plugins/dsh/`；`crates/pact-wasm/js/open-host.js` 与 WASM 产物仍留在本仓库（引擎侧资产），插件通过配置中的文件路径动态引用，不形成包依赖。
+- **文档同步**：`docs/requirements.md` FR25、`docs/design.md` D37/§11/§17、`docs/architecture.md` §1/§7、`docs/manual.md` §11/§13、`docs/wasm-local-spike-feasibility.md` 的路径与包名更新；历史变更记录保留“当时位于本仓库”的史实。
+- **验证**：新仓库 `npm run check` 通过、`npm test` 47 项全绿、`npm pack --dry-run` 仅含 16 个预期文件（14.4 kB）。本仓库无 Rust 代码变更。
+
 ## 2026-10-23（第 45 轮，论文母本纳入仓库管理）
 
 - **决策**：论文母本进入公开仓库，位置由 `docs/` 迁移到顶层 `paper/pactv1_rev3.md`（用户裁决）。理由：论文是规范母本，与需求/设计/手册等实现文档不属同一权威层级；顶层目录使“母本只读、版本化”的纪律可独立表达。

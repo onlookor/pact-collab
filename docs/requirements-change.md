@@ -1,5 +1,12 @@
 # 需求变更记录
 
+## 2026-10-23（第 26 轮，FR25 交付位置变更）
+
+- FR25 的实现位置由本仓库 `plugins/dsh/` 改为独立仓库 `onlookor/pact-dsh`，包名 `dsh-plugin-pact`（`0.1.0`）。
+- 需求内容不变：observe/govern 两档、`pact-*` 选择性接管、可注入后端、审计最小化、govern fail-closed。
+- 分发形态明确为公开 GitHub 仓库 + npm 包（发布待执行），并以 GitHub `dsh-plugin` topic 参与生态发现；不改变与 PACT 引擎的边界。
+- 本仓库不再包含插件代码；WASM 宿主组装入口 `crates/pact-wasm/js/open-host.js` 仍属引擎侧资产。
+
 ## 2026-10-23（第 25 轮，FR25 WASM 后端 live）
 
 - **验证范围**：以官方 `wasm-bindgen 0.2.127` 构建 `pact-wasm` Node 产物，新增 `crates/pact-wasm/js/open-host.js` 组装 `PactHost + FileStore`；在 DSH `pact-headless` profile 中以 `backend=wasm` 驱动 `pact-*` agent turn。
