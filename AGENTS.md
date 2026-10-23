@@ -3,6 +3,7 @@
 - 架构文档为 `docs/architecture.md`，只保留当前架构，架构变更追加记入 `docs/architecture-change.md`。使用 `documenting-software-architectures` 技能。
 - 用户手册为 `docs/manual.md`，只保留当前有效内容。
 - 技能适配文档为 `docs/skill-adaptation.md`，记录 `~/projects/skills` 下 RE / SE 两技能的 PACT 形式层适配（产物清单、验收清单、三档粒度差异矩阵、表达边界），只保留当前有效内容，变更追加记入 `docs/skill-adaptation-change.md`。
+- 论文母本为 `paper/pactv1_rev3.md`，是范式的唯一规范来源；项目内只保留当前有效版本（历史版本以 git 记录与变更文档为准）。**任何对母本的改动必须事前获得用户显式确认**，不得随概括性指令默认授权。
 
 - 每一轮工作前，读取 `docs/` 目录下的文档。
 

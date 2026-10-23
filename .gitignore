@@ -6,7 +6,7 @@ pact.sock
 /examples/online/run-data
 /examples/offline/out
 
-# 论文手稿族：不入公开仓库（仅本地保留）
+# 论文母本已入库（paper/），禁止在 docs/ 下另存手稿副本
 /docs/pact*
 
 # 分发打包产物（dist/build-static.sh 生成）

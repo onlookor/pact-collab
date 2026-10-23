@@ -7,7 +7,7 @@
 
 | 记号 | 指向 |
 |------|------|
-| `§x.y` | 范式规范 `docs/pactv1_rev3.md`（论文母本，本手册不复述其推导） |
+| `§x.y` | 范式规范 `paper/pactv1_rev3.md`（论文母本，本手册不复述其推导） |
 | `设计 §x.y` | `docs/design.md`（实现决策与线上格式） |
 | `架构 §x.y` | `docs/architecture.md`（进程与数据流视图） |
 | `示例 §x` | `examples/README.md`（五份通用域 + 两条可复现轨迹） |
@@ -1103,7 +1103,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 
 | 文档 | 内容 |
 |------|------|
-| [`docs/pactv1_rev3.md`](pactv1_rev3.md) | 范式规范母本：六原语、六规则、§2 适用性、§3 文法、Appendix A 分析算法 |
+| [`paper/pactv1_rev3.md`](../paper/pactv1_rev3.md) | 范式规范母本：六原语、六规则、§2 适用性、§3 文法、Appendix A 分析算法 |
 | [`docs/requirements.md`](requirements.md) | 需求与范围（含明确的范围外项） |
 | [`docs/design.md`](design.md) | 实现设计：D1–D37 决策记录、§6 线上格式、§9 接口与身份（TLS/签名/MCP HTTP/OIDC）、§17 DSH 插件 |
 | [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复、§7 DSH 宿主集成 |

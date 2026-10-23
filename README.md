@@ -147,4 +147,5 @@ CI runs `cargo fmt --check`, `cargo clippy -D warnings`, and the full test suite
 
 ## License
 
-[MIT](LICENSE)
+- Software and code: [MIT](LICENSE)
+- Paper manuscript [`paper/pactv1_rev3.md`](paper/pactv1_rev3.md): [CC BY 4.0](paper/LICENSE)

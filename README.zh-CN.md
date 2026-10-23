@@ -139,4 +139,5 @@ CI 在每次 push / PR 时运行 `cargo fmt --check`、`cargo clippy -D warnings
 
 ## 许可证
 
-[MIT](LICENSE)
+- 软件与代码：[MIT](LICENSE)
+- 论文手稿 [`paper/pactv1_rev3.md`](paper/pactv1_rev3.md)：[CC BY 4.0](paper/LICENSE)

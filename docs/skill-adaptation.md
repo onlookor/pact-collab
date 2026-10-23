@@ -2,7 +2,7 @@
 
 本文件只保留当前有效内容；变更追加记入 `docs/skill-adaptation-change.md`。
 
-范式规范：`docs/pactv1_rev3.md`（下文 §x.y 引用均指该文档）。产物落在 **另一个仓库** `~/projects/skills`，本文件是其设计说明、验收清单与差异矩阵的唯一权威记录。
+范式规范：`paper/pactv1_rev3.md`（下文 §x.y 引用均指该文档）。产物落在 **另一个仓库** `~/projects/skills`，本文件是其设计说明、验收清单与差异矩阵的唯一权威记录。
 
 > **母本版本说明（2026-10-20）**：母本已由 rev2 切换为 rev3，改动仅 5 类术语与作用域增补——§1.3 增列「Counter instantiation and partitioning」、§1.4.1 TokenId 作用域、Rule-T scope note、§4.5/§B.2 CPN 单实例作用域、§1.8 及 §4.1–4.3 的 `domain instance` → `domain declaration`；**§3.1 文法与 Appendix A 算法零变化**。故本文件正文中出现的 "rev2" 一词（如 §7.2「rev2 不表达的七类维度」）与 rev3 指同一文法，逐处改写无信息增益，未改写。
 

@@ -1,5 +1,16 @@
 # 设计变更记录
 
+## 2026-10-23（第 45 轮，论文母本纳入仓库管理）
+
+- **决策**：论文母本进入公开仓库，位置由 `docs/` 迁移到顶层 `paper/pactv1_rev3.md`（用户裁决）。理由：论文是规范母本，与需求/设计/手册等实现文档不属同一权威层级；顶层目录使“母本只读、版本化”的纪律可独立表达。
+- **版本策略**：保留 rev 文件名，rev3 冻结；后续修订新建 rev4，不就地改写（就地一致性修订仍须用户显式授权）。历史版本以 git 记录为准。
+- **清理**：`docs/pactv1_rev1.md`、`docs/pactv1_rev2.md` 已移出项目归档至 `~/pact-paper-archive/`（二者此前被 `.gitignore` 排除、从未进入 git 历史；rev3 为 rev2 的严格超集，rev2 为 rev1 的超集，无独立规范价值）。
+- **忽略规则**：`.gitignore` 的 `/docs/pact*` 保留，用于阻止在 `docs/` 下再出现手稿副本；`paper/` 不设忽略规则，正式入库。
+- **引用同步**：`docs/requirements.md`、`docs/design.md`（含 D15 历史行的 rev1 措辞）、`docs/manual.md`（引用表与附录链接）、`docs/skill-adaptation.md`、`examples/README.md`、`examples/README.zh-CN.md` 的路径与“论文不入公开仓库”表述已更新为 `paper/pactv1_rev3.md`；历史变更记录中的旧路径作为史实保留。
+- **纪律登记**：`AGENTS.md` 新增论文母本条款（唯一规范来源、只保留当前版本、改动须用户显式确认）。
+- **文本许可**：新增 `paper/LICENSE`，论文以 **CC BY 4.0** 发布（要求署名、附许可链接、标明改动）；仓库软件仍为 MIT。顶层 `README.md` / `README.zh-CN.md` 的许可段已区分“代码”与“论文手稿”。未修改论文正文。
+- **未变**：论文正文、文法、语义、代码与测试均未改动。
+
 ## 2026-10-23（第 44 轮，D37 WASM 后端 live 接线）
 
 - **新增宿主组装入口** `crates/pact-wasm/js/open-host.js`（CommonJS）：`openPactHost({module, storeRoot, domain, instance, declaration, ts})` 动态 `require` wasm-bindgen 产物（out-dir 或 `pact_wasm.js`）、构造 `FileStore`、调用 `PactHost.open`；缺省值可由 `PACT_WASM_*` 环境变量提供，非法参数抛 `TypeError`，由插件侧统一包装为 `BackendUnavailable`。

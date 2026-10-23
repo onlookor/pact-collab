@@ -1,6 +1,6 @@
 # PACT 实现需求
 
-来源：`docs/pactv1_rev3.md`（范式论文最新版）+ 用户指示。本文件只保留当前有效需求，变更历史记入 `docs/requirements-change.md`。
+来源：`paper/pactv1_rev3.md`（范式论文最新版，规范母本）+ 用户指示。本文件只保留当前有效需求，变更历史记入 `docs/requirements-change.md`。
 
 ## 1. 项目目标
 
