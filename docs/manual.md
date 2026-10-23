@@ -1126,7 +1126,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 
 ### 13.2 装载
 
-1. 把 `dsh-plugin-pact` 作为 bundle 加入 DSH 的 profile：`dsh plugin --profile <name> add github:onlookor/pact-dsh`（或 `link:<本地克隆路径>`）。插件通过 `cordis.patch.yml` **禁用**原 `agent-loop` 行，并插入 `pact-agent-loop` 与观察行；DSH 的 patch 不能改写行的 `name`。
+1. 把 `dsh-plugin-pact` 作为 bundle 加入 DSH 的 profile：`dsh plugin --profile <name> add dsh-plugin-pact`（从 npm 安装，当前 `0.1.2`），或 `add github:onlookor/pact-dsh` / `add link:<本地克隆路径>`。插件通过 `cordis.patch.yml` **禁用**原 `agent-loop` 行，并插入 `pact-agent-loop` 与观察行；DSH 的 patch 不能改写行的 `name`。
 2. 包内零运行时依赖；`@deepseek-ai/dsh-agent-loop` 是 peer，由 DSH 安装解析。
 3. 若使用 WASM 后端，先构建产物（与 CI 同一条命令，`wasm-bindgen` 版本须为 `0.2.127`）：
 

@@ -1,5 +1,14 @@
 # 需求变更记录
 
+## 2026-10-23（第 27 轮，FR25 npm 分发与安装解析修复）
+
+- npm 发布：`dsh-plugin-pact@0.1.2`（同日依次发布 `0.1.0`、`0.1.1`）；README 增加 npm 版本徽章与 `Published` 说明。
+- 安装解析实测：以 `dsh plugin --profile npm-probe add dsh-plugin-pact`（pnpm 11.28.5、`@deepseek-ai/dsh@0.2.1-rc.2`）安装，依赖解析为 `^0.1.1`，lockfile 记录 npm integrity，`--dump-config` 组合出“禁用原行 + 两个插入行”。
+- 缺陷：`0.1.1` 的 `cordis.patch.yml` 仍指向迁出前的 `@pact/dsh-plugin`，启动时 `pact-agent-loop` 与 `dsh-pact-observe` 均报 `ERR_MODULE_NOT_FOUND`，插件未激活。
+- 修复：patch 名称改为 `dsh-plugin-pact/loop` 与 `dsh-plugin-pact`；新增 `test/manifest.test.js` 断言 patch 名与包名一致；版本升至 `0.1.2`，8 个测试文件 49 项通过。
+- 发布与复测：推送 `v0.1.2` 触发 `release.yml` 经 OIDC 发布成功；在全新 profile 执行 `add dsh-plugin-pact` 解析为 `^0.1.2`，`--dump-config` 正确组合，启动无未激活告警，`dsh-plugin-pact` 与 `/loop` 均可解析。
+- 既有条目：FR1–FR25、NFR1–NFR7 语义不变。
+
 ## 2026-10-23（第 26 轮，FR25 交付位置变更）
 
 - FR25 的实现位置由本仓库 `plugins/dsh/` 改为独立仓库 `onlookor/pact-dsh`，包名 `dsh-plugin-pact`（`0.1.0`）。
