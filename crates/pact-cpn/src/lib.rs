@@ -70,6 +70,8 @@ pub struct CpnModel {
 }
 
 /// 生成错误。
+/// 其中 `MissingBound` / `NegatedVia` 是**工具层**表达边界，不是范式边界；
+/// 处置与建模损失见 `docs/expressiveness-boundaries.md` B23/B24。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpnError {
     /// 出现 `count T <= k` 但未提供 T 的上界。

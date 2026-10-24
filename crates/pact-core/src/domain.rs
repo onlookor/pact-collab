@@ -13,6 +13,8 @@ pub enum DomainError {
     /// 单一前置规则的 lhs 内类型名重复（§3.1 约束 2 LHS Uniqueness，如 `{A + A} → B`）。
     /// 规范表示用 BTreeSet 会静默去重，故本违例只能由 parser 在保留原始序列时报出。
     /// 自环 `{A} → A` 合法（lhs 内 A 只出现一次，§1.4.4 Note）。
+    /// 同类型多实例前驱的编码方式（固定角色拆分 / 协调 token）见
+    /// `docs/expressiveness-boundaries.md` B10；OR 分支汇聚见 B4。
     DuplicatePrecondLhs { ty: TypeName, lhs_ty: TypeName },
     /// 前置规则的 lhs 为空（§3.1 约束 3 Non-Empty LHS，如 `{ } → T`）。
     /// 源类型只由"规则缺席"定义，空规则不是表达源类型的合法方式。
@@ -31,6 +33,8 @@ pub enum DomainError {
         count_ty: TypeName,
     },
     /// produces 子句携带条件（违反 §3.1 Note：生产合法性只由前置图决定，§1.5.2）。
+    /// 条件应编码为额外前驱类型或见证 token；见
+    /// `docs/expressiveness-boundaries.md` B7/B13。
     ProduceWithCondition {
         participant: ParticipantName,
         ty: TypeName,

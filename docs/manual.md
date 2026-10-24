@@ -101,6 +101,11 @@ stdio 与 REST 可用静态 Bearer 或 Ed25519 签名；`/mcp` 可用 OIDC JWT �
 「设计如此」的四行不是缺陷清单，是范式的边界声明：PACT 刻意不做隐式动作，
 否则 Counter 就不再是唯一可信的协调介质。
 
+上表只给一句话绕法。完整边界编号、编码模式（类型拆分、见证 token、参与者内化、外部编排）、
+每种模式丢失了什么，以及“确实不可编码、需范式扩展”的清单，见
+[`docs/expressiveness-boundaries.md`](expressiveness-boundaries.md)。在域声明或评审记录中引用边界时，
+请写 `B<编号>`，不要复制解释。
+
 ---
 
 ## 2. 装起来、跑起来

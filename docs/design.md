@@ -1066,3 +1066,20 @@ PACT_COMPL   = int          // 互补库所只承载计数不变量
 - 禁用 `agent-loop` 行会丢弃其 config（当前 `agents: []`，与 DSH base patch 一致）；profile 若配置了 `agents`，须在 `pact-agent-loop` 行重写，否则会被清空。
 - 后续（阶段 12 候选）：token 级工具映射（工具成功/失败对应 produce/consume 与补偿）、`resume` 首步门控、PACT 原生工具、真实 DSH 冒烟。
 
+## 18. 表达力边界与编码方案（索引）
+
+规范源是 `paper/pactv1_rev3.md` §1.3、§1.4 Rule-P、§1.4.4、§2.3；实现侧的集中清单、编码模式与“不可编码”候选见 [`docs/expressiveness-boundaries.md`](expressiveness-boundaries.md)。
+
+本设计文档只登记落点，不复制清单：
+
+| 边界编号 | 落点 |
+|---|---|
+| B4/B10（OR 分支、同类型多实例生产） | `pact-core` 的 `DuplicatePrecondRule` / `DuplicatePrecondLhs`（parser 报出）；域声明按固定角色拆分 |
+| B7/B13（生产时条件/否定条件） | `pact-core` 的 `ProduceWithCondition` 拒绝；用前置类型或见证 token 编码 |
+| B8/B21（消费时序、见证存活） | `pact-analysis` 的 `stranding_risk`（A.6）；`via` 语义 |
+| B11/B12（referent 敏感的生产/读消费） | 版本编成 `TypeName` + SeedAuthority 分类；或外部校验者产生见证 token |
+| B15（原子多输出） | 无原子编码；两段式 + 中间类型/复合 token/外部事务，见 `docs/expressiveness-boundaries.md` §3.6 |
+| B23/B24（CPN 工具边界） | `pact-cpn` 的 `NegatedVia` / `MissingBound`；见 §15 与 D28 |
+
+新增或修订边界时，先改母本，再同步 `docs/expressiveness-boundaries.md` 与本表。
+

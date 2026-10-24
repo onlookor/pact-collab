@@ -249,6 +249,10 @@ cd ~/projects/pact
 
 ## 7. 已知表达边界
 
+本章只记录 RE/SE 适配中实际撞到的边界。通用编号、编码模式与“不可编码”清单见
+[`docs/expressiveness-boundaries.md`](expressiveness-boundaries.md)；下文处置若与总表冲突，以总表为准，
+并同步修订本章。引用时使用 `B<编号>`。
+
 ### 7.1 SE 侧 E1–E7（就地记录于各档文件头，跨档累积）
 
 | 编号 | 命题 | 出现于 |

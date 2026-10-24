@@ -1,5 +1,21 @@
 # 设计变更记录
 
+## 2026-10-24（第 47 轮，论文边界声明与表达力边界集中化）
+
+- **授权**：用户显式批准对母本做就地一致性修订（不改文法、SOS 规则、定理），范围＝评审最小集 4 处 + `Timestamp` 无语义 1 处 + OR 分支句 1 处。
+- **母本修订（6 处，`paper/pactv1_rev3.md`）**：
+  1. §1.3 增 `TokenId` 实例身份 vs `ThingRef` referent 身份声明：范式不定义 referent 的相等、版本、可变性与基数；同一 referent 可对应多个 token，反之亦然；对应关系属域/实现。
+  2. §1.3 增 `Timestamp` 语义声明：仅记录创建/耗尽时刻供审计，无排序、因果、新鲜度语义；无规则或 gate 读取，不保证单调。
+  3. §1.4 Rule-P Note 增：匹配只看 `TypeName` 与不同 `TokenId`，不读 `ThingRef` 及其他字段；前驱选择策略不由范式约束；`depends_on` 是 provenance，不是准入条件。
+  4. §1.4.4 Rationale 澄清 `count T >= n` 只作用于 read/consume；生产 arity 由前置图固定；PrecondRule 不能要求同类型多实例。
+  5. §1.4.4 Self-loop note 改为 token 实例链表述；对象同一性由域解释 `ThingRef`/`depends_on`。
+  6. §1.4.4 OR 分支句改为三类编码（分支各自成链并复制下游 / 统一前驱类型 / 参与者内化），明确 `GateExpr` 的 `or` 仅限 read/consume 准入，且任何编码都不能在保留分支身份的同时汇聚到同一后继类型。
+- **新增集中文档** `docs/expressiveness-boundaries.md`：B1–B25 边界编号表、四类判定（可编码 / 仅可近似 / 范式外 / 工具层）、编码模式（OR 分支、同类型多实例、referent 敏感条件、时序与存活、资源与循环、外部编排）、X1–X6 不可编码清单与扩展候选、引用位置与维护规则。
+- **引用落点**：`docs/design.md` §18；`docs/architecture.md` §5；`docs/manual.md` §1.5；`examples/README.md` §7.3；`docs/skill-adaptation.md` §7；`pact-core` 的 `DuplicatePrecondLhs` / `ProduceWithCondition`、`pact-analysis::stranding_risk`、`pact-cpn::CpnError` 注释。
+- **OR 表述修复**：母本 §1.4.4 原句 “converge at a common successor” 在 RHS Uniqueness 下不可实现，已按第 6 项修订；集中文档 §3.1 与 B4 同步，真正的 OR 汇聚仍列为扩展候选 X1。
+- **未变**：文法、SOS 规则、良构约束、事件 schema、代码行为、测试断言；本轮仅文档与注释。
+- **验证**：引用路径与 B 编号已逐处核对；无 Rust 行为改动。
+
 ## 2026-10-23（第 46 轮，DSH 插件拆分为独立仓库）
 
 - **决策**：按用户裁决采用路径 1，将 DSH 插件从本仓库 `plugins/dsh/` 迁出为独立公开仓库 `onlookor/pact-dsh`，包名由 `@pact/dsh-plugin` 改为未占用的 `dsh-plugin-pact`，版本 `0.1.0`。

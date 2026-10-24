@@ -273,6 +273,7 @@ pub struct StrandingRisk {
 ///
 /// 则对每个消费者 q 报告 (T_b, T_a, p, q)。GateExpr 无法表达时间顺序
 /// （§1.7.3 局限），风险结构性存在；无环拓扑精确判定，有环保守判定。
+/// 时序与见证存活的编码方式见 `docs/expressiveness-boundaries.md` B8/B21。
 pub fn stranding_risk(domain: &Domain) -> Vec<StrandingRisk> {
     let g = precondition_graph(domain);
     let cyclic = toposort(&g, None).is_err();

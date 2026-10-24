@@ -309,6 +309,8 @@ Where the five domains land on these five:
 
 Row 8 is the reason `via` exists — and the root of step 12's stranding trap in §3: GateExpr cannot say "A after B", only "is A present now", so temporal constraints are encoded as witness lifetimes.
 
+This table is the short form. The numbered boundary catalogue (`B1`–`B25`), the encoding patterns (type split, witness token, participant-internal choice, external orchestration), and the list of boundaries that genuinely need a paradigm extension are in [`docs/expressiveness-boundaries.md`](../docs/expressiveness-boundaries.md). Cite `B<number>` rather than restating the workaround.
+
 ### 7.4 Domain independence (§2.2)
 
 The paradigm itself never changes; switching domains means re-filling four injection points: TypeSchema, PreconditionGraph, GateMatrix, SeedAuthorityDecl. The five domains in this directory are five different fillings — software engineering, requirements engineering, an agent loop, multi-agent collaboration, external materialization confirmation — over the same primitives and the same SOS rules.
