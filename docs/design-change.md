@@ -20,7 +20,7 @@
   - `pact-engine`：`ack_barrier_consumes_shared_after_all_downstreams`（屏障未满足拒绝消费 → 两下游各产 ack → 协调者消费共享 token → ack 不被级联删除 → 清理 ack 后触发 Rule-T）。
 - **文档同步**：`docs/design.md` §7.4 事件不变量、§8.5 D23 归档原子性行、§11 阶段 3 验收措辞；`docs/manual.md` §9 错误码表 `Store` 行。
 - **验证**：`cargo fmt --all -- --check` 通过；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；`cargo test --workspace` **224 项全绿**（基线 221 + 3）。
-- **状态**：工作树含本轮代码与文档改动，未提交、未推送。
+- **状态**：已提交并推送至 `main`（提交 `959344b`）。
 
 ## 2026-10-24（第 51 轮，消费时机实现一致性审查）
 
