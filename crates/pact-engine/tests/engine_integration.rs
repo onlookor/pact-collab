@@ -8,7 +8,7 @@
 //! 域双键（D27）：本文件全部以 `default` 实例（[`DEFAULT_INSTANCE`]）运行旧语义，
 //! 存储布局为 `<data_dir>/<domain>/default.events.jsonl`。
 
-use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
+use pact_core::{ParticipantName, RuleError, ThingRef, TokenId, TypeName};
 use pact_engine::views::DomainListing;
 use pact_engine::{
     Engine, EngineConfig, EngineError, InstanceKey, LogicalClock, NotificationKind,
@@ -49,11 +49,16 @@ fn key(domain: &str) -> InstanceKey {
 
 /// 临时数据目录 + 引擎（LogicalClock + 顺序 id，确定性）。
 async fn setup(dir: &std::path::Path) -> Engine {
+    setup_at(dir, 0).await
+}
+
+/// 指定顺序 id 起点；重启后仍要写入非空实例时，起点须避开历史 id。
+async fn setup_at(dir: &std::path::Path, id_start: u64) -> Engine {
     let store = Store::open(dir).await.unwrap();
     Engine::spawn(
         store,
         Arc::new(LogicalClock::new()),
-        Arc::new(SequentialIdGen::new()),
+        Arc::new(SequentialIdGen::new_at(id_start)),
     )
 }
 
@@ -384,7 +389,8 @@ async fn index_loss_triggers_rebuild() {
     // 索引文件丢失（真相源日志完好）
     std::fs::remove_file(dir.path().join("index.tursodb")).unwrap();
 
-    let engine2 = setup(dir.path()).await;
+    // 顺序 id 在重启后会从 0 重来；非空实例必须换起点，避免与历史 id 冲突。
+    let engine2 = setup_at(dir.path(), 100).await;
     let status = engine2.status(key("proj")).await.unwrap();
     assert_eq!((status.counter_size, status.archive_size), (1, 1));
 
@@ -1363,4 +1369,118 @@ async fn read_audit_failure_blocks_read_fail_closed() {
         .await
         .unwrap();
     off.shutdown().await.unwrap();
+}
+
+// ============ 15. ack 屏障：多下游完成后消费共享 token（TC4/TC13） ============
+
+/// 两个下游各产一枚 ack，协调者按 `count ack_*` 汇聚后才消费共享 token；
+/// ack 自身仍须被消费才能终止（母本 §1.7.3「Consumption barriers」）。
+const ACK_BARRIER: &str = r#"
+types { shared; ack_a; ack_b }
+
+preconditions {
+    shared → ack_a;
+    shared → ack_b
+}
+
+gates {
+    consumer_a: reads shared, produces ack_a, consumes ack_a;
+    consumer_b: reads shared, produces ack_b, consumes ack_b;
+    coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
+}
+
+seed_authority { external: seeds shared }
+"#;
+
+#[tokio::test]
+async fn ack_barrier_consumes_shared_after_all_downstreams() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup(dir.path()).await;
+    engine
+        .load_domain("barrier", ACK_BARRIER, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+
+    let shared = engine
+        .seed(
+            key("barrier"),
+            par("external"),
+            tyn("shared"),
+            ThingRef::some("urn:shared:1"),
+        )
+        .await
+        .unwrap();
+
+    // 下游未全部 ack 前，协调者消费被 gate 拒绝。
+    let err = engine
+        .consume(key("barrier"), par("coordinator"), shared.id.clone(), None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            EngineError::Rule(RuleError::GateConditionFailed { .. })
+        ),
+        "屏障未满足时应拒绝消费，实际 {err:?}"
+    );
+
+    // 两个下游各自 read 共享 token 并产 ack（read 不改状态，先读后产均可）。
+    engine
+        .read(key("barrier"), par("consumer_a"), shared.id.clone())
+        .await
+        .unwrap();
+    let ack_a = engine
+        .produce(
+            key("barrier"),
+            par("consumer_a"),
+            tyn("ack_a"),
+            vec![shared.id.clone()],
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+    engine
+        .read(key("barrier"), par("consumer_b"), shared.id.clone())
+        .await
+        .unwrap();
+    let ack_b = engine
+        .produce(
+            key("barrier"),
+            par("consumer_b"),
+            tyn("ack_b"),
+            vec![shared.id.clone()],
+            ThingRef::none(),
+        )
+        .await
+        .unwrap();
+
+    // 屏障满足：消费共享 token；ack 仍在 Counter，须显式清理。
+    engine
+        .consume(
+            key("barrier"),
+            par("coordinator"),
+            shared.id.clone(),
+            Some("rid-shared".into()),
+        )
+        .await
+        .unwrap();
+    let counter = engine.counter(key("barrier"), None).await.unwrap();
+    assert_eq!(counter.size, 2, "ack 不应随共享 token 被级联删除");
+
+    engine
+        .consume(key("barrier"), par("consumer_a"), ack_a.id, None)
+        .await
+        .unwrap();
+    assert!(!engine.status(key("barrier")).await.unwrap().terminated);
+    engine
+        .consume(key("barrier"), par("consumer_b"), ack_b.id, None)
+        .await
+        .unwrap();
+
+    // Counter 清空后才触发 Rule-T。
+    let status = engine.status(key("barrier")).await.unwrap();
+    assert!(status.terminated);
+    let archive = engine.archive(key("barrier"), None).await.unwrap();
+    assert_eq!(archive.size, 3);
+    engine.shutdown().await.unwrap();
 }

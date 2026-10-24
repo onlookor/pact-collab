@@ -105,7 +105,8 @@ pub fn gate_coverage(domain: &Domain) -> Vec<TypeName> {
 // ============ A.3 消费可达性 ============
 
 /// A.3 Consumption Reachability（论文 Appendix A.3）：无任何 consumer 的类型清单
-/// （含源类型）。未消费 token 是潜在技术债（论文 Part II §1.6）。
+/// （含源类型）。未消费 token 是潜在技术债（论文 Part II §1.6）；
+/// 也可能是有意保留（审计/见证），判定见 `docs/token-consumption-timing.md` TC10/TC11。
 pub fn consumption_reachability(domain: &Domain) -> Vec<TypeName> {
     let consumed: BTreeSet<&TypeName> = domain
         .gates
@@ -273,7 +274,8 @@ pub struct StrandingRisk {
 ///
 /// 则对每个消费者 q 报告 (T_b, T_a, p, q)。GateExpr 无法表达时间顺序
 /// （§1.7.3 局限），风险结构性存在；无环拓扑精确判定，有环保守判定。
-/// 时序与见证存活的编码方式见 `docs/expressiveness-boundaries.md` B8/B21。
+/// 时序与见证存活的编码方式见 `docs/expressiveness-boundaries.md` B8/B21；
+/// 消费顺序与判定准则见 `docs/token-consumption-timing.md` TC7/TC13。
 pub fn stranding_risk(domain: &Domain) -> Vec<StrandingRisk> {
     let g = precondition_graph(domain);
     let cyclic = toposort(&g, None).is_err();

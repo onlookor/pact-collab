@@ -276,7 +276,9 @@ Why not check gate conditions at production time? Production legitimacy is a str
 
 **Design Rationale.** These are deliberate non-guarantees. PACT answers "who may consume what," not "when the system must clean up."
 
-**Stranding consequence.** Because PACT does not enforce upstream-outlives-downstream, a gate condition witness may be consumed before the tokens that depend on it. When this occurs, those dependent tokens become *stranded*: they remain on the Counter, and participants whose gates include `via` clauses targeting those token types retain the permission but cannot execute the action, because `GateHolds` fails when the witness is no longer present. Participants without `via` clauses on the same type are unaffected and may still read or consume normally. Stranded tokens are not a paradigm defect; they are a domain design signal. Static stranding-risk analysis is provided in Appendix A (§A.5).
+**Consumption timing is a domain policy.** Rule-E removes exactly one token and does not consult downstream demand. A token may be shared by several downstream actions: readers, future Rule-P firings, `via` witnesses, and `count` thresholds. The paradigm maintains no demand registry, no reference count, and no last-consumer signal; `depends_on` records provenance, not outstanding need. The decision of when a shared token may be consumed is therefore not derivable from the declaration and must be specified by the domain. Consuming early can strand `via`-dependent tokens and remove future production capacity; consuming late accumulates tokens and may prevent Rule-T. Domains that require termination must assign an explicit final consumer to every token, including witnesses and acknowledgment tokens. A read is not a reservation: reading a token neither prevents another participant from consuming it nor records an obligation to preserve it. Archived tokens are no longer on the Counter and therefore cannot be read, consumed, or serve as `via` witnesses.
+
+**Stranding consequence.** Because PACT does not enforce upstream-outlives-downstream, a gate condition witness may be consumed before the tokens that depend on it. When this occurs, those dependent tokens become *stranded*: they remain on the Counter, and participants whose gates include `via` clauses targeting those token types retain the permission but cannot execute the action, because `GateHolds` fails when the witness is no longer present. Participants without `via` clauses on the same type are unaffected and may still read or consume normally. Stranded tokens are not a paradigm defect; they are a domain design signal. Static stranding-risk analysis is provided in Appendix A (§A.6).
 
 #### 1.7 Gate as an Extensible Constraint Language
 
@@ -333,6 +335,8 @@ PosNat ::= [1-9][0-9]*    (* positive integers only; see Normalization rule *)
 **Note on expressiveness boundary.** The `not` operator enables negative conditions (e.g., "no unresolved rework token exists"). Domains using `not` should verify absence of circular gate dependencies via static analysis (Appendix A, §A.5).
 
 **Note on temporal limitations.** The GateExpr language evaluates the *current* Counter state. It cannot express temporal ordering constraints such as "T_b must be consumed before T_a may be consumed." Such ordering requirements must be enforced through domain conventions or external coordination mechanisms, not through gate conditions.
+
+**Consumption barriers.** A shared token that must remain until several downstream actions have completed can be protected by acknowledgment tokens. Each downstream action reads (or otherwise processes) the shared token and produces a distinct acknowledgment; the consuming action is then conditioned on `count ack >= n`, which is evaluated at consumption admission. This establishes that at least n acknowledgments are present. It does not identify which consumer produced which acknowledgment, nor does it force a consumer to complete its work before producing one. Acknowledgment tokens are ordinary tokens and must themselves be consumed if termination is required. Gate conditions therefore provide a structural barrier, not a completion protocol; completion remains a domain-level obligation (cf. §1.6). A read followed by a consume is two separate actions, and the read does not reserve the token for the reader.
 
 ##### §1.7.4 Syntactic Sugar: `via` in GateCondOpt
 
@@ -903,7 +907,7 @@ Every Counter→Archive transition is recorded with full `depends_on` provenance
 
 #### Chapter 6: Technical Debt as Unconsumed Tokens
 
-Tokens that remain on the Counter indefinitely represent structural technical debt, detectable through runtime Counter inspection and static stranding-risk analysis (Appendix A, §A.5).
+Tokens that remain on the Counter indefinitely represent structural technical debt, detectable through runtime Counter inspection and static stranding-risk analysis (Appendix A, §A.6).
 
 ---
 
@@ -1353,7 +1357,7 @@ PRECONDITION_WELL_FORMEDNESS(D):
 
 **Remediation.**
 - **RHS_DUPLICATE:** Merge rules or rename types to restore uniqueness.
-- **LHS_DUPLICATE:** Remove duplicate type from LHS. If multiple instances are intended, use `count T >= n` in a gate condition (§1.7.3) or model as distinct types.
+- **LHS_DUPLICATE:** Remove duplicate type from LHS. If multiple predecessors of the same kind are intended, model them as distinct `TypeName`s (one per role); a `count T >= n` gate condition (§1.7.3) applies only to read/consume admission and cannot express production arity (§1.4.4).
 - **EMPTY_LHS:** Delete the empty rule. If T is a source type, declare it via SeedAuthority instead.
 - **UNDECLARED_TYPE:** Add missing TypeName to TypeSchema or correct the reference.
 - **ZERO_COUNT_LITERAL:** Replace `count T = 0` with `not exists T`, or replace `count T >= 0` with a tautology removal (the condition is vacuously true and can be deleted). See §1.7.3 Normalization rule.

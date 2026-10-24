@@ -68,6 +68,8 @@ pub fn enabled_productions(
 /// （终止论证，论文 rev1 §1.4 Rule-T Termination argument），
 /// 故本判定在良构域上等价于 Counter 为空；保留显式扫描以承载语义
 /// 并在前提变化时保持正确。
+/// 在 Counter 上保留见证、ack 等 token 会阻止 Rule-T；Archive 中的 token
+/// 不计入。消费顺序见 `docs/token-consumption-timing.md` TC13。
 pub fn termination_holds(domain: &Domain, state: &CounterState) -> bool {
     if !state.counter.is_empty() {
         return false;

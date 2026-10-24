@@ -51,6 +51,8 @@ pub enum StoreError {
         /// 需要被快照覆盖的最小事件 seq（含）。
         base_seq: u64,
     },
+    /// `Consumed` 事件的目标不在当前 Counter（日志与状态不一致，拒绝重复归档）。
+    ConsumeTargetNotOnCounter { token_id: String },
 }
 
 impl std::fmt::Display for StoreError {
@@ -98,6 +100,11 @@ impl std::fmt::Display for StoreError {
                  历史状态不可恢复，请人工介入（禁止静默丢数据）",
                 path.display()
             ),
+            StoreError::ConsumeTargetNotOnCounter { token_id } => write!(
+                f,
+                "Consumed 事件的目标 token {token_id} 不在当前 Counter：\
+                 日志与状态不一致，拒绝重复归档"
+            ),
         }
     }
 }
@@ -139,6 +146,9 @@ impl From<ModelError> for StoreError {
             ModelError::InvalidInstanceName { name } => StoreError::InvalidInstanceName { name },
             ModelError::UnsupportedSchemaVersion { found, supported } => {
                 StoreError::UnsupportedSchemaVersion { found, supported }
+            }
+            ModelError::ConsumeTargetNotOnCounter { token_id } => {
+                StoreError::ConsumeTargetNotOnCounter { token_id }
             }
         }
     }

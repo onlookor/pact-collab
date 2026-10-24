@@ -492,7 +492,12 @@ async fn native_and_wasm_alternate_on_shared_log() {
     std::fs::write(&log_path, host.export_events(&wk).unwrap()).unwrap();
 
     // 原生 C：打开 WASM 写过的日志 → 视图一致 → 再追加种子
-    let engine_c = native_engine(dir.path()).await;
+    // 顺序 id 重启后会从 0 重来；日志中已有 seq-0/seq-1，必须换起点避免撞号。
+    let engine_c = Engine::spawn(
+        Store::open(dir.path()).await.unwrap(),
+        Arc::new(LogicalClock::new()),
+        Arc::new(SequentialIdGen::new_at(1000)),
+    );
     assert_eq!(
         engine_c.status(nk.clone()).await.unwrap(),
         host.status(&wk).unwrap()
@@ -1094,6 +1099,7 @@ fn native_rule_code(err: &EngineError) -> String {
             RuleError::TokenNotOnCounter { .. } => "TokenNotOnCounter".into(),
             RuleError::GateConditionFailed { .. } => "GateConditionFailed".into(),
             RuleError::StaticGateDenied { .. } => "StaticGateDenied".into(),
+            RuleError::DuplicateTokenId { .. } => "DuplicateTokenId".into(),
             other => panic!("未覆盖的规则错误：{other:?}"),
         },
         other => panic!("期望规则错误，实际：{other}"),

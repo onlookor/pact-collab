@@ -19,7 +19,7 @@ use pact_core::{
 use pact_parser::{load_domain, Problem};
 use pact_store_model::{apply_event, Event, ModelError, Snapshot};
 use pact_views::{AnalysisReport, ArchiveView, CounterView, DomainSummary, GateClause, StatusView};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// 内核错误：只覆盖纯语义/模型层失败；实例与声明注册表错误由调用方表达。
 #[derive(Debug)]
@@ -95,6 +95,9 @@ pub struct Session {
     pub terminated: bool,
     /// Rule-E 幂等表：request_id → (目标 token id, 首次归档结果)。
     pub consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)>,
+    /// 实例生命周期内出现过的全部 `TokenId`（Counter + Archive）。
+    /// 用于 O(log n) 冲突守卫；不进入快照，恢复时由 state 重建。
+    used_ids: BTreeSet<TokenId>,
 }
 
 /// 新建实例的结果：待持久化的 `DomainLoaded` + 初始会话。
@@ -154,6 +157,7 @@ impl Session {
                 dl_seq: seq,
                 terminated,
                 consumed_requests: BTreeMap::new(),
+                used_ids: BTreeSet::new(),
             },
         })
     }
@@ -240,6 +244,12 @@ impl Session {
             }
         }
 
+        let used_ids = state
+            .counter
+            .keys()
+            .cloned()
+            .chain(state.archive.iter().map(|entry| entry.token.id.clone()))
+            .collect();
         let terminated = termination_holds(&domain, &state);
         Ok(Session {
             declaration,
@@ -250,6 +260,7 @@ impl Session {
             dl_seq,
             terminated,
             consumed_requests,
+            used_ids,
         })
     }
 
@@ -260,6 +271,13 @@ impl Session {
 
     // —— 动作准备（不改变已提交状态） ——
 
+    /// `TokenId` 是否已在该实例的 Counter 或 Archive 中使用（论文 §1.4.1）。
+    fn token_id_in_use(&self, token_id: &TokenId) -> bool {
+        self.used_ids.contains(token_id)
+    }
+
+    /// 生成 Rule-S 事件。调用方必须提供未在该实例中使用过的 `TokenId`
+    /// （论文 §1.4.1）；HTTP/engine 以 ULID 生成，WASM 宿主由本守卫兜底。
     pub fn prepare_seed(
         &self,
         participant: &ParticipantName,
@@ -276,6 +294,11 @@ impl Session {
             token_id,
             ts.to_owned(),
         )?;
+        if self.token_id_in_use(&token.id) {
+            return Err(KernelError::Rule(RuleError::DuplicateTokenId {
+                token_id: token.id,
+            }));
+        }
         Ok(Prepared {
             event: Event::Seeded {
                 seq: self.next_seq,
@@ -286,6 +309,7 @@ impl Session {
         })
     }
 
+    /// 生成 Rule-P 事件。`token_id` 的唯一性要求同 [`Self::prepare_seed`]。
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_produce(
         &self,
@@ -306,6 +330,11 @@ impl Session {
             token_id,
             ts.to_owned(),
         )?;
+        if self.token_id_in_use(&token.id) {
+            return Err(KernelError::Rule(RuleError::DuplicateTokenId {
+                token_id: token.id,
+            }));
+        }
         Ok(Prepared {
             event: Event::Produced {
                 seq: self.next_seq,
@@ -316,6 +345,8 @@ impl Session {
         })
     }
 
+    /// 准备 Rule-E 消费。`request_id` 只提供同键重试幂等，不提供跨参与者互斥
+    /// 或租约；共享 token 的消费时机见 `docs/token-consumption-timing.md` TC9。
     pub fn prepare_consume(
         &self,
         participant: &ParticipantName,
@@ -383,6 +414,13 @@ impl Session {
     /// WASM 在宿主 `commit`）；成功追加后调用 [`Session::record_terminated`]。
     pub fn commit(&mut self, event: &Event) -> Result<CommitOutcome, KernelError> {
         apply_event(&mut self.state, event)?;
+        match event {
+            Event::DomainLoaded { .. } => self.used_ids.clear(),
+            Event::Seeded { token, .. } | Event::Produced { token, .. } => {
+                self.used_ids.insert(token.id.clone());
+            }
+            _ => {}
+        }
         self.last_seq = event.seq();
         self.next_seq = self.last_seq + 1;
         if let Event::Consumed {
@@ -610,6 +648,69 @@ seed_authority { external: seeds requirement }
             )
             .unwrap_err();
         assert!(matches!(err, KernelError::IdempotencyConflict { .. }));
+    }
+
+    #[test]
+    fn duplicate_token_id_is_rejected_in_counter_and_archive() {
+        let (name, _) = key();
+        let fresh = Session::fresh(name, DECL, "T0", 1).unwrap();
+        let dl = fresh.event;
+        let mut s = fresh.session;
+        let (external, requirement, design) = names();
+        let architect = ParticipantName("architect".into());
+        let id = TokenId("seq-0".into());
+
+        let seed = s
+            .prepare_seed(&external, &requirement, ThingRef::none(), id.clone(), "T1")
+            .unwrap();
+        s.commit(&seed.event).unwrap();
+
+        // Counter 内重复：Rule-S 与 Rule-P 均拒绝。
+        let err = s
+            .prepare_seed(&external, &requirement, ThingRef::none(), id.clone(), "T2")
+            .unwrap_err();
+        assert!(
+            matches!(err, KernelError::Rule(RuleError::DuplicateTokenId { token_id }) if token_id == id)
+        );
+
+        let err = s
+            .prepare_produce(
+                &architect,
+                &design,
+                std::slice::from_ref(&id),
+                ThingRef::none(),
+                id.clone(),
+                "T3",
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, KernelError::Rule(RuleError::DuplicateTokenId { token_id }) if token_id == id)
+        );
+
+        // 归档后仍拒绝复用，避免 Archive 与 provenance 出现歧义。
+        let consumed = s.prepare_consume(&architect, &id, None, "T4").unwrap();
+        let ConsumePreparation::Prepared(entry) = consumed else {
+            panic!("首次消费不应幂等命中");
+        };
+        s.commit(&entry.event).unwrap();
+
+        let err = s
+            .prepare_seed(&external, &requirement, ThingRef::none(), id.clone(), "T5")
+            .unwrap_err();
+        assert!(
+            matches!(err, KernelError::Rule(RuleError::DuplicateTokenId { token_id }) if token_id == id)
+        );
+
+        // 恢复时 used_ids 由 Counter + Archive 重建，归档 id 仍被拒绝。
+        let recovered =
+            Session::recover(&[dl, seed.event.clone(), entry.event.clone()], None, 0).unwrap();
+        let err = recovered
+            .prepare_seed(&external, &requirement, ThingRef::none(), id, "T6")
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            KernelError::Rule(RuleError::DuplicateTokenId { .. })
+        ));
     }
 
     #[test]

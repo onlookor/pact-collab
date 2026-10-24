@@ -25,7 +25,8 @@ impl Effect {
 
 impl CounterState {
     /// 应用规则效果。设计不变量（属性测试锁定）：
-    /// - Seeded/Produced 只插入新 token，不触碰任何既有 token；
+    /// - Seeded/Produced 只插入新 token，不触碰任何既有 token；重复 `TokenId`
+    ///   会覆盖既有条目，唯一性由调用方保证（论文 §1.4.1，见 kernel `prepare_seed`）；
     /// - Consumed 只移除目标 token 并追加 Archive，无级联。
     pub fn apply(&mut self, effect: Effect) {
         match effect {

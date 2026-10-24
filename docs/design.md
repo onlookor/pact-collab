@@ -104,6 +104,7 @@ pact-core 是范式的唯一权威语义实现，必须满足：
 - Rule-T 终止判定、Rule-W 可满足性判定、域良构校验从引擎/parser 层**移入 core**（D14）；
 - 增加显式 `Effect` 模型与 `CounterState::apply`，状态变更路径唯一且可测；
 - `rule_s` 不读 CounterState（论文 Rule-S 前提不含 Counter 条件），签名相应省略。
+- **TokenId 唯一性守卫**：`Session` 在 Rule-S/Rule-P 校验通过后，用内存 `used_ids`（Counter + Archive 并集，恢复时重建、不进快照）拒绝重复 id，返回 `RuleError::DuplicateTokenId`；守卫位于 kernel 而非规则函数，保持 `rule_s` 不读状态。
 
 ### 2.2 数据类型
 
@@ -193,6 +194,7 @@ pub enum RuleError {
     SourceTypeProductionDenied { participant, ty: TypeName }, // Rule-P 前提 Precond(T) ≠ ∅（D17）
     PredecessorNotOnCounter { token_id: TokenId },
     DuplicatePredecessor { token_id: TokenId },
+    DuplicateTokenId { token_id: TokenId }, // 目标 id 已在 Counter 或 Archive 中使用
     TokenNotOnCounter { token_id: TokenId },
     SeedAuthorityDenied { participant, ty: TypeName },
 }
@@ -521,7 +523,7 @@ CREATE INDEX idx_tokens_domain_type ON tokens(domain, type, status);
 - 快照写失败不影响正确性（重放兜底）；
 - JSONL 半行写入（崩溃残留）→ 启动时检测并截断至最后一个完整行；
 - 索引文件永远可丢弃重建——真相源唯一；索引滞后（投影失败）由启动 seq 一致性校验触发 `rebuild` 自愈；
-- Consumed 事件自足（携 token 全量快照），重放与审计不依赖同一域实例其他行。
+- Consumed 事件自足（携 token 全量快照），重放与审计不依赖同一域实例其他行；目标必须仍在 Counter（缺失 ⇒ `ConsumeTargetNotOnCounter` fail-closed，禁止重复归档）。
 - **压缩窗口**（§7.5）：快照 → logmeta 水位 → 日志原子重写 → 索引裁剪；崩溃于任一中间点均落到「未截断超集态」或「已截断 + 水位 + 快照」两个一致态之一，恢复侧以 `base_seq > 0` 补 `prune_events` 自愈。
 
 ### 7.5 日志压缩与 schema 版本化（D25 子项 1，已实现）
@@ -599,7 +601,7 @@ Rule-E 的实现级保证（可验证契约）：
 | 线性化 | 单写者 actor 串行处理命令；线性化点 = `Consumed` 事件落盘 |
 | 至多一次 | 同一 TokenId 再次消费返回 `TokenNotOnCounter`；带 `request_id` 时重复请求返回首次结果 |
 | Gate 原子性 | `rule_e` 与 `apply` 落在同一临界区，GateHolds 读集（`via` / `exists` / `count` / `not`）不会在提交点前被并发修改（无 TOCTOU） |
-| 归档原子性 | Counter 移除与 Archive 追加由同一事件导出，二者永不分裂 |
+| 归档原子性 | Counter 移除与 Archive 追加由同一事件导出，二者永不分裂；目标不在 Counter 时 `apply_event` 以 `ConsumeTargetNotOnCounter` fail-closed（防宿主违反串行契约造成重复归档） |
 | 持久原子性 | 提交点 = 日志 fsync；此后步骤尽力而为，崩溃后重放等价于已提交前缀 |
 | 幂等 | 可选 `request_id`，重复请求返回首次结果（跨重启由日志重建幂等表生效） |
 
@@ -846,7 +848,7 @@ daemon 在域端点之外暴露三个**免身份**运维端点（仅本地/内�
 |------|------|------|------|
 | 1 | pact-core + pact-parser + 黄金轨迹/属性测试 | 论文全部示例轨迹通过；core 纯度约束清单（§2.1）逐条满足 | **已完成（2026-08-25，2026-08-26 按 rev1 更新）**：27 项测试全绿（11 单元含源类型约束专项 + 2 属性 × 512 用例 + 5 黄金 + 9 parser）；纯度核验（依赖树仅 serde、禁用 API 扫描零命中）；D15 已回滚、D17 生效（论文 rev1 源生产约束）；已知缺口：容器内无 rustfmt/clippy 组件（无 rustup/sudo），待环境补齐后补跑 |
 | 2 | pact-analysis + pact-compose | 六项分析对论文域输出正确；组合一致性冲突可检出 | **已完成（2026-08-26）**：20 项测试全绿（analysis 12：四论文域验证 + 死锁/馈入/不可达/循环保守/间接祖先/嵌套 via 用例；compose 8：论文 §1.8 示例逐字段比对 + 四条件冲突各型 + 单位元/交换律/幂等合并）；D18 落定（C2 实践语义） |
-| 3 | pact-store + pact-engine | 重放等价、崩溃恢复、多域会话 | **已完成（2026-08-26；2026-10-18 按 D23 补充消耗提交契约）**：新增 31 项测试全绿——store 18（事件 JSON 往返、**Consumed 自足（空 Counter 上重放）**、**幂等键序列化**、seq 逐行 +1、域名校验、索引滞后重建、快照原子写重启存活、日志清洗）；engine 单元 4（ISO-8601 纪元含闰日、逻辑时钟单调、顺序/ULID id）；集成 11（全生命周期 + 通知时序 seq/规模断言、快照路径与纯重放路径状态逐字段等价、崩溃半行截断后可续作、索引丢失重建、中部损坏 fail-fast、多域隔离、8 并发 seed 串行化、域替换恢复、validate/analyze/compose 命令、Clock/IdGen 确定性注入、**Rule-E request_id 幂等与跨重启生效**）。纯度核验：pact-core 依赖树仅 serde，IO/时钟/随机 API 扫描零命中。D23 落定（提交点 = 日志 fsync；索引投影尽力而为；Consumed 自足；Rule-E 可选幂等） |
+| 3 | pact-store + pact-engine | 重放等价、崩溃恢复、多域会话 | **已完成（2026-08-26；2026-10-18 按 D23 补充消耗提交契约）**：新增 31 项测试全绿——store 18（事件 JSON 往返、**Consumed 自足（归档内容随事件携带；目标缺失 fail-closed）**、**幂等键序列化**、seq 逐行 +1、域名校验、索引滞后重建、快照原子写重启存活、日志清洗）；engine 单元 4（ISO-8601 纪元含闰日、逻辑时钟单调、顺序/ULID id）；集成 11（全生命周期 + 通知时序 seq/规模断言、快照路径与纯重放路径状态逐字段等价、崩溃半行截断后可续作、索引丢失重建、中部损坏 fail-fast、多域隔离、8 并发 seed 串行化、域替换恢复、validate/analyze/compose 命令、Clock/IdGen 确定性注入、**Rule-E request_id 幂等与跨重启生效**）。纯度核验：pact-core 依赖树仅 serde，IO/时钟/随机 API 扫描零命中。D23 落定（提交点 = 日志 fsync；索引投影尽力而为；Consumed 自足；Rule-E 可选幂等） |
 | 4 | pact-http + pact-cli + pact-mcp（stdio）（D19：pact-http 提前） | 人类与 agent 均可走完生命周期 | **已完成（2026-09-04）**：pact-http（axum daemon：unix socket 默认/TCP 可选、§6.3 类型化错误体、SSE 通知流、类型化 client、pactd bin）+ pact-mcp（rmcp stdio，17 个 `pact_` 工具，经 REST 接入，schemars 派生 schema）+ pact-cli（单二进制 `pact`：daemon start + 在线命令经 client + 离线 analyze/compose/replay + `--json`）。e2e 三绿：HTTP daemon 全生命周期（含 404/错误码映射、SSE、compose/unload）；CLI 真实子进程 daemon 全生命周期 + 错误路径 + 离线命令 + 事件日志回放对照；MCP 真实 stdio 子进程 15 工具全生命周期 + 3 错误路径。workspace 累计 95 项测试全绿。D19/D20 落定 |
 | 5 | 无人值守场景验证（pact-http 已提前至阶段 4 交付） | 多 agent 经 MCP 自驱完成 ReAct/软件工程域，全程无介入至 Terminated；含 MCP Streamable HTTP 与否由联网演进决定（D20：v1 不做） | **已完成（2026-09-05；2026-09-09 修正场景 B 卫生断言）**：`pact-mcp/tests/unattended_e2e.rs` 单测试内顺序验证两场景，测试进程只做"外部启动机制"（拉起 daemon + N 个真实 `pact-mcp` stdio 子进程），此后零 Rule-S/P/R/E 介入。场景 A（ReAct）：user 播种 + agent 私有生产预算 7，自驱两轮循环至 Terminated，7 产/8 消/7 读、Counter 恒 ≤2（单 agent 串行，真不变量）、archive 序两轮同构；场景 B（软件工程生命周期）：external_stakeholder 播种 + 5 worker 并发自驱接力至 Terminated，4 产/5 消/4 读、角色分工与溯源链 requirement→…→deployment 逐项核验、Counter ≤ 类型数 5（结构上界；典型调度 ≤2，但 CI 慢调度下下一阶段可在上一阶段 produce→consume 窗口内合法生产，窗口因 produces 门无条件子句而语义上不可消除，2026-09-09 CI 实测 max_counter=3 后断言修正为结构上界）。agent 自驱策略 P1 生产优先/P2 汇消费/P3 等待（订阅推送 + 轮询兜底，Rule-W）。修复两类自驱竞态：①播种前过早终止（域加载与种子注入间 Counter=∅ 使 `termination_holds` 平凡为真，worker 误判退出）→ 仅当 `archive_size>0` 才承认终止（符合 §"Terminated 信息性、不锁定域"，修复落在 agent 驱动层非引擎）；②Terminated 一次性推送与轮询判定竞态 → 终止后 500ms 宽限窗口排空在途推送。合并为单 runtime 顺序执行以规避 tokio 多 runtime 子进程回收陷阱。D20 生效（v1 不做 Streamable HTTP；v2 已由 D35 增加 `/mcp`，stdio 薄封装保留） |
 | 6（可选，已实现） | pact-cpn：CPN 编码生成（正片段直出，not 条件走互补库所编码）；**按实例独立编码**（论文 §4.5/§B.2 单实例作用域：每实例各自编码，库所/迁移不跨实例共享，跨实例协同不入 `N(D)`；源域为域声明、实例划分属运行期，见 G1/D27） | CPN Tools 可加载验证；单实例作用域符合 §4.5/§B.2 | **已完成（2026-10-21，D28）**：新增 crate `pact-cpn`（`generate(&Domain, &CpnOptions) -> CpnModel`）+ CLI `pact cpn`；每类型库所 + Archive、`PACT_TOKEN` 五元颜色、生产前驱 test arc、读自环、消费归档、种子无输入弧；`GateExpr → NNF → DNF`（or 多迁移、not 互补库所 + `--bound`、not via 显式拒绝、恒假 guard=false、DNF 上限 1024）；实例命名空间 `i_<instance>__`；输出 CPN Tools XML format 6。验证：11 项 crate 测试 + CLI 离线 e2e（结构/错误路径/实例前缀），全量 **166 项**测试全绿；`examples/domains/*.pact` 生成物全部通过 CPN DTD 校验（xmllint）。**限制**：沙箱无 CPN Tools GUI，实际图形加载需人工验收；`--bound` 正确性由调用方承担（运行期并发上界不可从声明推导） |
@@ -1080,6 +1082,7 @@ PACT_COMPL   = int          // 互补库所只承载计数不变量
 | B11/B12（referent 敏感的生产/读消费） | 版本编成 `TypeName` + SeedAuthority 分类；或外部校验者产生见证 token |
 | B15（原子多输出） | 无原子编码；两段式 + 中间类型/复合 token/外部事务，见 `docs/expressiveness-boundaries.md` §3.6 |
 | B23/B24（CPN 工具边界） | `pact-cpn` 的 `NegatedVia` / `MissingBound`；见 §15 与 D28 |
+| 消费时机（多下游共享 token） | [`docs/token-consumption-timing.md`](token-consumption-timing.md)（TC1–TC13）：判定准则 D1–D6、模式 P1–P9、反模式 A1–A9；母本 §1.6/§1.7.3 已补写消费时机与 ack 屏障；与 B8/B17/B21/B22 交叉引用 |
 
-新增或修订边界时，先改母本，再同步 `docs/expressiveness-boundaries.md` 与本表。
+新增或修订边界/消费时机时，先改母本，再同步 `docs/expressiveness-boundaries.md`、`docs/token-consumption-timing.md` 与本表。
 

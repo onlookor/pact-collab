@@ -43,6 +43,9 @@ pub enum RuleError {
     PredecessorNotOnCounter { token_id: TokenId },
     /// 前驱实例重复（论文 Rule-P：tᵢ ≠ tⱼ）。
     DuplicatePredecessor { token_id: TokenId },
+    /// 目标 `TokenId` 已在该实例的 Counter 或 Archive 中使用（论文 §1.4.1；
+    /// Archive 检查为实现加强，避免审计与 provenance 出现同 id 歧义）。
+    DuplicateTokenId { token_id: TokenId },
     /// 目标 token 不在 Counter 上。
     TokenNotOnCounter { token_id: TokenId },
     /// (p, T) ∉ SeedAuthority（Rule-S 唯一前提违反）。
@@ -92,6 +95,8 @@ pub fn rule_s(
 ///
 /// 前驱**不被消费**：本函数只读 state，Effect::Produced 只添加新 token。
 /// `depends_on` 保留调用方给出的前驱顺序（审计溯源记录，§1.4 Note）。
+/// 匹配只看 `TypeName` 与不同 `TokenId`，不检查 `ThingRef` 或其他 token 字段；
+/// 前驱选择由调用方决定，范式不约束选择策略（§1.4 Rule-P Note）。
 #[allow(clippy::too_many_arguments)]
 pub fn rule_p(
     domain: &Domain,
@@ -181,6 +186,8 @@ pub fn rule_r(
 /// Rule-E（消费，显式移除，§1.4）：
 /// 检查同 Rule-R（action=Consume）；效果 = Counter 移除 + Archive 追加。
 /// 无级联、无反向传播（零隐式动作原则）。
+/// 共享前驱的消费时机（扇出预算、`via` 见证、终止压力）见
+/// `docs/token-consumption-timing.md` TC2/TC7/TC13。
 pub fn rule_e(
     domain: &Domain,
     state: &CounterState,

@@ -311,6 +311,8 @@ Row 8 is the reason `via` exists — and the root of step 12's stranding trap in
 
 This table is the short form. The numbered boundary catalogue (`B1`–`B25`), the encoding patterns (type split, witness token, participant-internal choice, external orchestration), and the list of boundaries that genuinely need a paradigm extension are in [`docs/expressiveness-boundaries.md`](../docs/expressiveness-boundaries.md). Cite `B<number>` rather than restating the workaround.
 
+When one token serves several downstream consumers, *when to consume it* is a separate decision from *what can be expressed*. The decision procedure (D1–D6), consumption patterns (downstream-first drain, keep-as-witness, ack barrier, copy fan-out, lease, archival policy), and anti-patterns are in [`docs/token-consumption-timing.md`](../docs/token-consumption-timing.md). Cite `TC<number>`.
+
 ### 7.4 Domain independence (§2.2)
 
 The paradigm itself never changes; switching domains means re-filling four injection points: TypeSchema, PreconditionGraph, GateMatrix, SeedAuthorityDecl. The five domains in this directory are five different fillings — software engineering, requirements engineering, an agent loop, multi-agent collaboration, external materialization confirmation — over the same primitives and the same SOS rules.

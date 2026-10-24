@@ -19,6 +19,10 @@ pub enum ModelError {
         /// 本实现支持的版本上限。
         supported: u32,
     },
+    /// `Consumed` 事件的目标不在当前 Counter：日志与状态不一致
+    /// （重复消费、越权重放或宿主违反同一实例 `prepare → commit` 串行契约），
+    /// fail-fast 以免同一 token 重复入 Archive。
+    ConsumeTargetNotOnCounter { token_id: String },
 }
 
 impl std::fmt::Display for ModelError {
@@ -37,6 +41,11 @@ impl std::fmt::Display for ModelError {
                 f,
                 "记录 schema 版本 v{found} 高于本实现支持上限 v{supported}：\
                  请升级 pactd，或迁移数据后再启动（不按旧版本静默重放）"
+            ),
+            ModelError::ConsumeTargetNotOnCounter { token_id } => write!(
+                f,
+                "Consumed 事件的目标 token {token_id} 不在当前 Counter：\
+                 日志与状态不一致（可能已消费或未产生），拒绝重复归档"
             ),
         }
     }

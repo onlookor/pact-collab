@@ -106,6 +106,11 @@ stdio 与 REST 可用静态 Bearer 或 Ed25519 签名；`/mcp` 可用 OIDC JWT �
 [`docs/expressiveness-boundaries.md`](expressiveness-boundaries.md)。在域声明或评审记录中引用边界时，
 请写 `B<编号>`，不要复制解释。
 
+同一个 token 被多个下游共享时，“何时可以消费”本身也需要决定：早消费会让下游读不到、无法再作为
+生产前驱、`via` 见证失效或 `count` 阈值掉下去；晚消费则会让 token 累积、永远到不了 Rule-T。
+判定准则（D1–D6）、可选模式（下游优先排空、见证保留、ack 汇聚、副本扇出、租约、归档策略等）
+与反模式见 [`docs/token-consumption-timing.md`](token-consumption-timing.md)；引用时写 `TC<编号>`。
+
 ---
 
 ## 2. 装起来、跑起来
@@ -526,6 +531,8 @@ pact status     --domain D                   # counter / archive / terminated
   同一域内重复的 `request-id` 直接返回**首次**的归档结果（不重复消费），
   因此响应丢失后可以原样重发。该幂等表随事件日志持久化，**跨重启仍生效**。
   同一 `request-id` 却换了 token，会返回 `IdempotencyConflict`（HTTP 409）——那是键复用错误，不是消费失败。
+  幂等只保护“同一次请求的重试”，**不阻止其他参与者抢先消费**；共享 token 的消费时机与顺序见
+  [`docs/token-consumption-timing.md`](token-consumption-timing.md)（TC9、P8）。
 
 ### 4.6 消费与外部动作：物化确认
 
@@ -980,6 +987,7 @@ stdio 形态由 agent 拉起为子进程，工具经 REST 转发至 daemon；`--
 | `SourceTypeProductionDenied` | 试图 produce 源类型（只能经 Rule-S） |
 | `PredecessorNotOnCounter` | 前驱 token 不在 Counter 上（多半已被消费） |
 | `DuplicatePredecessor` | 前驱列表里有重复 token id |
+| `DuplicateTokenId` | seed/produce 的目标 token id 已在该实例的 Counter 或 Archive 中使用 |
 | `TokenNotOnCounter` | read/consume 的目标 token 不在 Counter 上 |
 | `SeedAuthorityDenied` | `(参与者, 类型) ∉ SeedAuthority` |
 
@@ -1017,7 +1025,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `NotFound` | 404 | 路径不存在；OIDC 未启用时 `/.well-known/oauth-protected-resource` 亦返回 404 |
 | `MethodNotAllowed` | 405 | 方法与路径不匹配（如 `GET /domains/{d}:analyze`） |
 | `BadRequest` | 400 | JSON 请求体解析失败 |
-| `Store` | 500 | 存储写入失败；**含 `UnsupportedSchemaVersion`**（日志/快照 `version` 高于当前支持版本）、**`SnapshotRequiredForCompactedLog`**（日志已截断但快照缺失/不覆盖水位）、**顶层遗留单层文件**（`LegacyLayoutDetected`，须人工迁移） |
+| `Store` | 500 | 存储写入失败；**含 `UnsupportedSchemaVersion`**（日志/快照 `version` 高于当前支持版本）、**`SnapshotRequiredForCompactedLog`**（日志已截断但快照缺失/不覆盖水位）、**顶层遗留单层文件**（`LegacyLayoutDetected`，须人工迁移）、**`ConsumeTargetNotOnCounter`**（提交的消费事件目标已不在 Counter，拒绝重复归档） |
 | `Recovery` | 500 | 启动恢复失败 |
 | `EngineStopped` | 503 | 引擎已停止 |
 | `ServiceUnavailable` | 503 | IdP 发现/JWKS 拉取不可达（仅 `/mcp`，D36） |

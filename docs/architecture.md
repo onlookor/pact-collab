@@ -264,7 +264,7 @@ v2 不在本仓库引入新进程或新内部组件，只把接口层的传输�
 | 属性 | 架构手段 |
 |------|----------|
 | 语义保真 | 语义只存在于纯函数 core（含良构校验、Rule-W/Rule-T 判定，D14）；黄金轨迹测试锚定论文全部示例 |
-| 审计完整性 | JSONL 真相源即完整审计记录；DomainLoaded 事件存档声明原文；每条事件自足（Consumed 携 token 全量快照），单行即可审计与重放。**日志压缩后**（D25 子项 1）审计视图 = 自足快照（含声明/幂等表）+ 保留的尾部事件，被丢弃前缀不再可查 |
+| 审计完整性 | JSONL 真相源即完整审计记录；DomainLoaded 事件存档声明原文；每条事件自足（Consumed 携 token 全量快照），单行即可审计与重放（重放时目标须仍在 Counter，缺失即 `ConsumeTargetNotOnCounter` fail-closed）。**日志压缩后**（D25 子项 1）审计视图 = 自足快照（含声明/幂等表）+ 保留的尾部事件，被丢弃前缀不再可查 |
 | 可恢复性 | 快照 + 重放；索引（turso，经 IndexStore trait 隔离，D13）永远可重建、滞后由启动一致性校验触发重建自愈。压缩后日志无 `DomainLoaded` 时以**快照为锚**恢复（`snapshot_is_anchor`），快照缺失/不覆盖水位则 fail-fast；事件 schema 版本缺省按 v1、更高版本 fail-fast |
 | 可测试性 | Clock/IdGen 注入；core 纯环境属性测试；四层测试组织（单元/属性/集成/端到端+回归） |
 | 安全边界 | 默认 unix socket 本地单用户；可选 daemon 内 TLS/mTLS（`[tls]`，D34）与静态 Bearer / Ed25519 签名（`[auth.keys]`，D34）。**启用 `[auth.acl]` 后**（D25 子项 3）全部域作用域端点按 `(domain, instance)` 授权（支持 `domain/*` 通配），无身份 `401`、越权 `403`，`GET /domains` 按授权过滤；ACL 非空而令牌表与密钥表均为空 ⇒ 拒绝启动。未配置 ACL 时保持既有信任声明行为。`/health` `/ready` `/metrics` 免身份，由部署网络边界兜底；`/validate` 在签名启用时仍需签名。核心不感知认证 |
@@ -272,6 +272,7 @@ v2 不在本仓库引入新进程或新内部组件，只把接口层的传输�
 | 可运维性（NFR7，D25，**子项 1+2+3 已实现**） | **子项 2（2026-10-20）**：daemon 暴露**免身份** `/health`（存活）、`/ready`（就绪：引擎可应答）、`/metrics`（Prometheus 文本格式），可选 `pid_file`（启动写入/退出删除/陈旧检测），SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → `engine.shutdown()` 终态快照）。**子项 1（2026-10-20）**：事件日志前缀压缩（REST `/compact`、CLI `pact compact`、MCP `pact_compact`、可选启动自动压缩）+ schema 版本化（`WireEvent.version`，更高版本 fail-fast），详见 §2.3/§2.4。**子项 3（2026-10-20）**：域级 ACL 阻止任意客户端装卸域/触发压缩（`(domain, instance)` 授权，见 §2.5）；可选读审计流（`read_audit = true`，append+fsync，fail-closed）与只读视图 `GET .../read-audit` |
 | 多实例承载（FR19，D27，**已实现**） | 同一域声明可并发承载多个 **Counter 实例**（实例键 `instance`）；实例为接口层一等键，各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / 幂等表。**存储布局（已定案 + 已实现）**：域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、审计流 `‹instance›.read-audit.jsonl`、声明原文 `declaration.pact` 同目录）；索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键）。顶层遗留单层文件（`‹domain›.events.jsonl`）**不识别、fail-fast**（`LegacyLayoutDetected`）。同一 `data_dir` 上多实例以 flock（`‹data_dir›/pactd.lock`）保证单写者，禁止交错写同一日志；非空实例再加载默认拒绝（`DomainBusy`，须 `force`）。实例键以路径段承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` ≡ `default`），键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越 |
 | 表达力边界（B1–B25） | 母本 §1.3/§1.4/§1.4.4/§2.3 声明范式不能直接表达什么；实现侧在 `docs/expressiveness-boundaries.md` 集中登记可编码模式、仅可近似项、范式外项与工具层边界，并以 `B<编号>` 在文档与代码注释中引用。摘要落点见 `docs/design.md` §18 |
+| Token 消费时机（TC1–TC13） | 母本 §1.6/§1.7.3 提供规范依据（消费时机是域策略、Read 非 reservation、ack 屏障）；多下游共享 token 的消费所有者、顺序与保留策略集中登记于 `docs/token-consumption-timing.md`：判定准则 D1–D6、模式 P1–P9、反模式 A1–A9，并以 `TC<编号>` 引用。静态预警由 A.3（无 consumer）与 A.6（搁浅风险）承接；与表达力边界 B8/B17/B21/B22 交叉引用，不新增范式原语 |
 | 层边界（D24–D26） | 范式机制限于 `crates/`；领域内容在独立仓库；生产驱动逻辑收于 `pact-runtime` crate（已实现，经 REST 接入 daemon，不内嵌引擎）；分发产物在同仓库 `dist/`（**阶段 9 已交付**：容器镜像 / systemd unit / musl 静态打包，详见 §6） |
 
 ## 6. 生产运行层与分发（D24–D26，2026-10-19 裁决；L3 运行层已实现）

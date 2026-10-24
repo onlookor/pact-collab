@@ -59,6 +59,7 @@ impl FacadeError {
             ModelError::InvalidDomainName { .. } => "InvalidDomainName",
             ModelError::InvalidInstanceName { .. } => "InvalidInstanceName",
             ModelError::UnsupportedSchemaVersion { .. } => "UnsupportedSchemaVersion",
+            ModelError::ConsumeTargetNotOnCounter { .. } => "ConsumeTargetNotOnCounter",
             ModelError::Json { .. } => "ModelJson",
         };
         Self::new(code, err.to_string())
@@ -72,6 +73,7 @@ impl FacadeError {
             RuleError::SourceTypeProductionDenied { .. } => "SourceTypeProductionDenied",
             RuleError::PredecessorNotOnCounter { .. } => "PredecessorNotOnCounter",
             RuleError::DuplicatePredecessor { .. } => "DuplicatePredecessor",
+            RuleError::DuplicateTokenId { .. } => "DuplicateTokenId",
             RuleError::TokenNotOnCounter { .. } => "TokenNotOnCounter",
             RuleError::SeedAuthorityDenied { .. } => "SeedAuthorityDenied",
         };
@@ -801,6 +803,39 @@ seed_authority { }
         // gates 按 (participant, action, type) 计：reads requirement + produces design
         assert_eq!(v.gates, 2);
         assert_eq!(v.seed_authority, 1);
+    }
+
+    #[test]
+    fn duplicate_consume_commit_fails_closed() {
+        const CONSUME_ONLY: &str = r#"
+types { shared }
+preconditions { }
+gates { user: consumes shared }
+seed_authority { external: seeds shared }
+"#;
+        let mut host = PactHost::new();
+        host.load_domain("d", CONSUME_ONLY, "default").unwrap();
+        let k = key("d", "default");
+        let p = host
+            .prepare_seed(&k, "external", "shared", None, "seq-0", "T1")
+            .unwrap();
+        host.commit(p.tx_id.as_deref().unwrap(), None).unwrap();
+
+        // 宿主若违反“同一实例 prepare → commit 之间不得插入其他写命令”，
+        // 两次不同 request_id 的消费都能通过准入（kernel 状态在 commit 前不变）。
+        let p1 = host
+            .prepare_consume(&k, "user", "seq-0", Some("r1"), "T2")
+            .unwrap();
+        let p2 = host
+            .prepare_consume(&k, "user", "seq-0", Some("r2"), "T3")
+            .unwrap();
+
+        host.commit(p1.tx_id.as_deref().unwrap(), None).unwrap();
+        // 第二次提交 fail-closed：目标已不在 Counter，禁止重复归档。
+        let err = host.commit(p2.tx_id.as_deref().unwrap(), None).unwrap_err();
+        assert_eq!(err.code, "ConsumeTargetNotOnCounter");
+        assert_eq!(host.archive(&k, None).unwrap().size, 1);
+        assert_eq!(host.counter(&k, None).unwrap().size, 0);
     }
 
     #[test]

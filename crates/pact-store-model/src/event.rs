@@ -183,8 +183,15 @@ pub fn apply_event(state: &mut CounterState, ev: &Event) -> Result<ApplyOutcome,
             Ok(ApplyOutcome::Applied)
         }
         Event::Consumed { token, by, ts, .. } => {
-            // 自足：token 全量随事件落盘，重放不再从 Counter 反查
-            // （Effect::Consumed 只按 id 移除目标（不在则无操作）并追加 Archive）。
+            // 目标必须仍在 Counter 上：缺失意味着日志与状态不一致（重复消费、
+            // 宿主违反同一实例 `prepare → commit` 串行契约等）。此处 fail-fast，
+            // 避免同一 token 重复入 Archive、破坏审计与 TokenId 守卫。
+            if !state.counter.contains_key(&token.id) {
+                return Err(ModelError::ConsumeTargetNotOnCounter {
+                    token_id: token.id.0.clone(),
+                });
+            }
+            // 自足：token 全量随事件落盘，重放不再从 Counter 反查。
             state.apply(Effect::Consumed(pact_core::ArchiveEntry {
                 token: token.clone(),
                 exhausted_by: by.clone(),
@@ -237,8 +244,9 @@ mod tests {
 
     #[test]
     fn apply_event_consumed_is_self_contained() {
-        // 空 Counter 上重放 Consumed：token 全量随事件而来，无需反查同一域实例其他行
+        // token 全量随事件而来：归档内容（含 exhausted_at/by）不依赖其他日志行。
         let mut state = CounterState::new();
+        state.apply(Effect::Seeded(token("t1", "design")));
         let ev = Event::Consumed {
             seq: 2,
             ts: "T9".into(),
@@ -252,6 +260,25 @@ mod tests {
         assert_eq!(state.archive[0].token.id.0, "t1");
         assert_eq!(state.archive[0].exhausted_by.0, "dev");
         assert_eq!(state.archive[0].exhausted_at, "T9");
+    }
+
+    #[test]
+    fn apply_event_consumed_rejects_absent_target() {
+        // 目标不在 Counter（已消费或未产生）→ fail-fast，禁止重复归档。
+        let mut state = CounterState::new();
+        let ev = Event::Consumed {
+            seq: 2,
+            ts: "T9".into(),
+            token: token("t1", "design"),
+            by: ParticipantName("dev".into()),
+            request_id: None,
+        };
+        let err = apply_event(&mut state, &ev).unwrap_err();
+        assert!(matches!(
+            err,
+            ModelError::ConsumeTargetNotOnCounter { ref token_id } if token_id == "t1"
+        ));
+        assert!(state.archive.is_empty());
     }
 
     #[test]

@@ -157,7 +157,7 @@ seed 权威三档**完全相同**：全部 9 项由 `responsible_human` 持有�
 | `reads approval_escalation`、`reads contract_confirmation` | 无（`auditor` 也不读） | `auditor` 读（档 II/III） |
 | `reads guard_signal`、`reads waiver_grant` | `responsible_human`（含消费） | `responsible_human` 仅只读 |
 
-`approval_escalation` 在**任何档都只读不消费**（E6）：一旦消费，`count approval_escalation >= m` 就永远无法累积到 `m`，链耗尽判定失效。
+`approval_escalation` 在**任何档都只读不消费**（E6）：一旦消费，`count approval_escalation >= m` 就永远无法累积到 `m`，链耗尽判定失效。这属于“保留见证/阈值”模式（TC3/TC6/TC13）；判定准则与替代方案见 [`docs/token-consumption-timing.md`](token-consumption-timing.md)。
 
 ### 4.5 落在配套层的档间差异（`.pact` 无词汇）
 

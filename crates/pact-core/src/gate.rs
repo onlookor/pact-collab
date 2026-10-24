@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GateExpr {
     /// via T_a：溯源敏感见证检查（实例级，非类型级，§1.4.0）。
+    /// 见证被归档即失效，同类型其他实例不能替代；消费时机见
+    /// `docs/token-consumption-timing.md` TC6/TC7。
     Via(TypeName),
     Exists(TypeName),
     /// count T {>=,=} n。n 受 §1.7.3 PosNat 约束（n ≥ 1）：0 字面量在解析期拒绝，

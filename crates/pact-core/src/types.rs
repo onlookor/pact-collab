@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 // —— newtype 标识符（防混用；serde 对单字段元组结构体透明序列化，即线上直接是字符串）——
 
+/// Counter 内唯一；daemon 以 ULID 加强为跨实例唯一（论文 §1.4.1）。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TokenId(pub String);
 
@@ -15,6 +16,7 @@ pub struct TypeName(pub String);
 pub struct ParticipantName(pub String);
 
 /// 对引擎不透明的外部工件引用（论文 §3.2：URI | Identifier | ∅）。
+/// 范式不定义其相等、版本、可变性与基数；同一 referent 可被多个 token 引用（论文 §1.3）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThingRef(pub Option<String>);
 
@@ -28,6 +30,7 @@ impl ThingRef {
 }
 
 /// ISO-8601 UTC 字符串。格式由调用方（引擎层 Clock）保证，core 不校验。
+/// 仅审计用途；不承载排序、因果、新鲜度语义，单调性不保证（论文 §1.3）。
 pub type Timestamp = String;
 
 /// 动作（论文 §3.1 ActionClause）。
@@ -78,6 +81,7 @@ pub struct Token {
     pub produced_by: ParticipantName,
     /// 直接前驱实例 id，生产时记录（审计溯源用；不约束前驱生命周期，§1.4 Note）。
     pub depends_on: Vec<TokenId>,
+    /// 仅审计；不承载排序/因果/新鲜度语义（§1.3）。
     pub produced_at: Timestamp,
 }
 
@@ -86,11 +90,13 @@ pub struct Token {
 pub struct ArchiveEntry {
     pub token: Token,
     pub exhausted_by: ParticipantName,
+    /// 仅审计；不承载排序/因果/新鲜度语义（§1.3）。
     pub exhausted_at: Timestamp,
 }
 
 /// Counter 状态：共享可见多重集 + 不可变 Archive（论文 §1.2、§1.4.1）。
-/// TokenId 全局唯一（§1.4.1），故以 BTreeMap 实现，按键序确定迭代顺序。
+/// TokenId 在 Counter 内唯一（§1.4.1）；daemon 以 ULID 加强为跨实例唯一。
+/// 以 BTreeMap 实现，按键序确定迭代顺序。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct CounterState {
     pub counter: BTreeMap<TokenId, Token>,

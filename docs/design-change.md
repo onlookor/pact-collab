@@ -1,5 +1,74 @@
 # 设计变更记录
 
+## 2026-10-24（第 52 轮，消费时机文档收紧 + 重复消费防护）
+
+- **来源**：第 51 轮审查结论经用户裁决，处理三项：收紧 5 处文档表述、补 ack 屏障端到端测试、加固重复消费防护。
+- **文档收紧**（`docs/token-consumption-timing.md`）：
+  1. TC9/P8 的并发结论加宿主前提：原生由单写者 actor 串行化，WASM 宿主须保证同一实例 `prepare → commit` 间无其他写命令（`docs/wasm-local-spike-feasibility.md` §4.3），违反时由 `apply_event` fail-closed。
+  2. “Archive 只作审计”改为“不参与 Rule-R/E；用于审计查询与 TokenId 唯一性守卫（`used_ids`）”（§2.2 补充段与 §7 表）。
+  3. “保留任何 token 即不终止”限定为“Counter 上的 token”，并注明 Archive 不阻止终止（TC13、§7 表、`wait.rs` 注释）。
+  4. D3 补准入时点：`count` 在准入时按当前 Counter 求值，若 `T = type(t)` 则目标自身计入阈值，消费后计数才减一。
+  5. P7 明确引擎不内置 Archival Policy（对齐 `docs/manual.md` §3.2/§6），AP 等价于持 `consumes` gate 的参与者显式执行 Rule-E。
+- **重复消费防护（行为变更，fail-closed）**：
+  - `pact-store-model`：新增 `ModelError::ConsumeTargetNotOnCounter { token_id }`；`apply_event` 的 `Consumed` 分支先校验目标仍在 Counter，缺失即返回该错误（此前为“移除无操作 + 仍追加 Archive”，会重复归档并污染审计与 `used_ids`）。
+  - `pact-store`：`StoreError` 同步新增同名变体与 `From<ModelError>` 映射、`Display`。
+  - `pact-wasm`：`FacadeError::model` 映射新码 `ConsumeTargetNotOnCounter`。
+  - 影响面：原生在线路径不受影响（`rule_e` 已在单写者临界区内校验）；WASM 两阶段宿主若违反串行契约，第二次 `commit` 返回错误且不落归档。日志重放侧，目标缺失视为日志/状态不一致，同样 fail-fast（压缩后的快照尾部重放仍满足“目标在 Counter”前提）。
+- **测试**：
+  - `pact-store-model`：`apply_event_consumed_rejects_absent_target`；原 `apply_event_consumed_is_self_contained` 调整为“先 seed 后消费”，仍验证归档内容完全来自事件。
+  - `pact-wasm`：`duplicate_consume_commit_fails_closed`（两次不同 `request_id` 的 prepare 均可准入，第二次 commit 拒绝，Archive 仅一条）。
+  - `pact-engine`：`ack_barrier_consumes_shared_after_all_downstreams`（屏障未满足拒绝消费 → 两下游各产 ack → 协调者消费共享 token → ack 不被级联删除 → 清理 ack 后触发 Rule-T）。
+- **文档同步**：`docs/design.md` §7.4 事件不变量、§8.5 D23 归档原子性行、§11 阶段 3 验收措辞；`docs/manual.md` §9 错误码表 `Store` 行。
+- **验证**：`cargo fmt --all -- --check` 通过；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；`cargo test --workspace` **224 项全绿**（基线 221 + 3）。
+- **状态**：工作树含本轮代码与文档改动，未提交、未推送。
+
+## 2026-10-24（第 51 轮，消费时机实现一致性审查）
+
+- **范围**：对照母本 §1.6/§1.7.3 与 `docs/token-consumption-timing.md` TC1–TC13，检查 `rule_r`/`rule_p`/`rule_e`、`GateExpr::Via`/`Count`、`termination_holds`、`prepare_consume`/`commit`、`apply_event`、A.3/A.6。
+- **结论**：核心语义一致，未发现必须改代码才能符合母本的行为缺口。Rule-P 不消费前驱；Rule-R 无状态；Rule-E 仅移除目标并归档；`via` 只查当前 Counter；`count` 在准入时按当前 Counter 求值；Rule-T 只要求 Counter 为空；Archive 不参与 Rule-R/E；A.3/A.6 与文档描述一致。
+- **待收紧的文档表述（本轮未改，待用户决定）**：
+  1. **TC9/P8 并发结论需限定宿主契约**：原生引擎由单写者 actor 串行化，WASM 两阶段宿主按 `docs/wasm-local-spike-feasibility.md` §4.3 要求同一实例 `prepare → commit` 间不得插入其他写命令。若宿主违反该契约，两次不同 `request_id` 的 `prepare_consume` 可先后通过并提交；`apply_event` 对已不在 Counter 的目标按“无操作”处理并仍追加 Archive，会产生重复归档。建议在 TC9/P8 注明该前提，或由宿主/`apply_event` 增加防护。
+  2. **“Archive 只作审计”不完整**：`Session::recover` 以 Counter + Archive 重建 `used_ids`，Archive 同时承担 TokenId 唯一性守卫的历史依据；应改为“不参与 Rule-R/E；用于审计查询与 TokenId 唯一性守卫”。
+  3. **“保留任何 token 即不终止”应限定为“Counter 上的 token”**：`termination_holds` 只检查 Counter；Archive 中的 token 不阻止终止。涉及 TC13、§7 表与 `wait.rs` 注释。
+  4. **D3 需补自计数说明**：若 consume gate 的 `count T` 指向目标自身类型，准入时目标仍在 Counter 内、计入阈值；消费后计数减一。当前表述“消费会降低计数”未说明准入时点。
+  5. **P7 的 Archival Policy 易被读作内置机制**：`docs/manual.md` §3.2/§6 明确引擎不内置 AP；P7 应表述为“用持 `consumes` gate 的参与者表达，引擎不内置 AP”。
+- **覆盖缺口（非不一致）**：`pact-wasm/tests/parity.rs` 已覆盖 `consumes ... when count extra >= 1` 的正反例；尚无“多角色 ack 汇聚后消费共享 token，再清理 ack”的端到端用例。
+- **变更**：本轮仅新增审查记录，未改代码、未改其他文档、未提交。
+
+## 2026-10-24（第 50 轮，母本补写消费时机说明）
+
+- **授权**：用户于 2026-10-24 显式授权在母本 §1.6/§1.7.3 补写消费时机说明。
+- **母本 §1.6**：在 Design Rationale 后新增 “Consumption timing is a domain policy” 段：Rule-E 不咨询下游需求；共享 token 的读者、未来 Rule-P、`via` 见证与 `count` 阈值；范式无 demand registry、引用计数、last-consumer 信号；`depends_on` 仅 provenance；何时消费须由域指定；早消费会搁浅/终止未来扇出，晚消费会累积并阻止 Rule-T；要求终止的域须为每个 token（含见证、ack）指定最终消费者；Read 不是 reservation；Archive 不在 Counter，不能 read/consume/作 `via` 见证。
+- **母本 §1.7.3**：在 temporal limitations 后新增 “Consumption barriers” 段：`consumes t when count ack >= n` 可在消费准入处近似“所有下游完成”的屏障；`count` 是类型级，不绑定消费者实例，也不强制其先完成工作；ack 自身需被消费才能终止；Gate 条件提供结构屏障而非完成协议；read 后 consume 是两步，read 不保留 token。
+- **性质**：不新增语法、不改变 Rule-P/R/E/T 语义；§1.6 是对既有非保证的显式化，§1.7.3 的 ack 屏障是既有 `count` 准入的组合用法，未扩展 GateExpr。
+- **同步**：`docs/token-consumption-timing.md` §2.1 增母本依据行、§2.2 改为“已补写/仍存边界”状态表、§10 引用落点更新；`docs/design.md` §18 与 `docs/architecture.md` §5 的引用行补注母本依据。
+- **笔误修正**：两处搁浅风险引用由 `§A.5` 改为 `§A.6`（搁浅风险实为 A.6；A.5 是良构性分析）：§1.6 Stranding consequence 末尾，以及 Part II“Technical Debt as Unconsumed Tokens”段（第 910 行）。
+- **代码**：无代码行为变更、无测试变更；上一轮 `cargo test --workspace` 221 项全绿仍适用。
+- **状态**：母本与文档改动未提交、未推送。
+
+## 2026-10-24（第 49 轮，共享 Token 消费时机专题）
+
+- **动机**：母本对“被多个下游使用的 token 何时可以消费”只有零散表述（Rule-P 不消费前驱、Rule-R 幂等、Rule-E 无级联、`via` 见证存活、§1.6 非保证、§1.7.3 时序限制、A.6 搁浅风险），实现侧只有 `rules.rs`/`gate.rs`/`wait.rs`/`prepare_consume`/A.3/A.6 的分散行为，缺少集中判定与模式。
+- **新增文档** `docs/token-consumption-timing.md`：参考 `docs/expressiveness-boundaries.md` 的结构，登记 TC1–TC13 能力表（多读者、前驱复用、末位消费者、ack 屏障、副本扇出、见证存活、搁浅、租约、幂等、自动清理、引用计数、外部动作、终止压力）、判定准则 D1–D6、模式 P1–P9、反模式 A1–A9、实现映射、评审清单、引用落点与维护规则。与 B8/B17/B21/B22 交叉引用，不复制边界表，不新增 B/X 编号。
+- **文档引用（无行为变更）**：`docs/design.md` §18 增索引行并更新维护句；`docs/architecture.md` §5 增质量属性行；`docs/manual.md` §1.5 增共享 token 消费时机段、§4.5 增幂等非互斥说明；`docs/skill-adaptation.md` E6 增 TC3/TC6/TC13 引用；`examples/README.md` §7.3 增专题入口。
+- **代码注释（无行为变更）**：`pact-core/src/rules.rs` `rule_e`（TC2/TC7/TC13）、`pact-core/src/gate.rs` `Via`（TC6/TC7）、`pact-core/src/wait.rs` `termination_holds`（TC13）、`pact-analysis/src/lib.rs` A.3/A.6（TC7/TC10/TC11/TC13）、`pact-engine-kernel/src/lib.rs` `prepare_consume`（TC9）。
+- **母本**：**未修改**。若后续要在 §1.6/§1.7.3 补写消费策略或“Read 不是 reservation”声明，须用户显式授权后另开一轮。
+- **验证**：`cargo fmt --all -- --check` 通过；`cargo check --workspace` 通过；`cargo test --workspace` **221 项全绿**（无新增/删除测试）。
+- **状态**：工作树含本轮文档与注释改动，未提交、未推送；等待用户指示。
+
+## 2026-10-24（第 48 轮，实现侧边界一致性审计）
+
+- **结论**：母本边界声明本身**不需要功能改动**；Rule-P 匹配、GateExpr 作用域、RHS/LHS 唯一性、TokenId 生成、Timestamp 使用均与母本一致。审计另发现 kernel 缺少 `TokenId` 冲突守卫，本轮补齐（见下）。
+- **注释对齐（无行为变更）**：
+  - `pact-core/src/types.rs`：`TokenId` 改为“Counter 内唯一 + daemon 以 ULID 加强为跨实例唯一”；`ThingRef` 增“范式不定义相等、版本、可变性与基数”；`Timestamp`、`produced_at`、`exhausted_at` 增“仅审计、无排序/因果/新鲜度语义”；`CounterState` 注释同步。
+  - `pact-core/src/rules.rs`：`rule_p` 注释明确匹配只读 `TypeName` 与不同 `TokenId`，不读 `ThingRef`；前驱选择策略由调用方决定。
+  - `pact-engine-kernel/src/lib.rs`：`prepare_seed` / `prepare_produce` 注释明确调用方必须提供未使用的 `TokenId`（HTTP/engine 以 ULID 生成；kernel 守卫兜底，WASM 宿主同样受保护）。
+  - `pact-core/src/effect.rs`：注明重复 `TokenId` 会覆盖既有条目，唯一性由调用方保证，kernel 守卫兜底。
+- **母本修订（本轮授权）**：附录 A.5 `LHS_DUPLICATE` remediation 改为“同类型多前驱应建模为不同 `TypeName`（每角色一个）；`count T >= n` 只用于 read/consume 准入，不能表达生产 arity（§1.4.4）”，消除与 §1.4.4 的冲突。
+- **TokenId 重复守卫（本轮实现）**：kernel `prepare_seed` / `prepare_produce` 在规则校验通过后检查 Counter 与 Archive，重复则返回 `RuleError::DuplicateTokenId`；HTTP 映射为新错误码，WASM 宿主同步。`Session` 维护 `used_ids: BTreeSet<TokenId>`（恢复时由 Counter + Archive 重建，不改变快照 schema），守卫为 O(log n)；新增 kernel 单测与 HTTP dto 单测。
+- **测试适配**：顺序 id 生成器在重启后会从 0 重来，两处测试改用非零起点（`engine_integration.rs` 索引重建重启用 100，`parity.rs` 原生接力打开非空日志用 1000），避免与历史 id 撞号；生产路径使用 ULID，不受影响。
+- **验证**：`cargo test --workspace` 221 项全绿；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all -- --check` 通过。
+
 ## 2026-10-24（第 47 轮，论文边界声明与表达力边界集中化）
 
 - **授权**：用户显式批准对母本做就地一致性修订（不改文法、SOS 规则、定理），范围＝评审最小集 4 处 + `Timestamp` 无语义 1 处 + OR 分支句 1 处。

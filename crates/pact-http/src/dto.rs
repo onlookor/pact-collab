@@ -209,6 +209,7 @@ fn rule_error_code(e: &RuleError) -> String {
         SourceTypeProductionDenied { .. } => "SourceTypeProductionDenied",
         PredecessorNotOnCounter { .. } => "PredecessorNotOnCounter",
         DuplicatePredecessor { .. } => "DuplicatePredecessor",
+        DuplicateTokenId { .. } => "DuplicateTokenId",
         TokenNotOnCounter { .. } => "TokenNotOnCounter",
         SeedAuthorityDenied { .. } => "SeedAuthorityDenied",
     }
@@ -260,6 +261,9 @@ fn rule_error_message(e: &RuleError) -> String {
         }
         DuplicatePredecessor { token_id } => {
             format!("前驱 token {token_id} 重复（Rule-P 要求互异）")
+        }
+        DuplicateTokenId { token_id } => {
+            format!("token id {token_id} 已在该实例中使用（Rule-P/S 要求新 token）")
         }
         TokenNotOnCounter { token_id } => format!("目标 token {token_id} 不在 Counter 上"),
         SeedAuthorityDenied { participant, ty } => {
@@ -318,6 +322,20 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("SeedAuthority"));
+    }
+
+    #[test]
+    fn duplicate_token_id_error_shape() {
+        let e = RuleError::DuplicateTokenId {
+            token_id: TokenId("seq-0".into()),
+        };
+        let body = ErrorBody {
+            error: rule_error_detail(&e),
+        };
+        let v = serde_json::to_value(&body).unwrap();
+        assert_eq!(v["error"]["code"], "DuplicateTokenId");
+        assert_eq!(v["error"]["detail"]["token_id"], "seq-0");
+        assert!(v["error"]["message"].as_str().unwrap().contains("seq-0"));
     }
 
     #[test]
