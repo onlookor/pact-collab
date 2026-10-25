@@ -33,6 +33,12 @@ cargo build --release
 
 The [`examples/`](examples/README.md) directory ships five ready-to-run domains, two composition fragments, and two reproducible demos with recorded traces:
 
+> New to the format? Start with the [authoring contract](docs/authoring-contract.md) (or the
+> [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) in a skill-capable agent).
+> No toolchain at hand? The same workflow runs in the browser:
+> [write a domain](web/authoring/index.html) · [run it in memory](web/sandbox/index.html) ·
+> [connect it to an agent](web/connect/index.html) — each a single offline file with no network access.
+
 ```bash
 examples/offline/run.sh    # six analyses × 5 domains, well-formedness rejections,
                            # compose accept + C2 rejection, event replay — no daemon needed

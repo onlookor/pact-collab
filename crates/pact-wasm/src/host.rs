@@ -31,11 +31,14 @@ pub const DEFAULT_INSTANCE: &str = "default";
 pub const DEFAULT_TS: &str = "1970-01-01T00:00:00Z";
 
 /// 门面错误：`code` 与原生接口层（REST `error.code` / `EngineError`）同名，
-/// 便于三接口逐项对账；`message` 面向诊断（不含路径/凭据）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// 便于三接口逐项对账；`message` 面向诊断（不含路径/凭据）；
+/// `detail` 携带结构化明细（如 `WellFormedness` 的违规列表），供浏览器端逐条修复。
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct FacadeError {
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Value>,
 }
 
 impl FacadeError {
@@ -43,15 +46,22 @@ impl FacadeError {
         Self {
             code: code.into(),
             message: message.into(),
+            detail: None,
         }
     }
 
     fn parse(problem: Problem) -> Self {
-        let code = match &problem {
-            Problem::Syntax(_) => "Syntax",
-            Problem::WellFormedness(_) => "WellFormedness",
+        let (code, detail) = match &problem {
+            Problem::Syntax(_) => ("Syntax", None),
+            Problem::WellFormedness(errors) => {
+                ("WellFormedness", serde_json::to_value(errors).ok())
+            }
         };
-        Self::new(code, format!("{problem:?}"))
+        Self {
+            code: code.into(),
+            message: format!("{problem:?}"),
+            detail,
+        }
     }
 
     fn model(err: ModelError) -> Self {
@@ -99,6 +109,32 @@ pub struct ValidationView {
     pub types: Vec<String>,
     pub gates: usize,
     pub seed_authority: usize,
+}
+
+/// 一条种子授权（`(参与者, 类型)`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SeedGrant {
+    pub participant: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
+/// 一条前置规则（`predecessors → target`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PreconditionRule {
+    pub target: String,
+    pub predecessors: Vec<String>,
+}
+
+/// 已装载实例的域形状摘要：参与者、种子授权与前置图。
+///
+/// 供浏览器沙盒渲染操作台（谁在场、谁能 seed 什么、每个类型需要哪些前驱）；
+/// gate 矩阵按参与者另经 [`PactHost::gates`] 取。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DomainFacets {
+    pub participants: Vec<String>,
+    pub seeds: Vec<SeedGrant>,
+    pub preconditions: Vec<PreconditionRule>,
 }
 
 /// `prepare_*` 的返回：待持久化事件 + 本次命令结果。
@@ -513,6 +549,40 @@ impl PactHost {
         Ok(session.core.gates(&ParticipantName(participant.to_owned())))
     }
 
+    /// 域形状摘要：参与者（gate 主语 ∪ seed 主语，排序去重）、种子授权与前置图。
+    pub fn facets(&self, key: &InstanceKey) -> Result<DomainFacets, FacadeError> {
+        let session = self.session(key)?;
+        let domain = &session.domain;
+
+        let mut participants = BTreeSet::new();
+        for (participant, _, _) in domain.gates.keys() {
+            participants.insert(participant);
+        }
+        for (participant, _) in &domain.seed_authority {
+            participants.insert(participant);
+        }
+
+        Ok(DomainFacets {
+            participants: participants.into_iter().map(|p| p.0.clone()).collect(),
+            seeds: domain
+                .seed_authority
+                .iter()
+                .map(|(participant, ty)| SeedGrant {
+                    participant: participant.0.clone(),
+                    ty: ty.0.clone(),
+                })
+                .collect(),
+            preconditions: domain
+                .preconditions
+                .iter()
+                .map(|(target, predecessors)| PreconditionRule {
+                    target: target.0.clone(),
+                    predecessors: predecessors.iter().map(|t| t.0.clone()).collect(),
+                })
+                .collect(),
+        })
+    }
+
     pub fn enabled(
         &self,
         key: &InstanceKey,
@@ -751,6 +821,28 @@ seed_authority { }
     }
 
     #[test]
+    fn wellformedness_error_carries_structured_detail() {
+        let host = PactHost::new();
+        let broken = r#"
+types { request; answer }
+preconditions { request → answer }
+gates { responder: produces answer when count request >= 1;
+        client: consumes answer }
+seed_authority { client: seeds request }
+"#;
+        let err = host.analyze(broken).unwrap_err();
+        assert_eq!(err.code, "WellFormedness");
+        let detail = err.detail.expect("structured detail");
+        let items = detail.as_array().expect("violation list");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].as_object().unwrap().keys().next().unwrap(),
+            "ProduceWithCondition"
+        );
+        assert!(err.message.contains("ProduceWithCondition"));
+    }
+
+    #[test]
     fn reload_resets_empty_instance_but_refuses_occupied() {
         let mut host = PactHost::new();
         host.load_domain("cross", CROSS_HARNESS, "default").unwrap();
@@ -803,6 +895,60 @@ seed_authority { }
         // gates 按 (participant, action, type) 计：reads requirement + produces design
         assert_eq!(v.gates, 2);
         assert_eq!(v.seed_authority, 1);
+    }
+
+    #[test]
+    fn facets_lists_participants_seeds_and_preconditions() {
+        const DOMAIN: &str = r#"
+types { work_item; readiness; completion; archived }
+preconditions {
+    work_item → completion;
+    { completion + readiness } → archived
+}
+gates {
+    coordinator: consumes work_item when exists readiness, produces completion;
+    reviewer: consumes completion
+}
+seed_authority { external: seeds readiness; requester: seeds work_item }
+"#;
+        let mut host = PactHost::new();
+        host.load_domain("facets", DOMAIN, "default").unwrap();
+        let f = host.facets(&key("facets", "default")).unwrap();
+
+        // gate 主语 ∪ seed 主语，排序去重。
+        assert_eq!(
+            f.participants,
+            vec!["coordinator", "external", "requester", "reviewer"]
+        );
+        assert_eq!(
+            f.seeds,
+            vec![
+                SeedGrant {
+                    participant: "external".into(),
+                    ty: "readiness".into()
+                },
+                SeedGrant {
+                    participant: "requester".into(),
+                    ty: "work_item".into()
+                }
+            ]
+        );
+        // 线上字段名与 Token 一致：`type` 而非 `ty`。
+        let wire = serde_json::to_value(&f.seeds[0]).unwrap();
+        assert_eq!(wire["type"], "readiness");
+        assert_eq!(
+            f.preconditions,
+            vec![
+                PreconditionRule {
+                    target: "archived".into(),
+                    predecessors: vec!["completion".into(), "readiness".into()]
+                },
+                PreconditionRule {
+                    target: "completion".into(),
+                    predecessors: vec!["work_item".into()]
+                }
+            ]
+        );
     }
 
     #[test]

@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PACT 域作者工作台</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#fff; --ink:#1a1f2b; --muted:#5b6577;
+    --line:#dfe3ea; --accent:#1f6feb; --accent-weak:#e8f0fe;
+    --ok:#0a7a47; --ok-weak:#e6f4ec; --warn:#8a5a00; --warn-weak:#fdf3d8;
+    --bad:#b42318; --bad-weak:#fdecea; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif}
+  header{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.94);
+    border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
+  .bar{max-width:1320px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12px}
+  .status{margin-left:auto;font-size:12px;padding:4px 10px;border-radius:999px;
+    background:#eef1f5;color:var(--muted);border:1px solid var(--line);white-space:nowrap}
+  .status.ok{background:var(--ok-weak);color:var(--ok);border-color:#bfe3cd}
+  .status.bad{background:var(--bad-weak);color:var(--bad);border-color:#f3c2bd}
+  main{max-width:1320px;margin:0 auto;padding:18px 20px 60px;display:grid;
+    grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:16px;align-items:start}
+  @media(max-width:980px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px}
+  .panel h2{font-size:13px;margin:0;padding:12px 14px;border-bottom:1px solid var(--line);
+    font-weight:650;letter-spacing:.3px;display:flex;align-items:center;gap:8px}
+  .panel .body{padding:14px}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  select,button,textarea,input{font:inherit}
+  select{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+  button{padding:7px 13px;border-radius:8px;border:1px solid var(--line);background:#fff;
+    color:var(--ink);cursor:pointer;font-size:13px}
+  button:hover{border-color:#b8c0cd}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{filter:brightness(1.06)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:12px;
+    font-family:var(--mono);font-size:13px;line-height:1.6;resize:vertical;background:#fcfdff;color:var(--ink)}
+  #editor{min-height:360px}
+  .meta{display:flex;gap:12px;color:var(--muted);font-size:12px;margin-top:6px}
+  .cards{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  @media(max-width:560px){.cards{grid-template-columns:repeat(2,1fr)}}
+  .card{border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:#fcfdff}
+  .card .k{font-size:11px;color:var(--muted);letter-spacing:.3px}
+  .card .v{font-size:14px;font-weight:650;margin-top:2px}
+  .card.ok .v{color:var(--ok)} .card.bad .v{color:var(--bad)} .card.warn .v{color:var(--warn)}
+  .banner{border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px;border:1px solid}
+  .banner.ok{background:var(--ok-weak);border-color:#bfe3cd;color:var(--ok)}
+  .banner.bad{background:var(--bad-weak);border-color:#f3c2bd;color:var(--bad)}
+  .banner.warn{background:var(--warn-weak);border-color:#efd9a3;color:var(--warn)}
+  .issue{border:1px solid var(--line);border-radius:10px;padding:10px 11px;margin-bottom:8px;background:#fff}
+  .issue .code{font-family:var(--mono);font-size:12px;font-weight:650;color:var(--bad)}
+  .issue .detail{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:4px;word-break:break-all}
+  .issue .fix{font-size:12.5px;margin-top:6px;color:var(--ink)}
+  .issue.warn{border-left:3px solid #d9a514}
+  .issue.warn .code{color:var(--warn)}
+  .issue.good{border-left:3px solid var(--ok)}
+  .issue.good .code{color:var(--ok)}
+  .hint{color:var(--muted);font-size:12.5px}
+  details{border:1px solid var(--line);border-radius:10px;margin-top:10px;background:#fcfdff}
+  details summary{cursor:pointer;padding:10px 12px;font-size:13px;font-weight:600;color:var(--ink)}
+  details .inner{padding:0 12px 12px}
+  .gate{display:flex;gap:8px;align-items:flex-start;margin:7px 0;font-size:13px}
+  .gate input{margin-top:3px}
+  .gate small{color:var(--muted);display:block}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  @media(max-width:560px){.grid2{grid-template-columns:1fr}}
+  .kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:4px;padding:1px 4px;color:var(--muted);background:#fff}
+  .toast{position:fixed;right:20px;bottom:20px;background:#1a1f2b;color:#fff;padding:9px 14px;
+    border-radius:8px;font-size:13px;opacity:0;transform:translateY(6px);pointer-events:none;
+    transition:.18s}
+  .toast.show{opacity:1;transform:none}
+  .footer{grid-column:1/-1;color:var(--muted);font-size:12px;text-align:center;margin-top:6px}
+  .footer a{color:var(--muted)}
+
+  /* 响应式与嵌入：窄屏单列、可触摸控件、?embed=1 去掉页面级外壳 */
+  html{-webkit-text-size-adjust:100%}
+  .panel{min-width:0}
+  .meta{flex-wrap:wrap}
+  details.panel>summary{padding:12px 14px;border-bottom:1px solid var(--line);
+    font-size:13px;font-weight:650;letter-spacing:.3px;display:flex;gap:8px;align-items:center}
+  details.panel[open]>summary{border-bottom:1px solid var(--line)}
+  details.panel>summary .hint{font-weight:400}
+  details.panel>.body{padding:14px}
+  @media(max-width:760px){
+    main{padding:14px 12px 48px;gap:12px}
+    .bar{padding:8px 12px;gap:8px}
+    h1{font-size:15px}
+    .sub{display:none}
+    .panel h2{padding:10px 12px}
+    .panel .body,details.panel>.body{padding:12px}
+    details.panel>summary{padding:10px 12px}
+    .status{font-size:11.5px;padding:3px 8px}
+  }
+  @media(max-width:480px){
+    main{padding:10px 8px 40px}
+    .panel,details.panel{border-radius:10px}
+    .panel .body,details.panel>.body{padding:10px}
+    .toolbar{gap:6px}
+    button{padding:8px 12px}
+    select,input,textarea{font-size:16px}
+    #editor{min-height:240px}
+    .issue,.banner{padding:9px 10px}
+  }
+  html.embed header .bar{padding:6px 12px;justify-content:flex-end;gap:8px}
+  html.embed h1,html.embed .sub{display:none}
+  html.embed main{max-width:none;padding:12px 12px 28px}
+  html.embed .footer{display:none}
+  html.embed .panel{border-radius:10px}
+  @media(max-width:480px){html.embed main{padding:8px 6px 20px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>PACT 域作者工作台</h1>
+    <span class="sub">选形状 · 写域 · 浏览器内离线分析</span>
+    <span class="status" id="status">正在加载分析器…</span>
+  </div>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>域声明 <span class="hint" style="font-weight:400">四段顺序：types → preconditions → gates → seed_authority</span></h2>
+    <div class="body">
+      <div class="toolbar">
+        <select id="templates" aria-label="载入配方">
+          <option value="">载入配方…</option>
+        </select>
+        <button class="primary" id="btnAnalyze">分析 <span class="kbd">Ctrl</span>+<span class="kbd">Enter</span></button>
+        <button id="btnCopyFix" disabled>复制修复提示</button>
+        <button id="btnDownload">下载 .pact</button>
+      </div>
+      <textarea id="editor" spellcheck="false" placeholder="在这里粘贴或编写 .pact 域声明，或先从上方载入一个配方。"></textarea>
+      <div class="meta">
+        <span id="stats">0 行 · 0 字符</span>
+        <span>分析完全在本地运行，域声明不会上传到任何服务器。</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>分析结果</h2>
+    <div class="body">
+      <div id="summary"></div>
+      <div id="issues" aria-live="polite"></div>
+      <div id="advisories"></div>
+    </div>
+  </section>
+
+  <details class="panel" style="grid-column:1/-1">
+    <summary>开始之前 <span class="hint">适用性闸门 · 硬停 · 提示词 · 决策记录</span></summary>
+    <div class="body">
+      <div class="grid2">
+        <div>
+          <details open>
+            <summary>适用性闸门（全为“是”再建模）</summary>
+            <div class="inner" id="gateBox">
+              <label class="gate"><input type="checkbox" data-g="G1"><span>G1 能列出<b>离散产物</b>（存在 / 不存在）。<small>动作、角色、百分比不是产物。</small></span></label>
+              <label class="gate"><input type="checkbox" data-g="G2"><span>G2 存在“某产物必须先有另一些产物”。</span></label>
+              <label class="gate"><input type="checkbox" data-g="G3"><span>G3 产物能在不同参与者之间读取 / 使用 / 移交。</span></label>
+              <label class="gate"><input type="checkbox" data-g="G4"><span>G4 至少有一个参与者（单人也合法）。</span></label>
+              <label class="gate"><input type="checkbox" data-g="G5"><span>G5 每个无前置的产物，都能指出谁有权首次注入。</span></label>
+              <div class="banner warn" id="gateMsg" style="margin:10px 0 0">还有判据未确认：先补答案，不要急着写域。</div>
+            </div>
+          </details>
+          <details>
+            <summary>硬停扫描（命中就按契约 §1.2 改写）</summary>
+            <div class="inner">
+              <label class="gate"><input type="checkbox" data-h="H1"><span>H1 “A 或 B 任一出现就能产出 C”（OR 汇聚）</span></label>
+              <label class="gate"><input type="checkbox" data-h="H2"><span>H2 需要“任意两个同类型实例”作为前驱</span></label>
+              <label class="gate"><input type="checkbox" data-h="H3"><span>H3 一次动作必须原子产生多个 token</span></label>
+              <label class="gate"><input type="checkbox" data-h="H4"><span>H4 按内容 / 版本 / 身份决定能否生产</span></label>
+              <label class="gate"><input type="checkbox" data-h="H5"><span>H5 需要超时、截止或严格时钟顺序</span></label>
+              <p class="hint" style="margin:8px 0 0">命中不等于不能建模，但必须在决策记录里写明改写方式与丢失的性质。</p>
+            </div>
+          </details>
+        </div>
+        <div>
+          <details>
+            <summary>给 chat 模型的提示词</summary>
+            <div class="inner">
+              <p class="hint" style="margin:0 0 8px">没有 agent 时：把你的场景写进下面，复制提示词到任意公开 chat 模型；把它产出的域粘回左侧再分析。</p>
+              <textarea id="scenario" style="min-height:96px" placeholder="用几句话描述你的协作场景：谁做什么、有哪些产物、先后关系、第一个产物从哪来、谁最终使用。"></textarea>
+              <div class="toolbar" style="margin-top:8px">
+                <button id="btnCopyPrompt">复制给模型的提示词</button>
+              </div>
+              <p class="hint" style="margin:0">提示词包含完整《PACT 域作者契约》，模型无需联网、无需读论文。</p>
+            </div>
+          </details>
+          <details>
+            <summary>决策记录模板</summary>
+            <div class="inner">
+              <pre id="decisionTpl" style="white-space:pre-wrap;font-family:var(--mono);font-size:12px;color:var(--muted);margin:0"></pre>
+              <div class="toolbar" style="margin-top:8px"><button id="btnCopyDecision">复制决策记录模板</button></div>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <div class="footer">
+    与 <a href="https://github.com/onlookor/pact-collab" target="_blank" rel="noreferrer">pact-collab</a> 的
+    <span class="kbd">pact analyze</span> 同源；分析器为 <span class="kbd">pact-wasm</span>。
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>__RECIPES_JS__</script>
+<script>__WASM_GLUE__</script>
+<script type="text/plain" id="contractText">__CONTRACT_TEXT__</script>
+<script>
+const WASM_B64 = "__WASM_BASE64__";
+// 被第三方页面以 iframe 嵌入时加 ?embed=1：隐藏标题与页脚，只保留状态胶囊。
+document.documentElement.classList.toggle("embed", new URLSearchParams(location.search).has("embed"));
+
+const DECISION_TPL = `## 决策记录
+
+- 场景（一句话）：
+- 适用闸门：G1=是 G2=是 G3=是 G4=是 G5=是
+- 硬停命中：无 / H?
+- 采用形状：R?
+
+| 类型 | 前驱 | 生产者 | 读者 | 消费者 | via 依赖 | count 阈值 | 保留策略 | 最终消费者 |
+|------|------|--------|------|--------|----------|------------|----------|------------|
+|      |      |        |      |        |          |            | 短用/见证/审计 |      |
+
+- 入口（源类型 → 种子权威）：
+- TC 裁决（Q1–Q7 中所有“是”的处理方式）：
+- B 裁决（涉及的 B 编号与改写代价）：
+- 分析结果（六项 + 每处非零的理由）：
+- 已知代价：不终止 / 仅近似 / 外部依赖`;
+
+const FIX_HINTS = {
+  DuplicatePrecondRule: "同一 RHS 只能有一条前置规则。若是“A 或 B 任一 → C”，走硬停 H1：分支各自成链、统一类型名，或拆域。",
+  DuplicatePrecondLhs: "同一条规则的 LHS 里类型重复（如 {A + A}）。去掉重复；同类型多实例前驱见边界 B10。",
+  EmptyPrecondLhs: "空 LHS 不是声明源类型的方式。删掉这条规则，把该类型当源类型并给它 seed 权威。",
+  UndeclaredType: "引用点用到了未声明的类型。把它补进 types（每个引用点会分别报一次）。",
+  ZeroCountLiteral: "count 字面量必须为正整数。缺席语义请用 not exists T，不要写 count >= 0。",
+  ProduceWithCondition: "produces 后面不能带条件。把条件写进前置图，或改用见证 token（边界 B7/B13）。",
+  SourceTypeProduceGate: "源类型只能经 seed 进入。删掉它的 produces；确实要生产，就先给它加一条前置规则。",
+  DuplicateGateClause: "同一 (参与者, 动作, 类型) 重复声明。合并成一条子句。"
+};
+
+const $ = (s) => document.querySelector(s);
+const editor = $("#editor");
+const statusEl = $("#status");
+const summaryEl = $("#summary");
+const issuesEl = $("#issues");
+const advisoriesEl = $("#advisories");
+let host = null;
+let lastReport = null;
+let lastViolations = [];
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function setStatus(text, kind) {
+  statusEl.textContent = text;
+  statusEl.className = "status" + (kind ? " " + kind : "");
+}
+function toast(text) {
+  const t = $("#toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove("show"), 1800);
+}
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("已复制");
+  } catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+    toast("已复制");
+  }
+}
+function errText(e) {
+  if (typeof e === "string") return e;
+  if (e && e.message) return e.message;
+  try { return JSON.stringify(e); } catch (_) { return String(e); }
+}
+function parseErr(e) {
+  const text = errText(e);
+  try { return JSON.parse(text); } catch (_) { return { code: "Error", message: text }; }
+}
+function detailOf(obj) {
+  const code = Object.keys(obj || {})[0] || "Unknown";
+  return { code, data: (obj || {})[code] || {} };
+}
+function fmtData(data) {
+  if (!data || typeof data !== "object") return "";
+  return Object.entries(data).map(([k, v]) => k + ": " + (typeof v === "string" ? v : JSON.stringify(v))).join(" · ");
+}
+
+function renderStats() {
+  const text = editor.value;
+  const lines = text ? text.split("\n").length : 0;
+  $("#stats").textContent = lines + " 行 · " + text.length + " 字符";
+  $("#btnCopyFix").disabled = !lastReport && lastViolations.length === 0;
+}
+
+function card(k, v, cls) {
+  return `<div class="card ${cls || ""}"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`;
+}
+
+function renderReport(report) {
+  lastReport = report;
+  const wf = report.precondition_wf || { well_formed: false, violations: [], warnings: [] };
+  lastViolations = (wf.violations || []).slice();
+  const reach = report.reachability || { seed_types: [], reachable: [], unreachable: [] };
+  const gc = report.gate_coverage || [];
+  const cr = report.consumption_reachability || [];
+  const dl = report.structural_deadlock || [];
+  const sr = report.stranding_risk || [];
+
+  const ok = wf.well_formed;
+  summaryEl.innerHTML = `<div class="banner ${ok ? "ok" : "bad"}">${ok
+    ? "良构：0 处违规。下面五项非零时仍需逐项裁决，不能静默忽略。"
+    : "不是良构：" + wf.violations.length + " 处违规。必须全部修掉，域才能装载。"}</div>
+    <div class="cards">
+      ${card("良构", ok ? "通过" : wf.violations.length + " 处违规", ok ? "ok" : "bad")}
+      ${card("可达性", reach.unreachable.length ? reach.unreachable.length + " 个不可达" : "全部可达", reach.unreachable.length ? "warn" : "ok")}
+      ${card("生产覆盖", gc.length ? gc.length + " 个无人能产" : "全覆盖", gc.length ? "warn" : "ok")}
+      ${card("消费可达", cr.length ? cr.length + " 个无消费者" : "都有消费者", cr.length ? "warn" : "ok")}
+      ${card("结构死锁", dl.length ? dl.length + " 个分量" : "无", dl.length ? "warn" : "ok")}
+      ${card("搁浅风险", sr.length ? sr.length + " 处" : "无", sr.length ? "warn" : "ok")}
+    </div>`;
+
+  let html = "";
+  wf.violations.forEach(v => {
+    const { code, data } = detailOf(v);
+    html += `<div class="issue"><div class="code">${esc(code)}</div>
+      <div class="detail">${esc(fmtData(data))}</div>
+      <div class="fix">${esc(FIX_HINTS[code] || "按契约 §5 的修法处理。")}</div></div>`;
+  });
+  wf.warnings.forEach(w => {
+    const { code, data } = detailOf(w);
+    html += `<div class="issue warn"><div class="code">${esc(code)}</div>
+      <div class="detail">${esc(fmtData(data))}</div>
+      <div class="fix">这是警告，不是违规：确认它是“双入口”设计，且已写进决策记录。</div></div>`;
+  });
+  issuesEl.innerHTML = html || (ok ? `<div class="issue good"><div class="code">无违规</div><div class="fix">可以继续装载；记得处理右侧的五项建议。</div></div>` : "");
+
+  let adv = "";
+  if (reach.unreachable.length) adv += advRow("不可达类型", reach.unreachable.join(", "), "补种子 / 补生产者，或删掉这些类型。");
+  if (gc.length) adv += advRow("无人能产", gc.join(", "), "给这些非源类型补 produces 子句。");
+  if (cr.length) adv += advRow("无人消费", cr.join(", "), "决定谁消费；若是有意保留（审计 / 见证），写进决策记录（TC-Q7）。");
+  if (dl.length) adv += advRow("结构死锁", dl.map(d => (d.types || []).join(" + ")).join("；"), "给这个环加 seed 点火（配方 R6）。");
+  if (sr.length) sr.forEach(s => {
+    adv += advRow("搁浅风险", `${s.ty_a} → ${s.ty_b}（持有者 ${s.via_holder}，消费者 ${s.consumer}）`,
+      s.potential ? "循环拓扑下的保守报告：确认见证在依赖动作完成前不会被消费。" : "见证可能先于依赖动作被消费：下游优先排空、保留见证，或换更长寿的见证类型。");
+  });
+  advisoriesEl.innerHTML = adv;
+
+  setStatus(ok ? "良构 · 可装载" : "有违规 · 需修复", ok ? "ok" : "bad");
+  renderStats();
+}
+
+function advRow(title, items, hint) {
+  return `<div class="issue warn"><div class="code">${esc(title)}</div>
+    <div class="detail">${esc(items)}</div><div class="fix">${esc(hint)}</div></div>`;
+}
+
+function renderParseError(e) {
+  lastReport = null;
+  const p = parseErr(e);
+  const code = p.code || "Error";
+  const message = p.message || errText(e);
+
+  if (code === "WellFormedness" && Array.isArray(p.detail)) {
+    lastViolations = p.detail;
+    const n = p.detail.length;
+    summaryEl.innerHTML = `<div class="banner bad">良构检查未通过：${n} 处违规。修完才能运行六项分析（A.5 是其余分析的前提）。</div>`;
+    issuesEl.innerHTML = p.detail.map(v => {
+      const d = detailOf(v);
+      return `<div class="issue"><div class="code">${esc(d.code)}</div>
+        <div class="detail">${esc(fmtData(d.data))}</div>
+        <div class="fix">${esc(FIX_HINTS[d.code] || "按契约 §5 的修法处理。")}</div></div>`;
+    }).join("");
+    advisoriesEl.innerHTML = "";
+    setStatus("良构未通过 · 需修复", "bad");
+    renderStats();
+    return;
+  }
+
+  lastViolations = [{ [code]: { message } }];
+  summaryEl.innerHTML = code === "Syntax"
+    ? `<div class="banner bad">解析失败：先修语法，域声明还没有进入良构检查。</div>`
+    : `<div class="banner bad">无法分析：${esc(code)}</div>`;
+  issuesEl.innerHTML = `<div class="issue"><div class="code">${esc(code)}</div>
+    <div class="detail">${esc(message)}</div>
+    <div class="fix">${esc(FIX_HINTS[code] || "检查四段顺序、标识符（仅 A-Za-z0-9_）、空 LHS、count 正整数，以及未声明类型。")}</div></div>`;
+  advisoriesEl.innerHTML = "";
+  setStatus(code === "Syntax" ? "解析失败" : "分析失败", "bad");
+  renderStats();
+}
+
+function analyze() {
+  if (!host) { toast("分析器尚未就绪"); return; }
+  const src = editor.value;
+  if (!src.trim()) { toast("先写或载入一份域声明"); return; }
+  try {
+    const report = JSON.parse(host.analyze(src));
+    renderReport(report);
+  } catch (e) {
+    renderParseError(e);
+  }
+}
+
+function boot() {
+  try {
+    const bin = Uint8Array.from(atob(WASM_B64), c => c.charCodeAt(0));
+    const init = wasm_bindgen({ module_or_path: bin });
+    Promise.resolve(init).then(() => {
+      host = new wasm_bindgen.PactWasm();
+      setStatus("分析器就绪 · " + host.abi_version(), "ok");
+      if (editor.value.trim()) analyze();
+    }).catch(e => {
+      setStatus("分析器初始化失败", "bad");
+      issuesEl.innerHTML = `<div class="issue"><div class="code">WasmInit</div><div class="detail">${esc(errText(e))}</div></div>`;
+    });
+  } catch (e) {
+    setStatus("分析器解码失败", "bad");
+    issuesEl.innerHTML = `<div class="issue"><div class="code">WasmDecode</div><div class="detail">${esc(errText(e))}</div></div>`;
+  }
+}
+
+function copyFixPrompt() {
+  if (!lastReport && lastViolations.length === 0) { toast("先跑一次分析"); return; }
+  const lines = (lastReport ? (lastReport.precondition_wf.violations || []) : lastViolations)
+    .map(v => { const d = detailOf(v); return d.code + ": " + fmtData(d.data); });
+  const adv = [];
+  if (lastReport) {
+    const r = lastReport;
+    if (r.reachability.unreachable.length) adv.push("不可达: " + r.reachability.unreachable.join(", "));
+    if (r.gate_coverage.length) adv.push("无人能产: " + r.gate_coverage.join(", "));
+    if (r.consumption_reachability.length) adv.push("无人消费: " + r.consumption_reachability.join(", "));
+    if (r.structural_deadlock.length) adv.push("结构死锁: " + r.structural_deadlock.map(d => (d.types || []).join("+")).join("; "));
+    if (r.stranding_risk.length) adv.push("搁浅风险: " + r.stranding_risk.map(s => `${s.ty_a}->${s.ty_b}(${s.via_holder})`).join("; "));
+  } else {
+    adv.push("（良构未通过，先只修违规；六项分析会在良构后重新运行）");
+  }
+  const text = `下面是我写的 PACT 域声明和 pact analyze 的结果。请严格按《PACT 域作者契约》修复：
+只修改导致问题的部分，保留其余结构；输出完整 .pact（四段），并逐条说明改了什么。
+
+【违规】
+${lines.length ? lines.join("\n") : "（无）"}
+
+【非零建议（不必须是零，但必须逐项裁决）】
+${adv.length ? adv.join("\n") : "（无）"}
+
+【当前域】
+\`\`\`pact
+${editor.value}
+\`\`\``;
+  copyText(text);
+}
+
+function copyAuthoringPrompt() {
+  const contract = document.getElementById("contractText").textContent.trim();
+  const scenario = $("#scenario").value.trim() || "（我还没有写场景，请先问我。）";
+  const text = `请严格按下面这份《PACT 域作者契约》工作：先过适用性闸门，再逐步提问；信息不足时提问，不要编造；
+最终只输出两份产物：完整 .pact（四段）和决策记录。
+
+${contract}
+
+我的场景：${scenario}`;
+  copyText(text);
+}
+
+function initUi() {
+  const sel = $("#templates");
+  Object.keys(TEMPLATES).forEach(name => {
+    const o = document.createElement("option");
+    o.value = name;
+    o.textContent = name;
+    sel.appendChild(o);
+  });
+  sel.addEventListener("change", () => {
+    if (!sel.value) return;
+    editor.value = TEMPLATES[sel.value];
+    lastReport = null;
+    lastViolations = [];
+    summaryEl.innerHTML = "";
+    issuesEl.innerHTML = "";
+    advisoriesEl.innerHTML = "";
+    renderStats();
+    setStatus(host ? "分析器就绪 · " + host.abi_version() : "正在加载分析器…", host ? "ok" : "");
+    sel.value = "";
+  });
+
+  editor.addEventListener("input", () => { lastReport = null; lastViolations = []; renderStats(); });
+  editor.addEventListener("keydown", e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); analyze(); }
+  });
+  $("#btnAnalyze").addEventListener("click", analyze);
+  $("#btnCopyFix").addEventListener("click", copyFixPrompt);
+  $("#btnDownload").addEventListener("click", () => {
+    if (!editor.value.trim()) { toast("没有可下载的内容"); return; }
+    const blob = new Blob([editor.value], { type: "text/plain;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "domain.pact";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("已下载 domain.pact");
+  });
+  $("#btnCopyPrompt").addEventListener("click", copyAuthoringPrompt);
+  $("#btnCopyDecision").addEventListener("click", () => copyText(DECISION_TPL));
+  $("#decisionTpl").textContent = DECISION_TPL;
+
+  const gateInputs = [...document.querySelectorAll("[data-g]")];
+  const gateMsg = $("#gateMsg");
+  function updateGate() {
+    const missing = gateInputs.filter(i => !i.checked).map(i => i.dataset.g);
+    if (!missing.length) {
+      gateMsg.className = "banner ok";
+      gateMsg.textContent = "五条判据全部通过：可以进入五步建模。";
+    } else {
+      gateMsg.className = "banner warn";
+      gateMsg.textContent = "未确认：" + missing.join("、") + "。先补答案，不要急着写域。";
+    }
+  }
+  gateInputs.forEach(i => i.addEventListener("change", updateGate));
+  updateGate();
+
+  document.querySelectorAll("[data-h]").forEach(i => {
+    i.addEventListener("change", () => {
+      if (i.checked) toast(i.dataset.h + " 命中：要在决策记录里写改写方式与代价");
+    });
+  });
+
+  renderStats();
+}
+
+initUi();
+boot();
+</script>
+</body>
+</html>

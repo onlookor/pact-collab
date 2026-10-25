@@ -375,27 +375,41 @@ principal_map = { "alice@example.com" = "alice" }
 
 ## 3. 写一份域声明
 
+> 从零开始建模、或让模型代写时，先读 [`authoring-contract.md`](authoring-contract.md)：
+> 它给出适用性闸门、形状配方、逐类型消费裁决和无工具自检清单。本节是**语法参考**。
+
 ### 3.1 四段文法（§3.1，段序严格）
 
 ```pact
-types { requirement; design; implementation; test_report; deployment }
+types { requirement; design; implementation; test_report; security_report; deployment }
 
 preconditions {
     requirement → design;
     design → implementation;
+    implementation → test_report;
+    implementation → security_report;
     {test_report + security_report} → deployment   // 多前驱合取
 }
 
 gates {
-    architect: reads requirement, consumes requirement, produces design;
-    reviewer:  reads implementation,
-               consumes test_report via implementation,   // 糖形式，脱糖为 when via implementation
-               produces test_report when count implementation >= 1;
+    architect:  reads requirement, consumes requirement, produces design;
+    developer:  reads design, consumes design, produces implementation;
+    tester:     reads implementation, produces test_report;
+    security:   reads implementation, produces security_report;
+    reviewer:   reads test_report via implementation;   // 糖形式，脱糖为 when via implementation
+    deployer:   reads test_report when count implementation >= 1,
+                consumes test_report, consumes security_report,
+                produces deployment;
     stakeholder: consumes deployment
 }
 
 seed_authority { external_stakeholder: seeds requirement }
 ```
+
+> 这是**语法示例**，不是推荐域：`implementation` 被保留作 `via` 见证，无人消费它，
+> 因此 `pact analyze` 会报 `consumption_reachability: 1`（预期）。生产合法性只由前置图决定，
+> 所以 `produces` 后面**不能**带条件——需要条件时，把它写进前置图或改用见证 token
+> （`docs/authoring-contract.md` §5、表达力边界 B7）。
 
 宽容度与扩展（设计 §3，D16）：段内尾分号可省、`preconditions`/`gates`/`seed_authority` 可为空段
 （`types` 至少一项）、`->` 等价 `→`、`//` 行注释、`GateExpr` 优先级 `not > and > or`。
@@ -441,8 +455,47 @@ pact domain load my_domain.pact [--name N]   # 缺省域名 = 文件 stem
 ```
 
 > `domain validate` 是**在线**命令（走 REST）。没有 daemon 时它会报
-> `error [Transport]: client error (Connect)`。想纯离线校验，用 `pact analyze`
-> 看首行 `precondition_wf`。
+> `error [Transport]: client error (Connect)`。想纯离线校验，用 `pact analyze`：
+> 良构时输出六项分析（首行 `precondition_wf`）；非良构时以 `WellFormedness` 拒绝并列出违规，exit 1。
+
+### 3.5 浏览器工作台（无需安装）
+
+`web/authoring/index.html` 是自包含单文件：内嵌 `pact-wasm`、六个形状配方与
+《PACT 域作者契约》。双击打开即可在浏览器内运行与 `pact analyze` 同源的良构检查与六项分析，
+域声明不会离开本机。在线版入口为 <https://onlookor.github.io/pact-collab/>（与仓库内文件同源，
+发布流程见 `.github/workflows/pages.yml`）。
+
+- 有 chat 模型但没有 agent：在页面里写场景 → 复制“给模型的提示词” → 把产出的 `.pact`
+  粘回页面 → 分析 → 复制修复提示回贴给模型。
+- 重新生成：`./web/build.sh`（同时生成工作台、运行沙盒与接入向导；需要 wasm32 target 与
+  `wasm-bindgen`）。`web/index.html` 是三页的静态入口，不含占位符，不参与构建。
+- 边界：只做**离线分析**，不装载、不运行、不写日志。
+
+### 3.6 浏览器运行沙盒（无需安装）
+
+`web/sandbox/index.html` 与工作台同源（同一 `pact-wasm`、共享六个形状配方），做的是**运行**：
+装载域 → 以不同参与者身份执行 seed / produce / read / consume → 实时看 Counter、Archive、
+`enabled` 给出的可行生产组合与 Rule-T 状态。动作被 Gate 条件或前置图拒绝时，页面显示错误码
+与原因；拒绝本身也是语义的一部分。
+
+- 全部状态只在页面内存里：刷新即清空，不写盘、不联网；事件日志可按需导出为 JSONL。
+- 适合验证域的行为：Rule-P 不消费前驱、Rule-E 不可逆、Rule-T 只是信息而非闸门。
+- 需要持久化、多进程与身份校验时，仍走 `pactd` + `pact domain load`（§2.3、§4）。
+
+三个页面都从 320px 到宽屏自适应（单列 / 双列切换，窄屏输入控件用 16px 字号避免 iOS 自动缩放）。
+第三方页面可嵌入：`<iframe src="…/index.html?embed=1">` 会隐藏标题与页脚、只保留状态胶囊，
+并把宽度交给容器。
+
+### 3.7 接入向导（无需安装）
+
+`web/connect/index.html` 把“域已经写好”接到“agent 能用”，生成本地配置而不联网：
+
+- **本机 stdio（推荐）**：生成只有 `data_dir` / `listen_unix` 的 `pact.toml`，以及让 MCP 宿主
+  拉起 `pact-mcp` 的 `mcpServers` 片段。无端口、无令牌；注意 `command` 与 socket 要写绝对路径。
+- **远程 Streamable HTTP**：生成带 `listen_tcp`、`[mcp].public_url` 与 `[auth.tokens]` 的 `pact.toml`，
+  以及 `url` + `Authorization: Bearer` 的客户端片段。跨机部署须改用 https 并配置 `[tls]`。
+- 同时给出 `analyze` → `daemon start` → `domain load` → `domain list/status` 的命令序列；
+  域名取文件 stem，改域名会同步改文件名。
 
 ---
 

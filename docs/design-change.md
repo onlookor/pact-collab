@@ -1,5 +1,117 @@
 # 设计变更记录
 
+## 2026-10-25（第 59 轮，发布前安全审视与 Pages）
+
+- **范围**：不改引擎、语法、母本与既有端点。新增静态入口 `web/index.html` 与发布流水线 `.github/workflows/pages.yml`；把 L0–L4 的资产一起发布。
+- **入口页**：`web/index.html` 是纯静态的三步入口（写域 → 跑一遍 → 接 agent），与三个页面同源配色、`≤760px` / `≤480px` 两档断点，含嵌入说明与在线地址。不含占位符，不参与 `web/build.sh`。
+- **发布**：`Pages` workflow 在 `main` 上 `web/**` 或 workflow 自身变化时触发（也可手动）。只把 `web/index.html` 与三个 `index.html` 复制到 `_site` 后 `upload-pages-artifact` → `deploy-pages`；**不在 CI 重跑 wasm 构建**，发布内容与仓库内可双击的文件逐字节一致。权限收窄为 `contents: read`、`pages: write`、`id-token: write`，并发组 `pages` 取消进行中的旧发布。
+- **发布前验证**：
+  - `cargo fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全绿（含 `pact-wasm` 18 项）。
+  - 构建可复现：`./web/build.sh` 重跑后三页 SHA-256 与重建前一致。
+- **安全审视**：
+  - 三页无 `<script src>` / `<link href>` / `<img src>` / `<iframe src>` 外链，无 `fetch` 调用（glue 中的 `fetch` 分支只在传入字符串/URL 时触发，页面传 `Uint8Array` 字节），无 `eval` / `document.write` / `insertAdjacentHTML`。
+  - 所有动态 DOM 文本经 `esc()`（含 `& < > " '`）；生成配置一律写入 `textContent`；契约正文以 `text/plain` 注入且构建校验 `</script`。
+  - 接入向导的令牌由 `crypto.getRandomValues` 本地生成，不落盘、不请求网络；页面不含任何真实密钥。
+  - 仓库改动无凭据/私钥/令牌；发布只暴露三个单文件页面与入口页，不发布模板、构建脚本或契约以外的文件。
+- **文档**：`docs/design.md` 新增 D38；`docs/manual.md` §3.5 增在线入口与构建说明；`README.md` / `README.zh-CN.md` 增浏览器路径与在线地址。
+
+## 2026-10-25（第 58 轮，L4 接入向导）
+
+- **动机**：域能写（L0–L2）、能跑（L3）之后，最后一道门槛是把域接到 agent：手写 `pact.toml`、判断 stdio 还是 HTTP、拼 MCP 客户端配置，任一步错都表现为“连不上”。
+- **新增** `web/connect/`：纯静态生成器（18 KiB，不依赖 wasm），三块产物 + 一份顺序说明：
+  1. `pact.toml`——stdio 模式只给 `data_dir` / `listen_unix`；HTTP 模式追加 `listen_tcp`、`[mcp] enabled/public_url` 与 `[auth.tokens]`；
+  2. MCP 客户端 JSON——stdio 用 `command`/`args --unix`；HTTP 用 `type: http`、`url …/mcp`、`Authorization: Bearer`，并注明字段名随宿主而异；
+  3. 命令序列——`analyze` → `daemon start --config` → `domain load` → `domain list/status`，统一带 `--unix` 与（HTTP 模式的）`--bearer`；
+  4. “接上之后”提示——先 `pact_domain_validate` 再 `pact_domain_load`，用 `pact_my_gates` / `pact_enabled` 自省。
+- **正确性来源**：参数逐项取自真实 `--help`（`pact`、`pact status`、`pact daemon start`、`pact-mcp`）；域名的权威来源是文件 stem，因此改域名会同步改文件名，避免 `status --domain` 与实际装载名不一致。令牌用 `crypto.getRandomValues` 现场生成（48 hex），并对短令牌、非回环明文 HTTP、相对 socket、依赖 PATH 的 `command` 给出即时警告。
+- **实测**：把页面生成的两种模式配置分别写入 `/tmp` 启动真实 daemon——stdio 配置 `/health` 返回 `{"status":"ok"}`；HTTP 配置同时监听 unix 与 `127.0.0.1:18787`，TCP `/health` 返回 200。说明生成的键名与 `deny_unknown_fields` 兼容。
+- **构建**：`web/build.sh` 的页面表新增 `connect: {}`（无 wasm、无契约、无配方占位符），一次构建输出三页。
+- **适配**：复用第 57 轮断点与 `?embed=1`。探针实测 connect 在 1280/768/480/375/320 下无横向溢出、embed 隐藏标题与页脚、`≤480px` 输入字号 16px、更宽 13px（修正了 `.field input` 的 `font: inherit` 特异性压过媒体查询的问题）。
+- **文档**：`docs/manual.md` 新增 §3.7“接入向导（无需安装）”，§3.6 的“两个页面”改为“三个页面”；`README.zh-CN.md` 快速开始增第三入口。
+- **范围**：只新增前端资产与构建表条目；不改 CLI、不改 daemon、不改 MCP 工具面。
+- **状态**：工作树改动，未提交、未推送；GitHub Pages 发布仍与最终一批改动合并进行。
+
+## 2026-10-25（第 57 轮，页面精简 · 多端适配 · 可嵌入）
+
+- **范围**：只改 `web/authoring/template.html` 与 `web/sandbox/template.html` 的结构与样式，不改 wasm、不改引擎、不改分析逻辑。
+- **精简**：作者页的“开始之前”（G1–G5、H1–H5、提示词、决策记录模板）由常驻大面板改为**默认收起**的折叠面板，只留一行摘要；编辑器最小高度 480 → 360；沙盒编辑框 200 → 160，动作区提示压到一句话（保留“前驱不被消费”“不可逆”等关键语义），消费行不再重复同一句说明。
+- **多端适配**：两页统一两个断点——`≤760px` 收窄留白、隐藏副标题、压缩面板头；`≤480px` 进一步缩小圆角/间距、按钮加高到触摸友好尺寸、`select/input/textarea` 提升到 16px（避免 iOS 聚焦自动缩放）、编辑器降高。主栅格在 980px 以下已单列，`.panel` 全部 `min-width:0`，`html` 加 `-webkit-text-size-adjust:100%`，窄屏日志详情取消左缩进。
+- **可嵌入**：`?embed=1` 时给 `<html>` 加 `.embed`：隐藏标题与副标题、页头只保留状态胶囊并右对齐、页脚隐藏、`main` 去掉 `max-width` 以铺满容器；外链（沙盒 → 作者页）加 `target="_blank" rel="noopener"`，避免在 iframe 内导航走失。页面仍无外部资源、无 `fetch`、无 `eval`，被第三方 iframe 引用时不会请求任何跨域内容。
+- **验证**：
+  - 同源 iframe 自检（临时工具页，不入库）：两个页面 × 7 个宽度（1280/1024/768/600/480/375/320）在 `?embed=1` 下，再加 1280/375 的非嵌入模式，共 18 组。结果：全部 `scrollWidth == clientWidth`（无横向溢出）；embed 组 `h1/footer` 均 `none`，非 embed 组均 `block`；`≤480px` 编辑器字号 16px、更宽为 13px；状态胶囊均正常。
+  - 功能回归：沙盒 R1 的 seed `request` → produce `answer`（Counter 双 token、日志同步）；作者页展开“开始之前”、勾选 G1、载入 R1 并分析得到“良构 · 可装载”，折叠正常，console 无报错。
+  - `./web/build.sh` 重新生成两页（1208 KiB / 1193 KiB）。
+- **技能链接**：确认 `~/.trae-cn/skills/pact-domain-authoring` → 仓库 `skills/pact-domain-authoring` 的符号链接存在且可解析，本轮未改动。
+- **状态**：工作树改动，未提交、未推送；GitHub Pages 发布仍与最终一批改动合并进行。
+
+## 2026-10-25（第 56 轮，L3 浏览器运行沙盒）
+
+- **动机**：域写出来之后，下一步是“跑一遍”才能形成直觉。安装 daemon 是最大的一道门槛，而 `pact-wasm` 已具备完整宿主（装载、两阶段提交、四类动作、视图、事件导出），不需要新增引擎能力。
+- **新增** `web/sandbox/`：
+  1. `template.html`——装载域（粘贴或六个示例）→ 以参与者身份 seed / produce / read / consume → 实时渲染 Counter、Archive、状态卡、事件日志、Gate 矩阵与前置图；被拒绝时显示错误码 + 原因 + 该码的语义提示；
+  2. 配方下拉与工作台共享；默认载入 R1 线性流水线，装载即做良构检查（失败则列出违规并拒绝装载）。
+- **`pact-wasm` 新 API**：`PactHost::facets(key) -> DomainFacets` 与 wasm 同名导出。返回 `participants`（gate 主语 ∪ seed 主语，排序去重）、`seeds`（`participant` + `type`，字段名与 Token 一致）、`preconditions`（`target` + `predecessors`）。此前浏览器端只能拿到按参与者的 gate 子句，无法知道“域里有哪些参与者、谁能 seed 什么”，被迫在 JS 里重写一遍 DSL 解析。新增单元测试 `facets_lists_participants_seeds_and_preconditions`（含线上字段名锁定）。
+- **构建整合**：`web/authoring/build.sh` 与 `web/sandbox/build.sh` 合并为 `web/build.sh`——一次 wasm 构建，按页面表注入占位符，并检查残留 `__PLACEHOLDER__`；六个配方抽到 `web/shared/recipes.js`，两个页面共用。删除 `web/authoring/build.sh`。
+- **安全边界**：沙盒**装载并运行**域，但只在页面内存中：无持久化、无网络、无外部脚本、无 `eval`；只有用户显式点击才产生一次 Blob 下载（事件日志 JSONL）。所有动态 DOM 文本经 `esc()`；wasm 仍由内联 base64 字节实例化。与工作台的差别写入 `docs/manual.md` §3.5 边界说明。
+- **文档**：`docs/manual.md` 新增 §3.6“浏览器运行沙盒（无需安装）”，§3.5 的重建命令改为 `./web/build.sh`；`README.zh-CN.md` 快速开始增沙盒入口。
+- **验证**：
+  - `cargo fmt --all -- --check` 通过；`cargo test -p pact-wasm` 18 项（11 单元 + 7 parity）全过。
+  - 浏览器实测（本地 HTTP）：沙盒默认载入 R1，`client` seed `request` → `responder` produce `answer`（Counter 同时保留 `request`，验证 Rule-P 不消费前驱）→ `client` consume `answer`（Archive 1、Counter 1）；R4 中 `coordinator` 在缺 `readiness` 时消费被拒（`GateConditionFailed` 条件标签 `exists readiness`），补 seed 后 produce `completion` 成功；`responder` 消费 `request` 后 Counter 归零、Rule-T 事件 `Terminated` 落一条 #seq，再 seed 即翻回未成立。console 无报错。
+  - 工作台回归（配方抽取 + 重构建）：R2 六项全零、乱码报 `Syntax`、R6 全零，无 `ReferenceError`。
+  - 语义澄清：装载后的初始状态 `terminated = true` 是正确的（Counter 为空且暂时无人可 Rule-P），页面改为显示“初始状态”文案而非告警式措辞；不是状态残留。
+- **范围**：新增前端资产 + 一个只读视图 API；不改引擎语义、不改语法、不改母本、不改既有端点。GitHub Pages 部署仍未做（待与最终一批改动一起发布）。
+- **状态**：工作树改动，未提交、未推送。
+
+## 2026-10-25（第 55 轮，L2 浏览器单文件工作台）
+
+- **动机**：L1 skill 依赖 agent harness；没有 harness、只有公开 chat 模型的用户需要一条“离线可验证”的路径，否则生成的 `.pact` 无法自证良构。
+- **新增** `web/authoring/`：
+  1. `template.html`——页面源模板，三处占位符 `__WASM_GLUE__` / `__WASM_BASE64__` / `__CONTRACT_TEXT__`；UI 含六配方下拉（R1–R6）、`.pact` 编辑器、Ctrl+Enter 分析、复制修复提示、下载 `.pact`、六张分析结果卡片、G1–G5 勾选、H1–H5 硬停、场景输入 + “复制给模型的提示词”、决策记录模板；
+  2. `build.sh`——`cargo build -p pact-wasm --target wasm32-unknown-unknown` → `wasm-bindgen --target no-modules` → Python 内联 glue + base64 wasm + 契约正文，产物 `web/authoring/index.html`；
+  3. `index.html`——构建产物，单文件约 1185 KiB（其中 wasm 826 KiB），双击即可离线使用。
+- **分发形态**：不新增域格式，公开输入仍是 `.pact`；工作台只是把 `pact analyze` 同源的良构检查与六项分析搬到浏览器。无 `fetch`、无外部脚本、无 `eval`；wasm 由内联 base64 字节实例化；契约文本以 `text/plain` 注入，组装时校验其中不含 `</script`；所有动态 DOM 文本经 `esc()`。
+- **`pact-wasm` 接口增强（行为变更）**：`FacadeError` 新增 `detail: Option<serde_json::Value>`（`skip_serializing_if = "Option::is_none"`），`Problem::WellFormedness` 时携带违规列表。此前浏览器端拿不到结构化违规，只能把良构失败误报为“解析失败”。为容纳 `Value`，`FacadeError` 的 derive 去掉 `Eq`、保留 `PartialEq`。新增单元测试 `wellformedness_error_carries_structured_detail`。
+- **页面状态区分**：`WellFormedness` 分支显示“良构检查未通过：N 处违规”，不渲染六张卡片（A.5 是其余分析的前提），状态胶囊为“良构未通过 · 需修复”；语法错误仍走独立分支。修复提示在“有报告”与“仅有良构违规”两种状态下均可用。
+- **L0/L1 口径修正**：契约与 skill 原文暗示“非良构也会输出六项报告，需逐项裁决”。实测为非良构时命令返回 `{"error":{"code":"WellFormedness","detail":[...]}}`、exit 1，**没有**六项报告；已改为“先清 violations，良构后才输出六项分析”，skill 的 DoD 同步改为“exit code = 0（不再返回 `WellFormedness`）”。
+- **入口**：`docs/manual.md` 新增 §3.5“浏览器工作台（无需安装）”（含重建命令与“只做离线分析”边界）；`README.zh-CN.md` 快速开始增第三入口。
+- **验证**：
+  - `cargo fmt --all -- --check` 通过；`cargo clippy -p pact-wasm --all-targets -- -D warnings` 零警告；`cargo test -p pact-wasm` 17 项（10 单元 + 7 parity）全过；`cargo test --workspace` exit 0。
+  - 浏览器实测（本地 HTTP）：状态“分析器就绪 · pact-wasm/0.2”；R1 六项全零、状态“良构 · 可装载”；坏域报 1 处 `ProduceWithCondition`、无六卡片、状态“良构未通过 · 需修复”；恢复 R1 后六项全零；console 无新增报错。
+- **范围**：新增前端资产 + `pact-wasm` 错误明细字段；不改引擎语义、不改语法、不改母本。GitHub Pages 部署未做。
+- **状态**：工作树改动，未提交、未推送。
+
+## 2026-10-25（第 54 轮，L1 域作者 Skill）
+
+- **动机**：L0 契约是“权威流程”，但 agent 需要可加载的执行器——负责工具探测、分批提问、错误映射与验收。
+- **新增** `skills/pact-domain-authoring/SKILL.md`（`name: pact-domain-authoring`，v0.1.0）：
+  1. **边界**：只做域建模/审查，不做运行、部署、引擎修改；
+  2. **契约定位**：`PACT_CONTRACT` → 仓库 `docs/authoring-contract.md` → skill 内 `references/` 副本 → 问用户；未读契约不得起草；
+  3. **硬约束**：先问后写、不编造、只产出 `.pact` + 决策记录、`produces` 无条件、源类型不可 produce、非零分析必须裁决、范式外能力不承诺；
+  4. **状态机 S0–S7**：定位 → 适用闸门 G1–G5 → 硬停 H1–H5 → 分批采集（每轮 ≤3 问）→ 选配方 R1–R6 → 起草 → analyze 回环（≤5 轮，附 detail→修法映射）→ 交付；
+  5. **完成标准**：`analyze` exit 0、violations 0、每处非零有裁决、决策记录完整、假设已确认、给出装载命令；
+  6. 内置输出模板、常见失败模式、引用表。
+- **反重复**：Skill 不复制契约正文，只做执行层；契约仍是唯一流程源。分发到仓库外时按 Skill §1 的分辨顺序随附 `references/authoring-contract.md`。
+- **入口**：`README.zh-CN.md` 快速开始增 Skill 入口；`docs/manual.md` 既有契约入口不变。
+- **验证**：frontmatter YAML 解析通过（name/description/version/tags）；Skill 引用的 5 个路径均存在；`pact analyze --json`、`pact --json analyze` 两种写法实测可用；二进制探测顺序在本仓库命中 `./target/debug/pact`（release 不存在）；按 Skill 流程试建复合场景（R2 只读评审 + R4 外部物化），六项分析全零、exit 0。
+- **范围**：纯文档/资产，无代码、无测试、无母本改动。L2 浏览器向导待裁决。
+- **状态**：工作树改动，未提交、未推送。
+
+## 2026-10-25（第 53 轮，域作者契约 L0：降低建模门槛）
+
+- **动机**：范式实现已足够复杂，无专业背景者难以从零写出合法域。用户裁决先落 L0（作者契约 + 形状配方库），公开输入格式仍保持 `.pact` 唯一。
+- **新增** `docs/authoring-contract.md`：面向人与模型的生成协议，含
+  1. 两种用法（有 `pact analyze` 回环 / 无工具自检）；
+  2. 五条适用判据（G1–G5）与五个硬停（H1–H5，映射 B4/B10/B15/B11/B2）；
+  3. 五步建模问题树（离散产物 → 前置图 → 权限矩阵 → 入口 → 逐类型消费裁决）；
+  4. 六个形状配方（线性流水线、只读评审、`via` 审批、外部物化见证、ack 汇聚、循环点火），每个附实测 `analyze` 预期；
+  5. 八类良构错误的“修法”列、六项分析解读与裁决原则、决策记录模板、12 条无工具自检清单。
+- **核心口径**：表达力边界与消费时机不作为“知识灌输”，而作为**强制决策点**——B 类在前置闸门拦截或改写，TC 类在第五步逐类型逼问（Q1–Q7）。
+- **修正** `docs/manual.md` §3.1 示例：原示例有 3 处良构违例（`UndeclaredType: security_report`、`ProduceWithCondition`、`SourceTypeProduceGate: test_report`），与 §3.3“八类拒绝”自相矛盾。改为合法示例并注明 `consumption_reachability: 1` 为预期（`implementation` 作 `via` 见证保留）。
+- **入口引用**：`docs/manual.md` §3 开头、`examples/README.md` §7.1 增契约入口；契约内回链 manual §3、B、TC、examples。
+- **验证**：`pact analyze` 实测 R1/R2/R3/R5（临时文件）、`examples/domains/external_materialization.pact`、`examples/domains/react_loop.pact` 与修正后的 manual 示例，结果与契约记载一致（R3 的 A.3=1、R6 的 SEED_PRODUCE_OVERLAP 为预期非零）。
+- **范围**：纯文档，无代码、无测试、无母本改动。后续 L1（skill）与 L2（浏览器向导）待用户裁决后另开轮次。
+- **状态**：工作树改动，未提交、未推送。
+
 ## 2026-10-24（第 52 轮，消费时机文档收紧 + 重复消费防护）
 
 - **来源**：第 51 轮审查结论经用户裁决，处理三项：收紧 5 处文档表述、补 ack 屏障端到端测试、加固重复消费防护。

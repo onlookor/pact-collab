@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PACT 域运行沙盒</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#fff; --ink:#1a1f2b; --muted:#5b6577;
+    --line:#dfe3ea; --accent:#1f6feb; --accent-weak:#e8f0fe;
+    --ok:#0a7a47; --ok-weak:#e6f4ec; --warn:#8a5a00; --warn-weak:#fdf3d8;
+    --bad:#b42318; --bad-weak:#fdecea; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif}
+  header{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.94);
+    border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
+  .bar{max-width:1320px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12px}
+  .status{margin-left:auto;font-size:12px;padding:4px 10px;border-radius:999px;
+    background:#eef1f5;color:var(--muted);border:1px solid var(--line);white-space:nowrap}
+  .status.ok{background:var(--ok-weak);color:var(--ok);border-color:#bfe3cd}
+  .status.bad{background:var(--bad-weak);color:var(--bad);border-color:#f3c2bd}
+  main{max-width:1320px;margin:0 auto;padding:18px 20px 60px;display:grid;
+    grid-template-columns:minmax(0,1.12fr) minmax(0,.88fr);gap:16px;align-items:start}
+  @media(max-width:980px){main{grid-template-columns:1fr}}
+  .col{display:flex;flex-direction:column;gap:16px;min-width:0}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px}
+  .panel h2{font-size:13px;margin:0;padding:12px 14px;border-bottom:1px solid var(--line);
+    font-weight:650;letter-spacing:.3px;display:flex;align-items:center;gap:8px}
+  .panel .body{padding:14px}
+  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  select,button,textarea,input{font:inherit}
+  select{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+  input{padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);width:120px}
+  button{padding:7px 13px;border-radius:8px;border:1px solid var(--line);background:#fff;
+    color:var(--ink);cursor:pointer;font-size:13px}
+  button:hover{border-color:#b8c0cd}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{filter:brightness(1.06)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.chip{border-radius:999px;padding:5px 12px;font-size:12.5px}
+  button.chip.on{background:var(--accent-weak);border-color:#b9d1f7;color:var(--accent);font-weight:600}
+  textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:12px;
+    font-family:var(--mono);font-size:13px;line-height:1.6;resize:vertical;background:#fcfdff;color:var(--ink)}
+  #editor{min-height:160px}
+  .meta{display:flex;gap:12px;color:var(--muted);font-size:12px;margin-top:6px;flex-wrap:wrap}
+  .banner{border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px;border:1px solid}
+  .banner.ok{background:var(--ok-weak);border-color:#bfe3cd;color:var(--ok)}
+  .banner.bad{background:var(--bad-weak);border-color:#f3c2bd;color:var(--bad)}
+  .banner.warn{background:var(--warn-weak);border-color:#efd9a3;color:var(--warn)}
+  .hint{color:var(--muted);font-size:12.5px}
+  .issue{border:1px solid var(--line);border-radius:10px;padding:10px 11px;margin-bottom:8px;background:#fff}
+  .issue .code{font-family:var(--mono);font-size:12px;font-weight:650;color:var(--bad)}
+  .issue .detail{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:4px;word-break:break-all}
+  .issue .fix{font-size:12.5px;margin-top:6px;color:var(--ink)}
+  .sec{margin-top:14px}
+  .sec h3{font-size:12px;letter-spacing:.4px;color:var(--muted);margin:0 0 6px;font-weight:650}
+  .row{display:flex;gap:10px;align-items:center;justify-content:space-between;
+    padding:7px 0;border-top:1px dashed var(--line);flex-wrap:wrap}
+  .row:first-of-type{border-top:0}
+  .row .main{min-width:0;flex:1}
+  .row .t{font-family:var(--mono);font-size:12.5px;font-weight:600}
+  .row .s{color:var(--muted);font-size:12px;word-break:break-all}
+  .pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;background:#eef1f5;
+    color:var(--muted);border:1px solid var(--line);margin-left:6px;vertical-align:1px}
+  .pill.ok{background:var(--ok-weak);color:var(--ok);border-color:#bfe3cd}
+  .pill.warn{background:var(--warn-weak);color:var(--warn);border-color:#efd9a3}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+  .card{border:1px solid var(--line);border-radius:10px;padding:9px 10px;background:#fcfdff}
+  .card .k{font-size:11px;color:var(--muted);letter-spacing:.3px}
+  .card .v{font-size:15px;font-weight:650;margin-top:2px}
+  .card.ok .v{color:var(--ok)} .card.bad .v{color:var(--bad)} .card.warn .v{color:var(--warn)}
+  .empty{color:var(--muted);font-size:12.5px;padding:6px 0}
+  pre.json{background:#0f141d;color:#d7e0ee;border-radius:10px;padding:11px 12px;overflow:auto;
+    max-height:240px;font-family:var(--mono);font-size:12px;line-height:1.55;margin:8px 0 0}
+  details{border:1px solid var(--line);border-radius:10px;margin-top:10px;background:#fcfdff}
+  details summary{cursor:pointer;padding:9px 12px;font-size:12.5px;font-weight:600;color:var(--ink)}
+  details .inner{padding:0 12px 12px}
+  .logline{display:flex;gap:8px;padding:6px 0;border-top:1px dashed var(--line);font-size:12.5px;align-items:flex-start}
+  .logline:first-child{border-top:0}
+  .logline .n{font-family:var(--mono);font-size:11.5px;color:var(--muted);min-width:44px}
+  .logline .x{flex:1;word-break:break-all}
+  .logline .x code{font-family:var(--mono);font-size:12px}
+  .kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:4px;padding:1px 4px;color:var(--muted);background:#fff}
+  .toast{position:fixed;right:20px;bottom:20px;background:#1a1f2b;color:#fff;padding:9px 14px;
+    border-radius:8px;font-size:13px;opacity:0;transform:translateY(6px);pointer-events:none;transition:.18s}
+  .toast.show{opacity:1;transform:none}
+  .footer{grid-column:1/-1;color:var(--muted);font-size:12px;text-align:center;margin-top:6px}
+  .footer a{color:var(--muted)}
+
+  /* 响应式与嵌入：窄屏单列、可触摸控件、?embed=1 去掉页面级外壳 */
+  html{-webkit-text-size-adjust:100%}
+  .panel{min-width:0}
+  .row{gap:8px}
+  @media(max-width:760px){
+    main{padding:14px 12px 48px;gap:12px}
+    .bar{padding:8px 12px;gap:8px}
+    h1{font-size:15px}
+    .sub{display:none}
+    .panel h2{padding:10px 12px}
+    .panel .body{padding:12px}
+    .status{font-size:11.5px;padding:3px 8px}
+    pre.json{max-height:180px}
+  }
+  @media(max-width:480px){
+    main{padding:10px 8px 40px}
+    .panel{border-radius:10px}
+    .panel .body{padding:10px}
+    .toolbar{gap:6px}
+    button{padding:8px 12px}
+    select,input,textarea{font-size:16px}
+    #editor{min-height:120px}
+    .stats{gap:6px}
+    .card{padding:8px}
+    .card .v{font-size:14px}
+    .logline .n{min-width:38px}
+    details[style]{margin-left:0 !important}
+  }
+  html.embed header .bar{padding:6px 12px;justify-content:flex-end;gap:8px}
+  html.embed h1,html.embed .sub{display:none}
+  html.embed main{max-width:none;padding:12px 12px 28px}
+  html.embed .footer{display:none}
+  html.embed .panel{border-radius:10px}
+  @media(max-width:480px){html.embed main{padding:8px 6px 20px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>PACT 域运行沙盒</h1>
+    <span class="sub">装载 · 种子 · 生产 · 读取 · 消费 · 状态（纯内存、离线）</span>
+    <span class="status" id="status">正在加载引擎…</span>
+  </div>
+</header>
+
+<main>
+  <div class="col">
+    <section class="panel">
+      <h2>1 装载域 <span class="hint" style="font-weight:400">装载即做良构检查；再装载同名域会重置其状态</span></h2>
+      <div class="body">
+        <div class="toolbar">
+          <select id="templates" aria-label="载入示例">
+            <option value="">载入示例…</option>
+          </select>
+          <label class="hint" for="domainName">域名</label>
+          <input id="domainName" value="demo" spellcheck="false">
+          <button class="primary" id="btnLoad">装载 / 重置</button>
+          <button id="btnExport" disabled>导出事件日志</button>
+        </div>
+        <textarea id="editor" spellcheck="false" placeholder="粘贴一份 .pact 域声明，或从上方载入一个示例。"></textarea>
+        <div class="meta">
+          <span>纯内存：刷新即清空，不写盘、不联网。</span>
+        </div>
+        <div id="loadMsg"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>2 操作台 <span class="hint" style="font-weight:400">动作按当前 Counter 判定，被拒绝也是语义的一部分</span></h2>
+      <div class="body">
+        <div class="toolbar" id="whoBar">
+          <span class="hint">身份：</span>
+          <span id="participants"></span>
+        </div>
+        <div id="actionArea"><div class="empty">先装载一个域。</div></div>
+        <div id="detail"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>3 事件日志 <span class="hint" style="font-weight:400">每次提交一条；Rule-T 终止另记一条信息事件</span></h2>
+      <div class="body"><div id="log"><div class="empty">还没有动作。</div></div></div>
+    </section>
+  </div>
+
+  <div class="col">
+    <section class="panel">
+      <h2>状态</h2>
+      <div class="body">
+        <div class="stats">
+          <div class="card" id="cardCounter"><div class="k">Counter</div><div class="v">0</div></div>
+          <div class="card" id="cardArchive"><div class="k">Archive</div><div class="v">0</div></div>
+          <div class="card" id="cardTerm"><div class="k">Rule-T</div><div class="v">—</div></div>
+        </div>
+        <div id="termNote"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Counter（当前在场）</h2>
+      <div class="body" id="counterBox"><div class="empty">未装载。</div></div>
+    </section>
+
+    <section class="panel">
+      <h2>Archive（已消费，不可逆）</h2>
+      <div class="body" id="archiveBox"><div class="empty">未装载。</div></div>
+    </section>
+
+    <section class="panel">
+      <h2>Gate 矩阵与前置图</h2>
+      <div class="body" id="gatesBox"><div class="empty">未装载。</div></div>
+    </section>
+  </div>
+
+  <div class="footer">
+    与 <span class="kbd">pact</span> 同源规则（<span class="kbd">pact-wasm</span>）；
+    写域请用 <a href="../authoring/index.html" target="_blank" rel="noopener">域作者工作台</a>。
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>__RECIPES_JS__</script>
+<script>__WASM_GLUE__</script>
+<script>
+const WASM_B64 = "__WASM_BASE64__";
+// 被第三方页面以 iframe 嵌入时加 ?embed=1：隐藏标题与页脚，只保留状态胶囊。
+document.documentElement.classList.toggle("embed", new URLSearchParams(location.search).has("embed"));
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+const RULE_HINTS = {
+  StaticGateDenied: "这个参与者没有对应的 gate 子句：先去域声明里授权。",
+  GateConditionFailed: "条件不满足（exists / via / count）。条件只看当前 Counter，不是历史。",
+  PreconditionMismatch: "前驱类型集合必须恰好等于 Precond(T)：多了少了都不行。",
+  SourceTypeProductionDenied: "源类型只能经 Rule-S 注入；要生产它，先给它一条前置规则。",
+  PredecessorNotOnCounter: "前驱已不在 Counter（可能已被消费）。Rule-P 要求前驱此刻仍在场。",
+  SeedAuthorityDenied: "这个参与者没有该类型的种子权。",
+  DuplicateTokenId: "Token id 冲突（本次运行内已用过）。",
+  TokenNotOnCounter: "目标 token 不在 Counter（可能已被消费）。",
+  DomainBusy: "实例非空。沙盒用 force 重置，正常不会出现。"
+};
+
+let host = null;
+let key = null;
+let facets = null;
+let participant = null;
+let counterView = { tokens: [], size: 0 };
+let archiveView = { entries: [], size: 0 };
+let statusView = { counter_size: 0, archive_size: 0, terminated: false };
+let log = [];
+
+const $ = (s) => document.querySelector(s);
+const editor = $("#editor");
+const statusEl = $("#status");
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function setStatus(text, kind) {
+  statusEl.textContent = text;
+  statusEl.className = "status" + (kind ? " " + kind : "");
+}
+function toast(text) {
+  const t = $("#toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove("show"), 1800);
+}
+function errText(e) {
+  if (typeof e === "string") return e;
+  if (e && e.message) return e.message;
+  try { return JSON.stringify(e); } catch (_) { return String(e); }
+}
+function parseErr(e) {
+  const text = errText(e);
+  try { return JSON.parse(text); } catch (_) { return { code: "Error", message: text }; }
+}
+function detailOf(obj) {
+  const code = Object.keys(obj || {})[0] || "Unknown";
+  return { code, data: (obj || {})[code] || {} };
+}
+function fmtData(data) {
+  if (!data || typeof data !== "object") return "";
+  return Object.entries(data).map(([k, v]) => k + ": " + (typeof v === "string" ? v : JSON.stringify(v))).join(" · ");
+}
+function short(id) {
+  return id && id.length > 8 ? "…" + id.slice(-6) : (id || "?");
+}
+function newTokenId() {
+  let n = Date.now();
+  let head = "";
+  for (let i = 0; i < 10; i++) { head = CROCKFORD[n % 32] + head; n = Math.floor(n / 32); }
+  let tail = "";
+  for (let i = 0; i < 16; i++) tail += CROCKFORD[Math.floor(Math.random() * 32)];
+  return head + tail;
+}
+function nowTs() {
+  return new Date().toISOString();
+}
+function fmtCond(c) {
+  if (!c) return "";
+  if (c.Via) return "via " + c.Via;
+  if (c.Exists) return "exists " + c.Exists;
+  if (c.Count) {
+    const op = c.Count.op === "Ge" ? ">=" : (c.Count.op === "Eq" ? "=" : c.Count.op);
+    return "count " + c.Count.ty + " " + op + " " + c.Count.n;
+  }
+  if (c.And) return "(" + fmtCond(c.And[0]) + " and " + fmtCond(c.And[1]) + ")";
+  if (c.Or) return "(" + fmtCond(c.Or[0]) + " or " + fmtCond(c.Or[1]) + ")";
+  if (c.Not) return "not " + fmtCond(c.Not);
+  return JSON.stringify(c);
+}
+
+function call(fn) {
+  return JSON.parse(fn());
+}
+
+// —— 装载 ——
+
+function load() {
+  if (!host) { toast("引擎尚未就绪"); return; }
+  const src = editor.value.trim();
+  if (!src) { toast("先粘贴或载入一份域声明"); return; }
+  const name = ($("#domainName").value.trim() || "demo").replace(/[^A-Za-z0-9_-]/g, "");
+  if (!name) { toast("域名只能包含字母、数字、_、-"); return; }
+  $("#domainName").value = name;
+
+  try {
+    const summary = call(() => host.load_domain_with(name, src, "default", nowTs(), true));
+    key = name + "/default";
+    facets = call(() => host.facets(key));
+    participant = facets.participants[0] || null;
+    log = [];
+    $("#loadMsg").innerHTML = "";
+    $("#btnExport").disabled = false;
+    refresh();
+    setStatus("已装载 · " + host.abi_version(), "ok");
+    toast(`已装载 ${summary.name}：${summary.types} 个类型，${summary.gates} 条 gate`);
+  } catch (e) {
+    key = null;
+    facets = null;
+    participant = null;
+    counterView = { tokens: [], size: 0 };
+    archiveView = { entries: [], size: 0 };
+    statusView = { counter_size: 0, archive_size: 0, terminated: false };
+    log = [];
+    renderLoadError(e);
+    renderEmpty();
+    setStatus("装载被拒绝", "bad");
+  }
+}
+
+function renderLoadError(e) {
+  const p = parseErr(e);
+  const code = p.code || "Error";
+  let html = "";
+  if (code === "WellFormedness" && Array.isArray(p.detail)) {
+    html += `<div class="banner bad">良构检查未通过：${p.detail.length} 处违规。修完才能装载。</div>`;
+    html += p.detail.map(v => {
+      const d = detailOf(v);
+      return `<div class="issue"><div class="code">${esc(d.code)}</div>
+        <div class="detail">${esc(fmtData(d.data))}</div>
+        <div class="fix">到域作者工作台按提示修复后，再粘回这里。</div></div>`;
+    }).join("");
+  } else {
+    html += `<div class="banner bad">${code === "Syntax" ? "解析失败：先修语法。" : "装载失败：" + esc(code)}</div>`;
+    html += `<div class="issue"><div class="code">${esc(code)}</div>
+      <div class="detail">${esc(p.message || errText(e))}</div>
+      <div class="fix">${esc(RULE_HINTS[code] || "检查四段顺序、标识符、未声明类型与空 LHS。")}</div></div>`;
+  }
+  $("#loadMsg").innerHTML = html;
+}
+
+function renderEmpty() {
+  $("#participants").innerHTML = "";
+  $("#actionArea").innerHTML = `<div class="empty">先装载一个域。</div>`;
+  $("#detail").innerHTML = "";
+  $("#counterBox").innerHTML = `<div class="empty">未装载。</div>`;
+  $("#archiveBox").innerHTML = `<div class="empty">未装载。</div>`;
+  $("#gatesBox").innerHTML = `<div class="empty">未装载。</div>`;
+  $("#log").innerHTML = `<div class="empty">还没有动作。</div>`;
+  $("#cardCounter .v").textContent = "0";
+  $("#cardArchive .v").textContent = "0";
+  $("#cardTerm .v").textContent = "—";
+  $("#termNote").innerHTML = "";
+  $("#btnExport").disabled = true;
+}
+
+// —— 刷新与渲染 ——
+
+function refresh() {
+  if (!key) return;
+  counterView = call(() => host.counter(key, undefined));
+  archiveView = call(() => host.archive(key, undefined));
+  statusView = call(() => host.status(key));
+  renderParticipants();
+  renderStatus();
+  renderCounter();
+  renderArchive();
+  renderGates();
+  renderActions();
+  renderLog();
+}
+
+function renderParticipants() {
+  const box = $("#participants");
+  box.innerHTML = "";
+  (facets.participants || []).forEach(p => {
+    const b = document.createElement("button");
+    b.className = "chip" + (p === participant ? " on" : "");
+    b.textContent = p;
+    b.addEventListener("click", () => {
+      participant = p;
+      $("#detail").innerHTML = "";
+      renderParticipants();
+      renderActions();
+    });
+    box.appendChild(b);
+  });
+}
+
+function renderStatus() {
+  const s = statusView;
+  $("#cardCounter .v").textContent = s.counter_size;
+  $("#cardArchive .v").textContent = s.archive_size;
+  $("#cardTerm").className = "card " + (s.terminated ? "warn" : "ok");
+  $("#cardTerm .v").textContent = s.terminated ? "已成立" : "未成立";
+  const initial = log.length === 0 && s.counter_size === 0 && s.archive_size === 0;
+  $("#termNote").innerHTML = s.terminated
+    ? (initial
+      ? `<div class="banner warn" style="margin:10px 0 0">装载后的初始状态：Counter 为空、暂时无人能生产，
+          Rule-T 因此成立。这是<b>信息性</b>判定，seed 第一个 token 后即翻回未成立。</div>`
+      : `<div class="banner warn" style="margin:10px 0 0">Counter 已空且无人能生产：Rule-T 成立。
+         这是<b>信息性</b>判定，不锁定实例——再 seed 一次就会翻回未成立。</div>`)
+    : "";
+}
+
+function groupByType(tokens) {
+  const m = new Map();
+  tokens.forEach(t => {
+    if (!m.has(t.type)) m.set(t.type, []);
+    m.get(t.type).push(t);
+  });
+  return m;
+}
+
+function renderCounter() {
+  const box = $("#counterBox");
+  const tokens = counterView.tokens || [];
+  if (!tokens.length) { box.innerHTML = `<div class="empty">Counter 为空。</div>`; return; }
+  let html = "";
+  [...groupByType(tokens)].sort((a, b) => a[0].localeCompare(b[0])).forEach(([ty, list]) => {
+    html += `<div class="sec"><h3>${esc(ty)} <span class="pill">${list.length}</span></h3>`;
+    list.forEach(t => {
+      html += `<div class="row">
+        <div class="main">
+          <div class="t">${esc(short(t.id))}<span class="pill">${esc(t.produced_by)}</span></div>
+          <div class="s">${t.depends_on && t.depends_on.length ? "前驱 " + t.depends_on.map(short).map(esc).join(", ") : "无前驱"}</div>
+        </div>
+        <button data-tok="${esc(t.id)}">看详情</button>
+      </div>`;
+    });
+    html += "</div>";
+  });
+  box.innerHTML = html;
+  box.querySelectorAll("[data-tok]").forEach(b => {
+    b.addEventListener("click", () => showToken(counterView.tokens.find(t => t.id === b.dataset.tok)));
+  });
+}
+
+function renderArchive() {
+  const box = $("#archiveBox");
+  const entries = archiveView.entries || [];
+  if (!entries.length) { box.innerHTML = `<div class="empty">Archive 为空。</div>`; return; }
+  let html = "";
+  entries.forEach(en => {
+    const t = en.token;
+    html += `<div class="row">
+      <div class="main">
+        <div class="t">${esc(t.type)} <span class="pill">${esc(short(t.id))}</span></div>
+        <div class="s">被 ${esc(en.exhausted_by)} 消费 · 前驱 ${t.depends_on && t.depends_on.length ? t.depends_on.map(short).map(esc).join(", ") : "无"}</div>
+      </div>
+      <button data-arc="${esc(t.id)}">看详情</button>
+    </div>`;
+  });
+  box.innerHTML = html;
+  box.querySelectorAll("[data-arc]").forEach(b => {
+    b.addEventListener("click", () => {
+      const en = archiveView.entries.find(e => e.token.id === b.dataset.arc);
+      showJson(`Archive 条目 ${short(en.token.id)}`, en);
+    });
+  });
+}
+
+function renderGates() {
+  const box = $("#gatesBox");
+  let html = "";
+  const pre = facets.preconditions || [];
+  html += `<details open><summary>前置图（Precond）</summary><div class="inner">`;
+  if (!pre.length) html += `<div class="empty">没有前置规则：所有类型都是源类型。</div>`;
+  pre.forEach(r => {
+    html += `<div class="row"><div class="main">
+      <div class="t">${r.predecessors.map(esc).join(" + ")} → ${esc(r.target)}</div>
+      <div class="s">生产 ${esc(r.target)} 需要这些类型的 token 同时在场</div>
+    </div></div>`;
+  });
+  html += `</div></details>`;
+
+  (facets.participants || []).forEach(p => {
+    let clauses = [];
+    try { clauses = call(() => host.gates(key, p)); } catch (_) { clauses = []; }
+    const by = { read: [], consume: [], produce: [] };
+    clauses.forEach(c => { (by[c.action] || []).push(c); });
+    const label = a => by[a].length
+      ? by[a].map(c => esc(c.type) + (c.condition ? `<span class="pill warn">${esc(fmtCond(c.condition))}</span>` : "")).join("、")
+      : `<span class="hint">—</span>`;
+    html += `<details><summary>${esc(p)}</summary><div class="inner">
+      <div class="row"><div class="main"><div class="s">reads</div><div class="t">${label("read")}</div></div></div>
+      <div class="row"><div class="main"><div class="s">consumes</div><div class="t">${label("consume")}</div></div></div>
+      <div class="row"><div class="main"><div class="s">produces</div><div class="t">${label("produce")}</div></div></div>
+    </div></details>`;
+  });
+  box.innerHTML = html;
+}
+
+function renderActions() {
+  if (!key) { $("#actionArea").innerHTML = `<div class="empty">先装载一个域。</div>`; return; }
+  if (!participant) { $("#actionArea").innerHTML = `<div class="empty">这个域没有参与者。</div>`; return; }
+
+  let gates = [];
+  try { gates = call(() => host.gates(key, participant)); } catch (_) { gates = []; }
+  const canRead = new Set(gates.filter(g => g.action === "read").map(g => g.type));
+  const consumeCond = new Map(gates.filter(g => g.action === "consume").map(g => [g.type, g.condition]));
+  const seeds = (facets.seeds || []).filter(s => s.participant === participant).map(s => s.type);
+  let enabled = [];
+  try { enabled = call(() => host.enabled(key, participant)); } catch (_) { enabled = []; }
+
+  let html = "";
+
+  // Rule-S
+  html += `<div class="sec"><h3>种子（Rule-S）· ${esc(participant)}</h3>`;
+  if (seeds.length) {
+    html += `<div class="toolbar" style="margin:0">` +
+      seeds.map(ty => `<button data-seed="${esc(ty)}">seed ${esc(ty)}</button>`).join("") + `</div>`;
+    html += `<div class="hint">豁免前置，但需种子权。</div>`;
+  } else {
+    html += `<div class="empty">该参与者没有种子权。</div>`;
+  }
+  html += `</div>`;
+
+  // Rule-W
+  html += `<div class="sec"><h3>可生产（Rule-W）· 引擎给出的可行组合</h3>`;
+  if (enabled.length) {
+    enabled.forEach((o, i) => {
+      html += `<div class="row">
+        <div class="main">
+          <div class="t">produce ${esc(o.ty)}</div>
+          <div class="s">前驱见证：${(o.witness_predecessors || []).map(short).map(esc).join(" + ") || "无"}</div>
+        </div>
+        <button data-prod="${i}">生产</button>
+      </div>`;
+    });
+    html += `<div class="hint">前驱只读不消费，生产后仍留在 Counter 上。</div>`;
+  } else {
+    html += `<div class="empty">当前没有满足前置的组合：先 seed，或检查前置图。</div>`;
+  }
+  html += `</div>`;
+
+  // Rule-R
+  const readable = (counterView.tokens || []).filter(t => canRead.has(t.type));
+  html += `<div class="sec"><h3>读取（Rule-R）· 只对 Counter 上的 token 成立</h3>`;
+  if (readable.length) {
+    readable.forEach(t => {
+      html += `<div class="row">
+        <div class="main"><div class="t">${esc(t.type)} <span class="pill">${esc(short(t.id))}</span></div>
+          <div class="s">produced_by ${esc(t.produced_by)}</div></div>
+        <button data-read="${esc(t.id)}">读取</button>
+      </div>`;
+    });
+  } else {
+    html += `<div class="empty">没有你可读的在场 token。</div>`;
+  }
+  html += `</div>`;
+
+  // Rule-E
+  const consumable = (counterView.tokens || []).filter(t => consumeCond.has(t.type));
+  html += `<div class="sec"><h3>消费（Rule-E）· 显式、无级联、不可逆</h3>`;
+  if (consumable.length) {
+    consumable.forEach(t => {
+      const cond = consumeCond.get(t.type);
+      html += `<div class="row">
+        <div class="main"><div class="t">${esc(t.type)} <span class="pill">${esc(short(t.id))}</span>
+          ${cond ? `<span class="pill warn">${esc(fmtCond(cond))}</span>` : `<span class="pill ok">无条件</span>`}</div></div>
+        <button data-cons="${esc(t.id)}">消费</button>
+      </div>`;
+    });
+  } else {
+    html += `<div class="empty">没有你可消费的在场 token。</div>`;
+  }
+  html += `</div>`;
+
+  const area = $("#actionArea");
+  area.innerHTML = html;
+  area.querySelectorAll("[data-seed]").forEach(b => b.addEventListener("click", () => doSeed(b.dataset.seed)));
+  area.querySelectorAll("[data-prod]").forEach(b => b.addEventListener("click", () => doProduce(enabled[Number(b.dataset.prod)])));
+  area.querySelectorAll("[data-read]").forEach(b => b.addEventListener("click", () => doRead(b.dataset.read)));
+  area.querySelectorAll("[data-cons]").forEach(b => b.addEventListener("click", () => doConsume(b.dataset.cons)));
+}
+
+function pushLog(seq, text, raw) {
+  log.push({ seq, text, raw });
+  if (log.length > 200) log.shift();
+  renderLog();
+}
+
+function renderLog() {
+  const box = $("#log");
+  if (!log.length) { box.innerHTML = `<div class="empty">还没有动作。</div>`; return; }
+  box.innerHTML = log.slice().reverse().map((e) => {
+    return `<div class="logline"><div class="n">${e.seq == null ? "—" : "#" + e.seq}</div>
+      <div class="x">${esc(e.text)}</div></div>` + (e.raw
+        ? `<details style="margin:4px 0 8px 52px"><summary>原始事件</summary>
+             <div class="inner"><pre class="json">${esc(e.raw)}</pre></div></details>`
+        : "");
+  }).join("");
+}
+
+function showJson(title, obj) {
+  $("#detail").innerHTML = `<div class="sec"><h3>${esc(title)}</h3>
+    <pre class="json">${esc(JSON.stringify(obj, null, 2))}</pre></div>`;
+}
+
+function showToken(t) {
+  if (t) showJson(`Token ${short(t.id)}（${t.type}）`, t);
+}
+
+// —— 动作 ——
+
+function run(label, fn) {
+  if (!key) { toast("先装载一个域"); return false; }
+  try {
+    fn();
+    return true;
+  } catch (e) {
+    const p = parseErr(e);
+    const code = p.code || "Error";
+    $("#detail").innerHTML = `<div class="sec"><h3>被拒绝：${esc(code)}</h3>
+      <div class="issue"><div class="code">${esc(code)}</div>
+        <div class="detail">${esc(p.message || errText(e))}</div>
+        <div class="fix">${esc(RULE_HINTS[code] || "这是范式规则对你这次动作的裁决。")}</div></div></div>`;
+    toast(`被拒绝：${code}`);
+    pushLog(null, `拒绝 ${label} → ${code}`, null);
+    return false;
+  }
+}
+
+function commitPrepared(prep, label) {
+  if (!prep.tx_id) {
+    pushLog(null, label + "（幂等命中，无新事件）", null);
+    return;
+  }
+  const c = call(() => host.commit(prep.tx_id, undefined));
+  pushLog(c.seq, label, c.event);
+  if (c.terminated) {
+    pushLog(c.terminated.seq, "Rule-T 成立：Counter 为空且无人可生产（信息性，不锁定实例）", c.terminated.event);
+  }
+}
+
+function doSeed(ty) {
+  run(`seed ${ty}`, () => {
+    const id = newTokenId();
+    const prep = call(() => host.prepare_seed(key, participant, ty, undefined, id, nowTs()));
+    const tok = prep.result;
+    commitPrepared(prep, `seed ${ty} · ${participant} → ${short(tok.id)}`);
+    refresh();
+    toast(`已注入 ${ty}`);
+  });
+}
+
+function doProduce(opt) {
+  run(`produce ${opt.ty}`, () => {
+    const id = newTokenId();
+    const preds = JSON.stringify(opt.witness_predecessors || []);
+    const prep = call(() => host.prepare_produce(key, participant, opt.ty, preds, undefined, id, nowTs()));
+    const tok = prep.result;
+    commitPrepared(prep,
+      `produce ${opt.ty} · ${participant} ← [${(opt.witness_predecessors || []).map(short).join(", ")}] → ${short(tok.id)}`);
+    refresh();
+    toast(`已生产 ${opt.ty}；前驱仍在 Counter`);
+  });
+}
+
+function doRead(id) {
+  run(`read ${short(id)}`, () => {
+    const tok = call(() => host.read(key, participant, id));
+    showJson(`Rule-R 读取 ${tok.type} ${short(tok.id)}（无状态变更）`, tok);
+    toast("已读取");
+  });
+}
+
+function doConsume(id) {
+  const t = (counterView.tokens || []).find(x => x.id === id);
+  run(`consume ${t ? t.type : short(id)}`, () => {
+    const prep = call(() => host.prepare_consume(key, participant, id, newTokenId(), nowTs()));
+    const entry = prep.result;
+    const ty = entry && entry.token ? entry.token.type : "token";
+    commitPrepared(prep, `consume ${ty} ${short(id)} · ${participant}（已进 Archive，不可逆）`);
+    refresh();
+    toast(`已消费 ${ty}`);
+  });
+}
+
+// —— 启动 ——
+
+function boot() {
+  try {
+    const bin = Uint8Array.from(atob(WASM_B64), c => c.charCodeAt(0));
+    Promise.resolve(wasm_bindgen({ module_or_path: bin })).then(() => {
+      host = new wasm_bindgen.PactWasm();
+      setStatus("引擎就绪 · " + host.abi_version(), "ok");
+      if (editor.value.trim()) load();
+    }).catch(e => {
+      setStatus("引擎初始化失败", "bad");
+      $("#loadMsg").innerHTML = `<div class="issue"><div class="code">WasmInit</div>
+        <div class="detail">${esc(errText(e))}</div></div>`;
+    });
+  } catch (e) {
+    setStatus("引擎解码失败", "bad");
+    $("#loadMsg").innerHTML = `<div class="issue"><div class="code">WasmDecode</div>
+      <div class="detail">${esc(errText(e))}</div></div>`;
+  }
+}
+
+function initUi() {
+  const sel = $("#templates");
+  Object.keys(TEMPLATES).forEach(name => {
+    const o = document.createElement("option");
+    o.value = name;
+    o.textContent = name;
+    sel.appendChild(o);
+  });
+  sel.addEventListener("change", () => {
+    if (!sel.value) return;
+    editor.value = TEMPLATES[sel.value];
+    $("#domainName").value = "demo";
+    $("#loadMsg").innerHTML = "";
+    sel.value = "";
+    if (host) load();
+  });
+
+  $("#btnLoad").addEventListener("click", load);
+  $("#btnExport").addEventListener("click", () => {
+    if (!key) return;
+    try {
+      const text = host.export_events(key);
+      const blob = new Blob([text], { type: "application/x-ndjson;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (key.split("/")[0] || "domain") + ".events.jsonl";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("已导出事件日志");
+    } catch (e) {
+      toast("导出失败：" + parseErr(e).code);
+    }
+  });
+
+  editor.value = TEMPLATES["R1 线性流水线"] || "";
+  boot();
+}
+
+initUi();
+</script>
+</body>
+</html>

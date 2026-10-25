@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="PACT 浏览器入口：离线写域、纯内存运行、生成接入配置。">
+<title>PACT · 浏览器入口</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#fff; --ink:#1a1f2b; --muted:#5b6577;
+    --line:#dfe3ea; --accent:#1f6feb; --accent-weak:#e8f0fe;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif}
+  main{max-width:960px;margin:0 auto;padding:56px 20px 64px}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:.2px}
+  .lead{color:var(--muted);margin:0 0 28px;max-width:60ch}
+  .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+  a.card{display:block;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 16px 14px;text-decoration:none;color:inherit;transition:border-color .15s,transform .15s}
+  a.card:hover{border-color:#b8c0cd;transform:translateY(-1px)}
+  a.card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .step{font-size:11.5px;color:var(--muted);letter-spacing:.4px}
+  .name{font-size:15px;font-weight:650;margin:4px 0 6px}
+  .desc{font-size:12.5px;color:var(--muted);margin:0}
+  code{font-family:var(--mono);font-size:12px;background:var(--accent-weak);
+    border-radius:4px;padding:1px 4px}
+  .note{margin-top:26px;border-top:1px solid var(--line);padding-top:16px;
+    color:var(--muted);font-size:12.5px;display:grid;gap:6px}
+  .note a{color:var(--muted)}
+  .footer{margin-top:22px;color:var(--muted);font-size:12px;text-align:center}
+  @media(max-width:760px){
+    main{padding:36px 14px 48px}
+    h1{font-size:23px}
+    .cards{grid-template-columns:1fr}
+  }
+  @media(max-width:480px){
+    main{padding:26px 10px 36px}
+    h1{font-size:20px}
+    .lead{font-size:13px;margin-bottom:20px}
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>PACT 浏览器入口</h1>
+  <p class="lead">三个单文件页面，覆盖从“写下第一份域声明”到“接到 agent”的完整路径。全部离线运行，不联网、不上传。</p>
+
+  <div class="cards">
+    <a class="card" href="./authoring/index.html">
+      <div class="step">第一步 · L2</div>
+      <div class="name">写域</div>
+      <p class="desc">域作者工作台：六个形状配方、内嵌分析器与作者契约，浏览器内跑与 <code>pact analyze</code> 同源的检查。</p>
+    </a>
+    <a class="card" href="./sandbox/index.html">
+      <div class="step">第二步 · L3</div>
+      <div class="name">跑一遍</div>
+      <p class="desc">运行沙盒：以不同参与者身份 seed / produce / read / consume，实时看 Counter、Archive 与 Rule-T。</p>
+    </a>
+    <a class="card" href="./connect/index.html">
+      <div class="step">第三步 · L4</div>
+      <div class="name">接到 agent</div>
+      <p class="desc">接入向导：按本机 stdio 或远程 HTTP 生成 <code>pact.toml</code>、MCP 客户端配置与启动命令。</p>
+    </a>
+  </div>
+
+  <div class="note">
+    <span>三个页面均为单文件、无外部资源、无网络请求；也可下载仓库后直接双击打开。</span>
+    <span>第三方页面可嵌入任一页面：<code>&lt;iframe src="…/index.html?embed=1"&gt;</code> 只保留内容区与状态胶囊。</span>
+    <span>源码与命令行实现：<a href="https://github.com/onlookor/pact-collab" target="_blank" rel="noreferrer">github.com/onlookor/pact-collab</a></span>
+  </div>
+
+  <div class="footer">PACT · Precondition-governed Autonomous Counter-based Token</div>
+</main>
+</body>
+</html>

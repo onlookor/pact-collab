@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PACT 接入向导</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#fff; --ink:#1a1f2b; --muted:#5b6577;
+    --line:#dfe3ea; --accent:#1f6feb; --accent-weak:#e8f0fe;
+    --ok:#0a7a47; --ok-weak:#e6f4ec; --warn:#8a5a00; --warn-weak:#fdf3d8;
+    --bad:#b42318; --bad-weak:#fdecea; --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif}
+  header{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.94);
+    border-bottom:1px solid var(--line);backdrop-filter:blur(8px)}
+  .bar{max-width:1180px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12px}
+  .status{margin-left:auto;font-size:12px;padding:4px 10px;border-radius:999px;background:#eef1f5;
+    color:var(--muted);border:1px solid var(--line);white-space:nowrap}
+  .status.ok{background:var(--ok-weak);color:var(--ok);border-color:#bfe3cd}
+  main{max-width:1180px;margin:0 auto;padding:18px 20px 60px;display:grid;
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+  @media(max-width:980px){main{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;min-width:0}
+  .panel h2{font-size:13px;margin:0;padding:12px 14px;border-bottom:1px solid var(--line);
+    font-weight:650;letter-spacing:.3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .panel .body{padding:14px}
+  .panel h2 .tag{font-size:11px;font-weight:400;color:var(--muted);background:#eef1f5;
+    border:1px solid var(--line);border-radius:999px;padding:1px 8px}
+  .wide{grid-column:1/-1}
+  .fields{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:600px){.fields{grid-template-columns:1fr}}
+  .field{min-width:0}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+  .field input,.field select{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;
+    background:#fff;color:var(--ink);font-family:inherit;font-size:13px}
+  .field .note{font-size:11.5px;color:var(--muted);margin-top:4px}
+  .seg{display:flex;gap:8px;flex-wrap:wrap}
+  .seg button{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:#fff;
+    color:var(--ink);cursor:pointer;font-size:13px}
+  .seg button.on{background:var(--accent-weak);border-color:#b9d1f7;color:var(--accent);font-weight:600}
+  button{padding:7px 13px;border-radius:8px;border:1px solid var(--line);background:#fff;color:var(--ink);
+    cursor:pointer;font-size:13px;font-family:inherit}
+  button:hover{border-color:#b8c0cd}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .codebar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+  .codebar .name{font-size:12px;color:var(--muted);font-family:var(--mono)}
+  .codebar button{margin-left:auto}
+  pre.code{background:#0f141d;color:#d7e0ee;border-radius:10px;padding:12px;overflow:auto;
+    max-height:340px;font-family:var(--mono);font-size:12.5px;line-height:1.6;margin:0}
+  .banner{border-radius:10px;padding:9px 12px;font-size:12.5px;margin-bottom:10px;border:1px solid}
+  .banner.warn{background:var(--warn-weak);border-color:#efd9a3;color:var(--warn)}
+  .banner.bad{background:var(--bad-weak);border-color:#f3c2bd;color:var(--bad)}
+  .banner.ok{background:var(--ok-weak);border-color:#bfe3cd;color:var(--ok)}
+  .hint{color:var(--muted);font-size:12.5px}
+  ul.tips{margin:8px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px}
+  ul.tips li{margin:4px 0}
+  .kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-bottom-width:2px;
+    border-radius:4px;padding:1px 4px;color:var(--muted);background:#fff}
+  .toast{position:fixed;right:20px;bottom:20px;background:#1a1f2b;color:#fff;padding:9px 14px;
+    border-radius:8px;font-size:13px;opacity:0;transform:translateY(6px);pointer-events:none;transition:.18s}
+  .toast.show{opacity:1;transform:none}
+  .footer{grid-column:1/-1;color:var(--muted);font-size:12px;text-align:center;margin-top:6px}
+  .footer a{color:var(--muted)}
+  @media(max-width:760px){
+    main{padding:14px 12px 48px;gap:12px}
+    .bar{padding:8px 12px;gap:8px}
+    h1{font-size:15px}
+    .sub{display:none}
+    .panel h2{padding:10px 12px}
+    .panel .body{padding:12px}
+    .status{font-size:11.5px;padding:3px 8px}
+  }
+  @media(max-width:480px){
+    main{padding:10px 8px 40px}
+    .panel{border-radius:10px}
+    .panel .body{padding:10px}
+    input,select,textarea,.field input,.field select{font-size:16px}
+    pre.code{max-height:260px;font-size:12px}
+    button{padding:8px 12px}
+  }
+  html.embed header .bar{padding:6px 12px;justify-content:flex-end;gap:8px}
+  html.embed h1,html.embed .sub{display:none}
+  html.embed main{max-width:none;padding:12px 12px 28px}
+  html.embed .footer{display:none}
+  @media(max-width:480px){html.embed main{padding:8px 6px 20px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>PACT 接入向导</h1>
+    <span class="sub">生成 pact.toml、MCP 客户端配置与启动命令（本地生成，不联网）</span>
+    <span class="status ok" id="status">就绪</span>
+  </div>
+</header>
+
+<main>
+  <section class="panel wide">
+    <h2>1 你的域 <span class="tag">先有能通过 analyze 的 .pact</span></h2>
+    <div class="body">
+      <div class="seg" id="modeSeg" role="group" aria-label="传输方式">
+        <button data-mode="stdio" class="on">本机 stdio（推荐）</button>
+        <button data-mode="http">远程 Streamable HTTP</button>
+      </div>
+      <p class="hint" id="modeHint" style="margin:8px 0 12px"></p>
+      <div class="fields">
+        <div class="field">
+          <label for="domain">域名</label>
+          <input id="domain" value="demo" spellcheck="false">
+          <div class="note">由文件名决定（<code>domain load</code> 取文件 stem）；改域名会同步改文件名。</div>
+        </div>
+        <div class="field">
+          <label for="file">域文件路径</label>
+          <input id="file" value="./domains/demo.pact" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="data">数据目录 data_dir</label>
+          <input id="data" value="./data" spellcheck="false">
+        </div>
+        <div class="field" id="sockField">
+          <label for="sock">unix socket 路径</label>
+          <input id="sock" value="./pact.sock" spellcheck="false">
+        </div>
+        <div class="field" id="binField">
+          <label for="bin">pact-mcp 可执行文件</label>
+          <input id="bin" value="pact-mcp" spellcheck="false">
+          <div class="note">MCP 宿主的工作目录不确定，stdio 的 <code>command</code> 与 socket 建议写绝对路径。</div>
+        </div>
+        <div class="field" id="tcpField" hidden>
+          <label for="tcp">监听地址 listen_tcp</label>
+          <input id="tcp" value="127.0.0.1:8787" spellcheck="false">
+        </div>
+        <div class="field" id="urlField" hidden>
+          <label for="url">对外地址 public_url</label>
+          <input id="url" value="http://127.0.0.1:8787" spellcheck="false">
+          <div class="note">跨机部署请用 <code>https://</code> 并配置 <code>[tls]</code>；明文只用于回环。</div>
+        </div>
+        <div class="field" id="tokenField" hidden>
+          <label for="token">静态令牌 <span class="hint">（参与者 agent）</span></label>
+          <input id="token" spellcheck="false">
+          <div class="note"><button id="btnToken" style="padding:4px 9px;font-size:12px">生成随机令牌</button></div>
+        </div>
+      </div>
+      <div id="warn"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>2 pact.toml</h2>
+    <div class="body">
+      <div class="codebar"><span class="name">pact.toml</span>
+        <button data-copy="toml">复制</button>
+        <button id="btnDownload">下载</button></div>
+      <pre class="code" id="toml"></pre>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>3 MCP 客户端配置</h2>
+    <div class="body">
+      <div class="codebar"><span class="name" id="clientName">mcp.json</span>
+        <button data-copy="client">复制</button></div>
+      <pre class="code" id="client"></pre>
+      <p class="hint" style="margin:8px 0 0" id="clientNote"></p>
+    </div>
+  </section>
+
+  <section class="panel wide">
+    <h2>4 启动与装载</h2>
+    <div class="body">
+      <div class="codebar"><span class="name">终端命令</span>
+        <button data-copy="cmds">复制</button></div>
+      <pre class="code" id="cmds"></pre>
+    </div>
+  </section>
+
+  <section class="panel wide">
+    <h2>5 接上之后</h2>
+    <div class="body">
+      <ul class="tips" id="tips"></ul>
+    </div>
+  </section>
+
+  <div class="footer">
+    参数与 <span class="kbd">pact --help</span> / <span class="kbd">pact-mcp --help</span> 对齐；
+    域写不出来请用 <a href="../authoring/index.html" target="_blank" rel="noopener">域作者工作台</a>，
+    想先试跑用 <a href="../sandbox/index.html" target="_blank" rel="noopener">运行沙盒</a>。
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+document.documentElement.classList.toggle("embed", new URLSearchParams(location.search).has("embed"));
+
+const $ = (s) => document.querySelector(s);
+const state = { mode: "stdio" };
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function toast(text) {
+  const t = $("#toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => t.classList.remove("show"), 1800);
+}
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast("已复制");
+  } catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+    toast("已复制");
+  }
+}
+function randToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+function nowToken() {
+  if (!$("#token").value) $("#token").value = randToken();
+}
+
+function cleanDomain(v) {
+  return v.replace(/[^A-Za-z0-9_-]/g, "");
+}
+function isAbsolute(p) {
+  return /^\//.test(p);
+}
+function stem(path) {
+  const base = path.split("/").pop() || "";
+  return base.replace(/\.pact$/i, "");
+}
+function dirOf(path) {
+  const i = path.lastIndexOf("/");
+  return i >= 0 ? path.slice(0, i + 1) : "";
+}
+
+function buildToml() {
+  const data = $("#data").value.trim() || "./data";
+  const sock = $("#sock").value.trim() || "./pact.sock";
+  const lines = [`data_dir = "${data}"`, `listen_unix = "${sock}"`];
+  if (state.mode === "http") {
+    lines.push(`listen_tcp = "${$("#tcp").value.trim() || "127.0.0.1:8787"}"`);
+    lines.push("", "[mcp]", "enabled = true",
+      `public_url = "${$("#url").value.trim() || "http://127.0.0.1:8787"}"`);
+    lines.push("", "[auth.tokens]", `agent = "${$("#token").value.trim()}"`);
+  } else {
+    lines.push("", "# 只走本机 unix socket：信任声明模式，无令牌、无 TCP 端口。",
+      "# 需要多客户端/远程访问时切到“远程 Streamable HTTP”。");
+  }
+  return lines.join("\n") + "\n";
+}
+
+function buildClient() {
+  const domain = cleanDomain($("#domain").value) || "demo";
+  if (state.mode === "stdio") {
+    const bin = $("#bin").value.trim() || "pact-mcp";
+    const sock = $("#sock").value.trim() || "./pact.sock";
+    return JSON.stringify({
+      mcpServers: {
+        pact: { command: bin, args: ["--unix", sock] }
+      }
+    }, null, 2) + "\n";
+  }
+  const url = ($("#url").value.trim() || "http://127.0.0.1:8787").replace(/\/+$/, "") + "/mcp";
+  return JSON.stringify({
+    mcpServers: {
+      pact: {
+        type: "http",
+        url,
+        headers: { Authorization: "Bearer " + ($("#token").value.trim() || "<令牌>") }
+      }
+    }
+  }, null, 2) + "\n";
+}
+
+function buildCmds() {
+  const domain = cleanDomain($("#domain").value) || "demo";
+  const file = $("#file").value.trim() || "./domains/" + domain + ".pact";
+  const sock = $("#sock").value.trim() || "./pact.sock";
+  const token = $("#token").value.trim();
+  const bearer = state.mode === "http" ? ` --bearer ${token}` : "";
+  const prefix = `pact --unix ${sock}${bearer}`;
+  const lines = [
+    "# 0) 先离线校验（可选但推荐）",
+    `pact analyze ${file}`,
+    "",
+    "# 1) 启动 daemon（前台；保持这个终端）",
+    "pact daemon start --config pact.toml",
+    "",
+    "# 2) 另开一个终端：装载域（域名缺省取文件 stem）",
+    `${prefix} domain load ${file}`,
+    "",
+    "# 3) 自查：daemon 记下了什么",
+    `${prefix} domain list`,
+    `${prefix} status --domain ${domain}`,
+    "",
+    "# 4) 然后让 MCP 宿主启动/重连，调用 pact_my_gates 确认授权面"
+  ];
+  return lines.join("\n") + "\n";
+}
+
+function buildTips() {
+  const domain = cleanDomain($("#domain").value) || "demo";
+  const tips = [
+    `MCP 工具名固定为 <code>pact_*</code>；先 <code>pact_domain_validate</code>，再 <code>pact_domain_load</code>，避免把坏域装载进来。`,
+    `agent 每次行动前用 <code>pact_my_gates</code> / <code>pact_enabled</code> 自省；被 Gate 拒绝是正常结果，不是异常。`,
+    `装载后域名是 <code>${esc(domain)}</code>，实例缺省 <code>default</code>；查询与四类动作都要带 <code>--domain ${esc(domain)}</code>。`,
+    `Rule-P 不消费前驱，Rule-E 不可逆：让 agent 显式消费，不要假设“生产完就自动归档”。`,
+  ];
+  if (state.mode === "http") {
+    tips.push(`令牌只放在 MCP 宿主的请求头里；不要把令牌写进域声明或提交到仓库。`);
+    tips.push(`<code>[mcp].public_url</code> 的 authority 会进入 <code>/mcp</code> 的 Host 白名单；改成 https 时同步改 <code>public_url</code>。`);
+  } else {
+    tips.push(`stdio 模式的 <code>--unix</code> 必须是绝对路径：MCP 宿主的工作目录不是你的项目目录。`);
+  }
+  return tips.map(t => `<li>${t}</li>`).join("");
+}
+
+function warnings() {
+  const out = [];
+  const domain = $("#domain").value;
+  if (domain !== cleanDomain(domain)) out.push("域名含非法字符，已自动忽略。");
+  if (state.mode === "stdio") {
+    const sock = $("#sock").value.trim();
+    const bin = $("#bin").value.trim();
+    if (!isAbsolute(sock)) out.push(`stdio 的 socket 路径 <code>${esc(sock)}</code> 不是绝对路径，MCP 宿主很可能找不到它。`);
+    if (!sock.endsWith(".sock")) out.push("socket 路径通常以 .sock 结尾；请与 pact.toml 的 listen_unix 保持一致。");
+    if (!isAbsolute(bin) && !bin.includes("/")) out.push(`<code>${esc(bin)}</code> 依赖 PATH；MCP 宿主可能没有同样的 PATH，建议填绝对路径。`);
+  } else {
+    const token = $("#token").value.trim();
+    if (token.length < 16) out.push("令牌短于 16 字符，只适合本地临时试用。");
+    const url = $("#url").value.trim();
+    if (url.startsWith("http://") && !/^http:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(url)) {
+      out.push("明文 <code>http://</code> 对非回环地址不安全：请改用 https 或在内网前置 TLS 终结。");
+    }
+  }
+  return out;
+}
+
+function render() {
+  $("#domain").value = cleanDomain($("#domain").value) || "demo";
+  const toml = buildToml();
+  const client = buildClient();
+  const cmds = buildCmds();
+  $("#toml").textContent = toml;
+  $("#client").textContent = client;
+  $("#cmds").textContent = cmds;
+  $("#clientName").textContent = state.mode === "stdio" ? "mcp.json（stdio）" : "mcp.json（HTTP）";
+  $("#clientNote").innerHTML = state.mode === "stdio"
+    ? "多数宿主用 <code>mcpServers</code> + <code>command/args</code>；字段名以你的宿主文档为准。"
+    : "Streamable HTTP 的字段名随宿主而异（有的用 <code>transport</code> 或 <code>httpUrl</code>）；URL 与 Authorization 头是通用的。";
+  $("#tips").innerHTML = buildTips();
+  const warns = warnings();
+  $("#warn").innerHTML = warns.map(w => `<div class="banner warn">${w}</div>`).join("");
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  document.querySelectorAll("#modeSeg button").forEach(b => b.classList.toggle("on", b.dataset.mode === mode));
+  const http = mode === "http";
+  $("#tcpField").hidden = !http;
+  $("#urlField").hidden = !http;
+  $("#tokenField").hidden = !http;
+  $("#binField").hidden = http;
+  $("#sockField").hidden = false;
+  $("#modeHint").textContent = http
+    ? "daemon 直接提供 /mcp，MCP 宿主用 URL + Bearer 连接；适合多客户端或跨机（跨机请配 TLS）。"
+    : "MCP 宿主把 pact-mcp 作为子进程拉起，经本机 unix socket 转发到 daemon；无需端口、无令牌。";
+  if (http) nowToken();
+  render();
+}
+
+function init() {
+  document.querySelectorAll("#modeSeg button").forEach(b => {
+    b.addEventListener("click", () => setMode(b.dataset.mode));
+  });
+  ["data", "sock", "bin", "tcp", "url", "token"].forEach(id => {
+    $("#" + id).addEventListener("input", render);
+    $("#" + id).addEventListener("change", render);
+  });
+  // 域名与文件名保持一致：文件名是事实来源，改域名则改文件名。
+  $("#file").addEventListener("input", () => {
+    const s = cleanDomain(stem($("#file").value));
+    if (s) $("#domain").value = s;
+    render();
+  });
+  $("#domain").addEventListener("input", () => {
+    const d = cleanDomain($("#domain").value) || "demo";
+    $("#file").value = dirOf($("#file").value) + d + ".pact";
+    render();
+  });
+  $("#btnToken").addEventListener("click", () => { $("#token").value = randToken(); render(); });
+  document.querySelectorAll("[data-copy]").forEach(b => {
+    b.addEventListener("click", () => {
+      const map = { toml: buildToml(), client: buildClient(), cmds: buildCmds() };
+      copyText(map[b.dataset.copy]);
+    });
+  });
+  $("#btnDownload").addEventListener("click", () => {
+    const blob = new Blob([buildToml()], { type: "text/plain;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "pact.toml";
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("已下载 pact.toml");
+  });
+  setMode("stdio");
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+# 发布 web/ 下的三个单文件页面到 GitHub Pages。
+# 页面已在仓库中构建好（./web/build.sh 的产物），这里只做组装与发布，不在 CI 里重跑 wasm 构建。
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: deploy pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 组装站点（只发布 index.html，不含模板与构建脚本）
+        run: |
+          set -eu
+          mkdir -p _site/authoring _site/sandbox _site/connect
+          cp web/index.html _site/index.html
+          cp web/authoring/index.html _site/authoring/index.html
+          cp web/sandbox/index.html _site/sandbox/index.html
+          cp web/connect/index.html _site/connect/index.html
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

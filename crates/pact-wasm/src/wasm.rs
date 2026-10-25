@@ -217,6 +217,12 @@ impl PactWasm {
         to_json(self.host.gates(&key, participant).map_err(to_js)?)
     }
 
+    /// `facets(key) -> DomainFacets JSON`（参与者、种子授权、前置图）
+    pub fn facets(&self, key: &str) -> Result<String, JsValue> {
+        let key = parse_key(key)?;
+        to_json(self.host.facets(&key).map_err(to_js)?)
+    }
+
     /// `enabled(key, participant) -> ProductionOption[] JSON`
     pub fn enabled(&self, key: &str, participant: &str) -> Result<String, JsValue> {
         let key = parse_key(key)?;

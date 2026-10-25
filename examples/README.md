@@ -270,6 +270,11 @@ What event sourcing means here: **the JSONL is the source of truth**; the SQLite
 
 ### 7.1 Five modeling steps
 
+For an executable version of these steps — applicability gates, reusable shape recipes, per-type
+consumption rulings, and a tool-free self-check — see [`docs/authoring-contract.md`](../docs/authoring-contract.md).
+The steps below are the conceptual summary; the contract is what you (or a model) should follow when
+producing a new domain.
+
 1. **List the discrete artifacts** → `types { ... }`. Test: does the artifact participate in the collaboration through a discrete exists/doesn't-exist state? Continuous quantities (progress percentages, quality scores) are not PACT types.
 2. **Write "Y can be made only when X is in place"** → `preconditions { X → Y; {X + Z} → W; }`. **Conjunction (AND) only** — no OR branches. The right-hand side is unique (one precondition rule per type).
 3. **List who may read / consume / produce what** → `gates { p: reads T, consumes T, produces T'; }`. When you need ordering, use `via`: `reads T_b when via T_a` requires that **the very instance** of T_a which preceded T_b is still on the Counter when T_b is read. `produces` clauses **cannot carry conditions** (production legality is decided entirely by the precondition graph).
