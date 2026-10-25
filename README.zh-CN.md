@@ -22,7 +22,7 @@ PACT（Precondition-governed Autonomous Counter-based Token）是一种面向多
 
 ## 从哪里开始
 
-PACT 只有一条上手阶梯：域作者契约（L0）→ [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md)（L1）→ 浏览器工作台（L2）→ 运行沙盒（L3）→ 接入向导（L4）。三个浏览器步骤也可直接在线打开 **<https://onlookor.github.io/pact-collab/>**；每条路径都以 `pact analyze` 与[用户手册](docs/manual.md)收口。
+PACT 只有一条上手阶梯：域作者契约 → [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) → 浏览器工作台 → 运行沙盒 → 接入向导。三个浏览器步骤也可直接在线打开 **<https://onlookor.github.io/pact-collab/>**；每条路径都以 `pact analyze` 与[用户手册](docs/manual.md)收口。
 
 | 你的处境 | 先看 | 然后 |
 |---|---|---|

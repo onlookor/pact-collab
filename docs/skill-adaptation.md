@@ -161,7 +161,7 @@ seed 权威三档**完全相同**：全部 9 项由 `responsible_human` 持有�
 
 ### 4.5 落在配套层的档间差异（`.pact` 无词汇）
 
-频次（复审周期、批准时限）、工具形态（CI / 人工执行 CH-B）、注册表条目子集、检查单粒度——四类差异全部在裁剪模板 §2 参数包与 §3 装配画像中登记，`.pact` 不表达。这是设计而非缺陷：见 §7.2。
+频次（复审周期、批准时限）、工具形态（CI / 人工执行元框架总纲 §0.6 的 CH-B「不决定」通道）、注册表条目子集、检查单粒度——四类差异全部在裁剪模板 §2 参数包与 §3 装配画像中登记，`.pact` 不表达。这是设计而非缺陷：见 §7.2。
 
 ## 5. 机械校验
 
@@ -275,7 +275,7 @@ cd ~/projects/pact
 | 概率与模糊判据 | 风险 likelihood、"实质性影响"的程度判断 | 方法注册表条目的谓词 |
 | OR 多路由 | 批准 / 驳回 / 延期三分支 | 表现为"不产生任何 Token"（§1.4 零隐式动作） |
 | 图结构判据 | 冲突成环检测、血缘下游目检 | 走查规程（母本 x.6） |
-| 三值语义与 unknown 传播 | M15 勘察义务占位符 | 注册表台账 |
+| 三值语义与 unknown 传播 | 元框架总纲 §0.18.6 的 M15 性质：unknown 取值的适用性谓词不得静默排除候选，须保留候选并登记勘察义务 | 注册表台账 |
 | 成本数值 / SLO / 包络界表达式 | §0.15 包络、成本台账数值 | `cost_ledger` Token 的 ThingRef schema |
 | 角色位互不兼任 | 三级批准链独立性、Waiver 利益无关性 | `approval_registry_entry` 条目 + 部署前检查单 |
 
@@ -292,7 +292,7 @@ RE 侧同类维度：阶段时限、评审频次、验证抽样比例、"实质�
 原文正文称 `change_controller consumes old specification`，而 `re_fragment.pact` 声明 `consumes re_baseline, consumes change_approval`。推理确认**片段正确**：
 
 - `Precond(specification) = {raw_requirement}`，故 Rule-P 要求 `raw_requirement` 仍在 Counter；
-- 旧 `specification` 早在 S5 被 `validator` 消费（`consumes specification, produces validation_report`）；
+- 旧 `specification` 早在上游 RE 验证阶段（`requirements-engineering/stages/s5-validation.md`）被 `validator` 消费（`consumes specification, produces validation_report`）；
 - 变更到达时 Counter 上是 `raw_requirement` + `re_baseline`，**不是**旧 `specification`；
 - 因此消费 `re_baseline` 是唯一正确的"退役旧状态"动作。
 

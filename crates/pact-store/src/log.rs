@@ -139,6 +139,17 @@ pub fn snapshot_path(data_dir: &Path, domain: &str, instance: &str) -> PathBuf {
     domain_dir(data_dir, domain).join(format!("{instance}.snapshot.json"))
 }
 
+/// 域名 → 活动实例指针路径：`<data_dir>/<domain>/active.json`（活动实例别名）。
+pub fn active_path(data_dir: &Path, domain: &str) -> PathBuf {
+    domain_dir(data_dir, domain).join("active.json")
+}
+
+/// 实例键 → 冻结标记路径：`<data_dir>/<domain>/<instance>.sealed`。
+/// 存在即表示该实例只读（状态交接后的源实例）。
+pub fn sealed_path(data_dir: &Path, domain: &str, instance: &str) -> PathBuf {
+    domain_dir(data_dir, domain).join(format!("{instance}.sealed"))
+}
+
 /// 域名 → 声明原文文件路径：`<data_dir>/<domain>/declaration.pact`。
 /// 定义态缓存（非审计记录）：declare 时写入，recover 用它回填声明注册表。
 pub fn declaration_path(data_dir: &Path, domain: &str) -> PathBuf {
@@ -444,7 +455,7 @@ mod tests {
             read_and_sanitize(&path, 0),
             Err(StoreError::UnsupportedSchemaVersion {
                 found: 99,
-                supported: 1
+                supported: 2
             })
         ));
     }

@@ -57,7 +57,7 @@ const OK: StatusCode = StatusCode::OK;
 
 // ============ 断言用常量 ============
 
-const EXPECTED_TOOLS: [&str; 17] = [
+const EXPECTED_TOOLS: [&str; 21] = [
     "pact_domain_validate",
     "pact_domain_load",
     "pact_domain_instantiate",
@@ -74,6 +74,10 @@ const EXPECTED_TOOLS: [&str; 17] = [
     "pact_enabled",
     "pact_status",
     "pact_compact",
+    "pact_domain_handoff",
+    "pact_domain_activate",
+    "pact_domain_active",
+    "pact_domain_freeze",
     "pact_subscribe",
 ];
 
@@ -651,7 +655,7 @@ async fn mcp_http_initialize_and_tools_list() {
     let tools = msg["result"]["tools"]
         .as_array()
         .expect("tools/list 结果应含 tools 数组");
-    assert_eq!(tools.len(), 17, "应暴露 17 个工具");
+    assert_eq!(tools.len(), 21, "应暴露 21 个工具");
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     for expected in EXPECTED_TOOLS {
         assert!(names.contains(&expected), "缺少工具 {expected}");

@@ -24,4 +24,4 @@ pub use pact_store_model::{
     apply_event, to_wire_json, ApplyOutcome, Event, InstanceKey, ModelError, Snapshot, WireEvent,
     EVENT_SCHEMA_VERSION,
 };
-pub use store::{CompactionResult, RecoveredInstance, Store};
+pub use store::{ActivePointer, CompactionResult, RecoveredInstance, Store};

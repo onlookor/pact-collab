@@ -343,6 +343,7 @@ impl PactHost {
             .map(|(name, instances)| DomainListing {
                 name,
                 instances: instances.into_iter().collect(),
+                active: None,
             })
             .collect()
     }

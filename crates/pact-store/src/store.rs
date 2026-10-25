@@ -29,6 +29,42 @@ pub struct RecoveredInstance {
     pub base_seq: u64,
 }
 
+/// 活动实例指针（别名解析）：`<domain>/active.json`。
+///
+/// 缺省不存在 ⇒ 短路由回退到 `default` 实例；存在 ⇒ 短路由解析到该实例。
+/// `ts`/`by` 是控制面审计（版本 2 起写入；旧版文件缺失时为 `None`）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ActivePointer {
+    #[serde(default = "active_pointer_version")]
+    pub version: u32,
+    pub instance: String,
+    #[serde(default)]
+    pub ts: Option<String>,
+    #[serde(default)]
+    pub by: Option<String>,
+}
+
+fn active_pointer_version() -> u32 {
+    2
+}
+
+/// 冻结标记（`.sealed`）：JSON，记录原因与操作者/时间。
+///
+/// 旧版为纯文本原因；只读取文件存在性，故旧文件仍有效（视为无审计字段）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SealedMarker {
+    version: u32,
+    reason: String,
+    #[serde(default)]
+    ts: Option<String>,
+    #[serde(default)]
+    by: Option<String>,
+}
+
+fn sealed_marker_version() -> u32 {
+    2
+}
+
 /// 单实例前缀压缩结果（设计 §7.5）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactionResult {
@@ -98,13 +134,12 @@ impl Store {
             ))?;
             let snap_seq = snap.as_ref().map(|s| s.seq).unwrap_or(0);
 
-            // 压缩覆盖校验：日志中已无 `DomainLoaded`（前缀被压缩丢弃）时，
-            // 被丢弃前缀的状态只能由快照承载；快照缺失 → 历史不可恢复（fail-fast，
-            // 不静默丢数据）。允许"日志尚未截断"的崩溃中间态（超集，无害）。
-            let has_domain_loaded = events
-                .iter()
-                .any(|e| matches!(e, Event::DomainLoaded { .. }));
-            if !has_domain_loaded {
+            // 压缩覆盖校验：日志中已无状态基线（`DomainLoaded` / `Imported`，
+            // 前缀被压缩丢弃）时，被丢弃前缀的状态只能由快照承载；快照缺失 →
+            // 历史不可恢复（fail-fast，不静默丢数据）。允许"日志尚未截断"的
+            // 崩溃中间态（超集，无害）。
+            let has_baseline = events.iter().any(Event::is_baseline);
+            if !has_baseline {
                 let need = events
                     .first()
                     .map(|e| e.seq().saturating_sub(1))
@@ -186,6 +221,25 @@ impl Store {
     async fn index_project(&self, key: &InstanceKey, ev: &Event) -> Result<(), StoreError> {
         self.index.upsert_event(key, ev).await?;
         match ev {
+            Event::Imported { state, .. } => {
+                for token in state.counter.values() {
+                    self.index
+                        .upsert_token(key, token, &TokenStatus::Counter)
+                        .await?;
+                }
+                for entry in &state.archive {
+                    self.index
+                        .upsert_token(
+                            key,
+                            &entry.token,
+                            &TokenStatus::Archived {
+                                exhausted_by: entry.exhausted_by.clone(),
+                                exhausted_at: entry.exhausted_at.clone(),
+                            },
+                        )
+                        .await?;
+                }
+            }
             Event::Seeded { token, .. } | Event::Produced { token, .. } => {
                 self.index
                     .upsert_token(key, token, &TokenStatus::Counter)
@@ -341,6 +395,133 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(StoreError::Io {
                 context: "读取声明原文",
+                source: e,
+            }),
+        }
+    }
+
+    /// 写活动实例指针（原子：tmp → fsync → rename → 目录 fsync）。
+    /// `ts`/`by` 为控制面审计字段（`by` 在信任声明模式下为 `None`）。
+    pub fn write_active(
+        &self,
+        domain: &str,
+        instance: &str,
+        ts: &str,
+        by: Option<&str>,
+    ) -> Result<(), StoreError> {
+        validate_domain_name(domain)?;
+        validate_instance_name(instance)?;
+        let dir = log::domain_dir(&self.data_dir, domain);
+        std::fs::create_dir_all(&dir)?;
+        let path = log::active_path(&self.data_dir, domain);
+        let tmp = path.with_extension("json.tmp");
+        let body = serde_json::to_vec(&ActivePointer {
+            version: active_pointer_version(),
+            instance: instance.to_owned(),
+            ts: Some(ts.to_owned()),
+            by: by.map(str::to_owned),
+        })
+        .map_err(|e| StoreError::Json {
+            context: "活动实例指针序列化",
+            source: e,
+        })?;
+        std::fs::write(&tmp, &body)?;
+        if let Ok(f) = std::fs::File::open(&tmp) {
+            let _ = f.sync_all();
+        }
+        std::fs::rename(&tmp, &path)?;
+        if let Ok(d) = std::fs::File::open(&dir) {
+            let _ = d.sync_all();
+        }
+        Ok(())
+    }
+
+    /// 读活动实例指针（无 → None；损坏 → 解析失败，fail-fast 以免静默误路由）。
+    pub fn load_active_pointer(&self, domain: &str) -> Result<Option<ActivePointer>, StoreError> {
+        validate_domain_name(domain)?;
+        match std::fs::read(log::active_path(&self.data_dir, domain)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(StoreError::Io {
+                context: "读取活动实例指针",
+                source: e,
+            }),
+            Ok(bytes) => {
+                let p: ActivePointer =
+                    serde_json::from_slice(&bytes).map_err(|e| StoreError::Json {
+                        context: "活动实例指针解析",
+                        source: e,
+                    })?;
+                validate_instance_name(&p.instance)?;
+                Ok(Some(p))
+            }
+        }
+    }
+
+    /// 读活动实例名（无 → None），供路由与启动校验使用。
+    pub fn load_active(&self, domain: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.load_active_pointer(domain)?.map(|p| p.instance))
+    }
+
+    /// 清除活动实例指针（无则忽略）。
+    pub fn clear_active(&self, domain: &str) -> Result<(), StoreError> {
+        validate_domain_name(domain)?;
+        match std::fs::remove_file(log::active_path(&self.data_dir, domain)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(StoreError::Io {
+                context: "删除活动实例指针",
+                source: e,
+            }),
+        }
+    }
+
+    /// 写冻结标记（幂等；存在即只读）。记录原因、操作者与时间（控制面审计）。
+    pub fn write_sealed(
+        &self,
+        key: &InstanceKey,
+        reason: &str,
+        ts: &str,
+        by: Option<&str>,
+    ) -> Result<(), StoreError> {
+        key.validate()?;
+        let dir = log::domain_dir(&self.data_dir, &key.domain);
+        std::fs::create_dir_all(&dir)?;
+        let path = log::sealed_path(&self.data_dir, &key.domain, &key.instance);
+        if path.exists() {
+            return Ok(());
+        }
+        let body = serde_json::to_vec(&SealedMarker {
+            version: sealed_marker_version(),
+            reason: reason.to_owned(),
+            ts: Some(ts.to_owned()),
+            by: by.map(str::to_owned),
+        })
+        .map_err(|e| StoreError::Json {
+            context: "冻结标记序列化",
+            source: e,
+        })?;
+        let mut f = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
+        f.write_all(&body)?;
+        f.sync_all()?;
+        Ok(())
+    }
+
+    /// 是否存在冻结标记。
+    pub fn is_sealed(&self, key: &InstanceKey) -> bool {
+        log::sealed_path(&self.data_dir, &key.domain, &key.instance).exists()
+    }
+
+    /// 解除冻结标记（无则忽略）。
+    pub fn clear_sealed(&self, key: &InstanceKey) -> Result<(), StoreError> {
+        key.validate()?;
+        match std::fs::remove_file(log::sealed_path(&self.data_dir, &key.domain, &key.instance)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(StoreError::Io {
+                context: "删除冻结标记",
                 source: e,
             }),
         }

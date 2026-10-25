@@ -145,15 +145,15 @@ pact --json analyze my_domain.pact   # 机器读：供模型定位并修复错�
 
 | 问题 | 若为“是” |
 |------|-----------|
-| Q1 有 `via T` 依赖吗？ | 见证必须活到依赖动作完成（P1/P2）；跑 A.6，非零要裁决 |
-| Q2 `T` 还是未来生产的前驱吗？ | 不要提前消费，否则终止未来扇出 |
-| Q3 有多个读者/多个消费者吗？ | 读不消耗；多消费者必须指定**谁**负责消费；没有“末位消费者”机制（TC3） |
-| Q4 有 `count T` 阈值吗？ | 消费会改变阈值；决定阈值失效后由谁消费 |
-| Q5 消费是否代表外部动作已完成？ | 用 readiness 见证前移（P6），或安排补偿；不要假设原子 |
-| Q6 域要求最终终止吗？ | 要求终止 ⇒ **每个** token（含 ack、readiness、见证）都要有最终消费者；否则接受不终止并写明 |
-| Q7 只是审计/长期观察吗？ | 不消费；用 Read + Archive 查询（P9），不要靠留在 Counter 当审计 |
+| TC-Q1 有 `via T` 依赖吗？ | 见证必须活到依赖动作完成（TC-P1/TC-P2）；跑 A.6，非零要裁决 |
+| TC-Q2 `T` 还是未来生产的前驱吗？ | 不要提前消费，否则终止未来扇出 |
+| TC-Q3 有多个读者/多个消费者吗？ | 读不消耗；多消费者必须指定**谁**负责消费；没有“末位消费者”机制（TC3） |
+| TC-Q4 有 `count T` 阈值吗？ | 消费会改变阈值；决定阈值失效后由谁消费 |
+| TC-Q5 消费是否代表外部动作已完成？ | 用 readiness 见证前移（TC-P6），或安排补偿；不要假设原子 |
+| TC-Q6 域要求最终终止吗？ | 要求终止 ⇒ **每个** token（含 ack、readiness、见证）都要有最终消费者；否则接受不终止并写明 |
+| TC-Q7 只是审计/长期观察吗？ | 不消费；用 Read + Archive 查询（TC-P9），不要靠留在 Counter 当审计 |
 
-Q1–Q7 全为“否” → 可以消费。任一为“是” → 按右列处理，或明确接受后果。
+TC-Q1–TC-Q7 全为“否” → 可以消费。任一为“是” → 按右列处理，或明确接受后果。
 
 ---
 
@@ -257,7 +257,7 @@ seed_authority {
 ```
 
 - 要点：外部状态不能写进 GateExpr，只能编码成 token；`exists readiness` 与消费落在同一次准入判定。
-- 必须决定：`readiness` 自身也要清理；外部失败时不要假装消费可以回滚（TC12/D5）。
+- 必须决定：`readiness` 自身也要清理；外部失败时不要假装消费可以回滚（TC12/TC-D5）。
 - 预期：六项分析全零。
 
 ### R5 扇出 / ack 汇聚（屏障）
@@ -349,7 +349,7 @@ seed_authority { user: seeds observation }
 | `gate_coverage` | 非源类型有没有生产者 | 有人想用却没人能产 | 补 `produces` 子句 |
 | `consumption_reachability` | 每个类型有没有消费者 | 可能技术债，也可能是有意保留 | 按 TC-Q7 裁决并记录 |
 | `structural_deadlock` | 无种子入口的强连通分量 | 环起不来 | 给环加 seed 点火（R6） |
-| `stranding_risk` | `via` 见证会不会先被消费 | 存在真实顺序风险 | 按 P1/P2 排序，或改见证类型 |
+| `stranding_risk` | `via` 见证会不会先被消费 | 存在真实顺序风险 | 按 TC-P1/TC-P2 排序，或改见证类型 |
 
 **裁决原则**：violations 必须改；warnings 和其余五项**不要求为零**，但每一处非零都要有
 一句“为什么这样是对的”。示例域里就有三处刻意的非零（`se_lifecycle` 的搁浅风险、
@@ -372,7 +372,7 @@ seed_authority { user: seeds observation }
 | ...  | ...  | ...    | ...  | ...    | ...      | ...        | 短用/见证/审计 | ... |
 
 - 入口（源类型 → 种子权威）：
-- TC 裁决：Q1–Q7 中所有“是”的处理方式
+- TC 裁决：TC-Q1–TC-Q7 中所有“是”的处理方式
 - B 裁决：涉及的 B 编号与改写代价
 - 分析结果（有工具时）：六项输出 + 每处非零的理由
 - 已知代价：不终止 / 仅近似 / 外部依赖
@@ -441,7 +441,7 @@ R4/R6 直接采用 `examples/domains/` 中的已验域；预期非零项已在�
 | `paper/pactv1_rev3.md` | 语义、规则、定理 | 只作最终裁决，不作生成提示 |
 | [`manual.md`](manual.md) §3 | 语法细节、错误码、命令 | 查语法；本契约不重复长表 |
 | [`expressiveness-boundaries.md`](expressiveness-boundaries.md) | B1–B25、X1–X6 | 命中硬停时查编号与改写代价 |
-| [`token-consumption-timing.md`](token-consumption-timing.md) | TC1–TC13、D1–D6、P1–P9 | 第 5 步逐类型逼问的完整依据 |
+| [`token-consumption-timing.md`](token-consumption-timing.md) | TC1–TC13、TC-D1–TC-D6、TC-P1–TC-P9 | 第 5 步逐类型逼问的完整依据 |
 | [`../examples/`](../examples/README.md) | 可运行域与实录轨迹 | 需要更复杂骨架时参考，不直接复制 |
 | `docs/skill-adaptation.md` | RE/SE 两技能的适配 | 特定技能场景另查 |
 

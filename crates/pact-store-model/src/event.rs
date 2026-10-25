@@ -4,15 +4,23 @@
 use crate::error::ModelError;
 use pact_core::{CounterState, Effect, ParticipantName, Timestamp, Token, TokenId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-/// 事件 schema 版本（日志行与线上事件共用，D25 子项 1）。
+/// 事件 schema 默认版本（日志行与线上事件共用，D25 子项 1）。
 ///
 /// 兼容契约（设计 §7.5）：
-/// - 写入方恒发当前版本（`EVENT_SCHEMA_VERSION`）；
+/// - 普通事件写 `EVENT_SCHEMA_VERSION`；`Imported` 写 v2（`Imported` 携带状态基线，
+///   旧读者不可按 v1 语义忽略它）；
 /// - 缺失 `version` 字段的历史日志行按 **v1** 解析（`serde` 缺省）；
-/// - 版本高于本实现支持上限 → `ModelError::UnsupportedSchemaVersion`（fail-fast，
-///   不静默降级，避免把未知语义当 v1 重放）。
+/// - 版本高于 `SUPPORTED_EVENT_SCHEMA_VERSION` → `ModelError::UnsupportedSchemaVersion`
+///   （fail-fast，不静默降级，避免把未知语义当 v1 重放）。
 pub const EVENT_SCHEMA_VERSION: u32 = 1;
+
+/// `Imported` 事件引入的 schema 版本（状态交接基线）。
+pub const IMPORTED_EVENT_SCHEMA_VERSION: u32 = 2;
+
+/// 本实现可解析的最高 schema 版本。
+pub const SUPPORTED_EVENT_SCHEMA_VERSION: u32 = IMPORTED_EVENT_SCHEMA_VERSION;
 
 fn default_schema_version() -> u32 {
     EVENT_SCHEMA_VERSION
@@ -51,6 +59,22 @@ pub enum Event {
     },
     /// Rule-T 检测结果（信息性，无状态效果，可从状态重导出）。
     Terminated { seq: u64, ts: Timestamp },
+    /// 状态交接基线：新实例以新声明启动，同时继承源实例的 Counter/Archive/
+    /// 幂等表。该行**自足**，携带完整状态与源日志定位（`source_seq`），
+    /// 使新实例的非空状态在日志中可解释。
+    Imported {
+        seq: u64,
+        ts: Timestamp,
+        name: String,
+        declaration: String,
+        source_domain: String,
+        source_instance: String,
+        /// 导出时源实例的最后事件序号（用于定位源日志）。
+        source_seq: u64,
+        state: CounterState,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        consumed_requests: BTreeMap<String, (TokenId, pact_core::ArchiveEntry)>,
+    },
 }
 
 impl Event {
@@ -61,7 +85,16 @@ impl Event {
             | Event::Seeded { seq, .. }
             | Event::Produced { seq, .. }
             | Event::Consumed { seq, .. }
-            | Event::Terminated { seq, .. } => *seq,
+            | Event::Terminated { seq, .. }
+            | Event::Imported { seq, .. } => *seq,
+        }
+    }
+
+    /// 该事件应写入的 schema 版本。
+    pub fn schema_version(&self) -> u32 {
+        match self {
+            Event::Imported { .. } => IMPORTED_EVENT_SCHEMA_VERSION,
+            _ => EVENT_SCHEMA_VERSION,
         }
     }
 
@@ -72,7 +105,8 @@ impl Event {
             | Event::Seeded { ts, .. }
             | Event::Produced { ts, .. }
             | Event::Consumed { ts, .. }
-            | Event::Terminated { ts, .. } => ts,
+            | Event::Terminated { ts, .. }
+            | Event::Imported { ts, .. } => ts,
         }
     }
 
@@ -84,6 +118,7 @@ impl Event {
             Event::Produced { .. } => "Produced",
             Event::Consumed { .. } => "Consumed",
             Event::Terminated { .. } => "Terminated",
+            Event::Imported { .. } => "Imported",
         }
     }
 
@@ -96,6 +131,24 @@ impl Event {
         }
     }
 
+    /// 是否为实例状态基线（`DomainLoaded` 重置基线 / `Imported` 交接基线）。
+    pub fn is_baseline(&self) -> bool {
+        matches!(self, Event::DomainLoaded { .. } | Event::Imported { .. })
+    }
+
+    /// 基线事件携带的声明原文。
+    pub fn baseline_declaration(&self) -> Option<(&str, &str)> {
+        match self {
+            Event::DomainLoaded {
+                name, declaration, ..
+            }
+            | Event::Imported {
+                name, declaration, ..
+            } => Some((name, declaration)),
+            _ => None,
+        }
+    }
+
     /// 覆写域内序号（构造时由引擎/store 统一赋 seq）。
     pub fn with_seq(mut self, seq: u64) -> Self {
         match &mut self {
@@ -103,7 +156,8 @@ impl Event {
             | Event::Seeded { seq: s, .. }
             | Event::Produced { seq: s, .. }
             | Event::Consumed { seq: s, .. }
-            | Event::Terminated { seq: s, .. } => *s = seq,
+            | Event::Terminated { seq: s, .. }
+            | Event::Imported { seq: s, .. } => *s = seq,
         }
         self
     }
@@ -122,20 +176,20 @@ pub struct WireEvent {
 }
 
 impl WireEvent {
-    /// 以当前 schema 版本封装事件。
+    /// 按事件自身的 schema 版本封装。
     pub fn current(event: Event) -> Self {
         Self {
-            version: EVENT_SCHEMA_VERSION,
+            version: event.schema_version(),
             event,
         }
     }
 
     /// 解封装并校验版本：高于支持上限 → `UnsupportedSchemaVersion`（fail-fast）。
     pub fn into_event(self) -> Result<Event, ModelError> {
-        if self.version > EVENT_SCHEMA_VERSION {
+        if self.version > SUPPORTED_EVENT_SCHEMA_VERSION {
             return Err(ModelError::UnsupportedSchemaVersion {
                 found: self.version,
-                supported: EVENT_SCHEMA_VERSION,
+                supported: SUPPORTED_EVENT_SCHEMA_VERSION,
             });
         }
         Ok(self.event)
@@ -157,6 +211,8 @@ pub enum ApplyOutcome {
     Applied,
     /// 域声明事件：调用方应解析声明并重置状态。
     DomainReset { name: String, declaration: String },
+    /// 交接基线：状态已被事件携带的状态整体替换，声明由调用方解析。
+    Imported { name: String, declaration: String },
     /// 信息性事件（Terminated），无状态效果。
     Informational,
 }
@@ -174,6 +230,19 @@ pub fn apply_event(state: &mut CounterState, ev: &Event) -> Result<ApplyOutcome,
             name: name.clone(),
             declaration: declaration.clone(),
         }),
+        Event::Imported {
+            name,
+            declaration,
+            state: imported_state,
+            ..
+        } => {
+            // 交接基线自足：整体替换状态，而不是叠加到当前状态上。
+            *state = imported_state.clone();
+            Ok(ApplyOutcome::Imported {
+                name: name.clone(),
+                declaration: declaration.clone(),
+            })
+        }
         Event::Seeded { token, .. } => {
             state.apply(Effect::Seeded(token.clone()));
             Ok(ApplyOutcome::Applied)
@@ -295,6 +364,103 @@ mod tests {
         assert_eq!(apply_event(&mut state, &ev).unwrap(), ApplyOutcome::Applied);
         assert!(state.counter.is_empty());
         assert_eq!(state.archive.len(), 1);
+    }
+
+    #[test]
+    fn imported_event_roundtrip_and_version() {
+        let mut state = CounterState::new();
+        state
+            .counter
+            .insert(TokenId("t2".into()), token("t2", "design"));
+        state.archive.push(pact_core::ArchiveEntry {
+            token: token("t1", "requirement"),
+            exhausted_by: ParticipantName("architect".into()),
+            exhausted_at: "T4".into(),
+        });
+        let mut consumed = BTreeMap::new();
+        consumed.insert(
+            "req-1".to_owned(),
+            (TokenId("t1".into()), state.archive[0].clone()),
+        );
+        let ev = Event::Imported {
+            seq: 1,
+            ts: "T5".into(),
+            name: "proj".into(),
+            declaration: "types { requirement; design }".into(),
+            source_domain: "proj".into(),
+            source_instance: "default".into(),
+            source_seq: 4,
+            state,
+            consumed_requests: consumed,
+        };
+
+        assert_eq!(ev.schema_version(), IMPORTED_EVENT_SCHEMA_VERSION);
+        assert!(ev.is_baseline());
+        assert_eq!(
+            ev.baseline_declaration(),
+            Some(("proj", "types { requirement; design }"))
+        );
+
+        let json = to_wire_json(&ev).unwrap();
+        assert!(
+            json.contains(r#""version":2"#),
+            "Imported 应写 schema v2：{json}"
+        );
+        assert!(json.contains(r#""kind":"Imported""#));
+        let wire: WireEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(wire.version, IMPORTED_EVENT_SCHEMA_VERSION);
+        assert_eq!(wire.into_event().unwrap(), ev);
+    }
+
+    #[test]
+    fn apply_event_imported_replaces_state() {
+        let mut state = CounterState::new();
+        state.apply(Effect::Seeded(token("old", "design")));
+
+        let mut imported_state = CounterState::new();
+        imported_state
+            .counter
+            .insert(TokenId("new".into()), token("new", "implementation"));
+        let ev = Event::Imported {
+            seq: 1,
+            ts: "T1".into(),
+            name: "proj".into(),
+            declaration: "types { implementation }".into(),
+            source_domain: "proj".into(),
+            source_instance: "default".into(),
+            source_seq: 3,
+            state: imported_state.clone(),
+            consumed_requests: BTreeMap::new(),
+        };
+
+        let outcome = apply_event(&mut state, &ev).unwrap();
+        assert_eq!(
+            outcome,
+            ApplyOutcome::Imported {
+                name: "proj".into(),
+                declaration: "types { implementation }".into(),
+            }
+        );
+        // 交接基线自足：整体替换，而不是叠加。
+        assert_eq!(state, imported_state);
+        assert!(!state.counter.contains_key(&TokenId("old".into())));
+    }
+
+    #[test]
+    fn unsupported_schema_version_fails_fast() {
+        let wire = WireEvent {
+            version: SUPPORTED_EVENT_SCHEMA_VERSION + 1,
+            event: Event::Terminated {
+                seq: 1,
+                ts: "T1".into(),
+            },
+        };
+        let err = wire.into_event().unwrap_err();
+        assert!(matches!(
+            err,
+            ModelError::UnsupportedSchemaVersion { found, supported }
+                if found == 3 && supported == 2
+        ));
     }
 
     #[test]

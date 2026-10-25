@@ -1,6 +1,15 @@
 # 技能适配变更记录
 本文件只追加，不改写已登记批次。当前有效内容见 `docs/skill-adaptation.md`。
 
+> 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
+
+## 2026-10-25（第 10 轮，外部框架编号补出处）
+
+- **`M15`**：`docs/skill-adaptation.md` §7.2 表格中的裸 `M15` 补出处为“元框架总纲 §0.18.6 的 M15 性质（unknown 取值不得静默排除候选）”。
+- **`CH-B`**：§4.5 中的裸 `CH-B` 补出处为“元框架总纲 §0.6 的 CH-B「不决定」通道（保守界 / 推迟）”。
+- **`S5`**：§8.1 中的 `S5` 易与元框架选型规程的 `S0–S6` 混淆，改为“上游 RE 验证阶段（`requirements-engineering/stages/s5-validation.md`）”。
+- **对技能适配产物无影响**：`~/projects/skills/` 下的 `.pact` 与配套文档不改动。
+
 ## 2026-10-20（第 9 轮，术语精化：中文「域实例」与既有「禁用 domain instance」口径的关系）
 
 - **触发**：用户要求中文文档把指 D27 实例键的「实例」统一写「**域实例**」（详见 `docs/design-change.md` 第 21 轮、`docs/requirements-change.md` 第 13 轮）。

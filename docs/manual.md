@@ -108,7 +108,7 @@ stdio 与 REST 可用静态 Bearer 或 Ed25519 签名；`/mcp` 可用 OIDC JWT �
 
 同一个 token 被多个下游共享时，“何时可以消费”本身也需要决定：早消费会让下游读不到、无法再作为
 生产前驱、`via` 见证失效或 `count` 阈值掉下去；晚消费则会让 token 累积、永远到不了 Rule-T。
-判定准则（D1–D6）、可选模式（下游优先排空、见证保留、ack 汇聚、副本扇出、租约、归档策略等）
+判定准则（TC-D1–TC-D6）、可选模式（下游优先排空、见证保留、ack 汇聚、副本扇出、租约、归档策略等）
 与反模式见 [`docs/token-consumption-timing.md`](token-consumption-timing.md)；引用时写 `TC<编号>`。
 
 ---
@@ -197,7 +197,7 @@ pact daemon start --config pact.toml      # 前台运行；Ctrl-C 或 SIGTERM �
 
 ### 2.3.1 运维端点（免身份）
 
-daemon 提供三个仅供本地/内网使用的运维端点（**不校验身份**）。认证边界：配置 `[auth.acl]` 后，域生命周期、四类动作、查询、`/compact` 与读审计视图全部按 `(domain, instance)` 授权（§2.4、§7.6）；**未配置 ACL** 时不做域级授权（静态 Bearer 仍用于四类动作端点的参与者一致性；启用签名时验签覆盖全部非豁免 REST 端点，生命周期、查询与 `/compact` 也需签名）。`/health` `/ready` `/metrics` 与 OIDC 元数据始终免身份；`POST /validate` 在**未启用签名**时免身份，启用 `[auth.keys]` 后需签名。daemon 默认应只监听 unix socket 或回环；需要暴露 TCP 时启用 TLS/mTLS（设计 §9.5），**不得把明文端口暴露给不可信网络**。
+daemon 提供三个仅供本地/内网使用的运维端点（**不校验身份**）。认证边界：配置 `[auth.acl]` 后，域生命周期、四类动作、查询、`/compact` 与读审计视图全部按 `(domain, instance)` 授权（§2.4、§7.6）；**未配置 ACL** 时不做域级授权（静态 Bearer 仍用于四类动作端点的参与者一致性；启用签名时验签覆盖全部非豁免 REST 端点，生命周期、查询与 `/compact` 也需签名）。控制面端点（`handoff` / `freeze` / `active`）在配置了任一身份（令牌或签名）后要求认证。`/health` `/ready` `/metrics` 与 OIDC 元数据始终免身份；`POST /validate` 在**未启用签名**时免身份，启用 `[auth.keys]` 后需签名。daemon 默认应只监听 unix socket 或回环；需要暴露 TCP 时启用 TLS/mTLS（设计 §9.5），**不得把明文端口暴露给不可信网络**。
 
 ```bash
 curl --unix-socket ./pact.sock http://localhost/health   # {"status":"ok"}（存活）
@@ -585,7 +585,7 @@ pact status     --domain D                   # counter / archive / terminated
   因此响应丢失后可以原样重发。该幂等表随事件日志持久化，**跨重启仍生效**。
   同一 `request-id` 却换了 token，会返回 `IdempotencyConflict`（HTTP 409）——那是键复用错误，不是消费失败。
   幂等只保护“同一次请求的重试”，**不阻止其他参与者抢先消费**；共享 token 的消费时机与顺序见
-  [`docs/token-consumption-timing.md`](token-consumption-timing.md)（TC9、P8）。
+  [`docs/token-consumption-timing.md`](token-consumption-timing.md)（TC9、TC-P8）。
 
 ### 4.6 消费与外部动作：物化确认
 
@@ -604,6 +604,55 @@ pact status     --domain D                   # counter / archive / terminated
 
 两种方案**可并用、不互斥**：同一域可对不同入口分别选用（就位可确认的入口用 witness-token，
 无法预先确认的入口用 saga 补偿）。
+
+### 4.7 声明换版：状态交接与活动实例（D39）
+
+当协作流已积累 Counter / Archive，而声明需要换版（新增类型或门）时，不要卸载重载——那会丢状态。
+用 **显式状态交接**：冻结源实例 → 以新声明创建目标实例并继承全部状态 → 可选切换活动实例 → 源实例只读。
+
+```bash
+# 1) 查看当前活动实例（无指针时为 default）
+pact domain active --domain proj
+
+# 2) 交接：default → v2，使用新声明文件，成功后自动激活 v2
+pact domain handoff --domain proj --declaration proj_v2.pact --source default --target v2
+#    只交接不切换（客户端继续走当前活动实例，直到你显式 activate）：
+pact domain handoff --domain proj --declaration proj_v2.pact --source default --target v2 --no-activate
+
+# 3) 客户端继续使用短路由 /domains/proj/... 即透明落到 v2
+pact seed --domain proj --participant external --type requirement
+
+# 4) 需要回退时，把活动指针切回旧实例（旧实例仍完整保留，只是冻结只读）
+pact domain activate --domain proj --instance default
+
+# 5) 显式解冻旧实例，恢复可写（例如确认新版本有问题）
+pact domain freeze --domain proj --instance default --unfreeze
+```
+
+**交接做了什么**
+
+| 步骤 | 结果 |
+|------|------|
+| 校验新声明 | 良构；源 Counter 中每个类型仍被新声明声明（Archive 允许保留已删除类型） |
+| 冻结源 | 写 `<domain>/<source>.sealed`（JSON，含原因、`ts`、`by`）；此后 Seed/Produce/新 Consume 返回 `InstanceFrozen` |
+| 迁移 | 目标日志写入一条 `Imported` 基线：完整 Counter + Archive + 幂等表 + 源坐标 + 新声明原文 |
+| 建目标 | 目标实例以新声明运行，可直接继续流程 |
+| 激活（可选） | 写 `<domain>/active.json`（含 `ts`、`by`）；失败只令 `activated=false`，不回滚交接 |
+
+**语义要点**
+
+- **源只读但可读**：`counter` / `archive` / `read` / `status` / SSE 仍可用；同一 `request_id` + 同一 token 的幂等重放仍返回首次归档结果。
+- **冻结跨卸载保持**：已冻结实例卸载后，重载/实例化在未显式 `force` 时返回 `InstanceFrozen`(409)；`force` 重置才会清除冻结标记并解冻。交接目标若残留 `.sealed`，按 `InstanceExists` 拒绝，避免覆盖已有审计。
+- **不兼容即失败且无副作用**：类型闭包不满足 → `HandoffIncompatible`(409)；目标已存在 → `InstanceExists`(409)；源已冻结 → `InstanceFrozen`(409)。失败时源不会冻结、目标不会创建、活动指针不变。
+- **不提供自动回滚/双活**：交接提交后不撤销；回退是“把指针切回旧实例 + 按需解冻”。旧实例不接收新写入，因此不会与新实例分叉。
+- **恢复**：重启时目标从 `Imported` 自足基线恢复；源保持冻结；活动指针指向不存在的实例会让 daemon 启动 fail-fast（`Recovery`），不会静默误路由。
+- **控制面审计**：`.sealed` 与 `active.json` 记录写入者 `by` 与时间 `ts`；`GET /domains/{d}/active` 在响应中返回这两个字段。信任声明模式下 `by` 省略（写为 `null`）。
+- **控制面认证**：配置了 `[auth.tokens]` 或 `[auth.keys]`（任一）后，`handoff` / `freeze` / `activate` / `active` 都要求可认证身份（Bearer 或签名）；信任声明模式仍免身份。启用 ACL 时叠加授权（§7.6）。
+- **长路由始终显式**：`/domains/proj/instances/default/...` 永远访问 `default`，不受活动指针影响；短路由 `/domains/proj/...` 才解析活动实例。
+- **不做**：原位保留状态的声明换版、双活/流量分割、跨实例同步。
+
+REST 等价：`POST /domains/{d}/handoff`、`GET|PUT /domains/{d}/active`、`PUT /domains/{d}/instances/{i}/freeze`；
+MCP 等价：`pact_domain_handoff`、`pact_domain_active`、`pact_domain_activate`、`pact_domain_freeze`。
 
 ---
 
@@ -759,7 +808,9 @@ error [ComposeConflict]: 片段组合冲突（1 处）
     <instance>.events.jsonl        # 实例级真相源，只追加
     <instance>.snapshot.json       # 定期 / 压缩时写入的快照（自足锚），原子写（tmp + rename）
     <instance>.logmeta.json        # 压缩水位（base_seq，缺省不存在）
+    <instance>.sealed              # 冻结标记 JSON {version, reason, ts, by}（D39；缺省不存在）
     declaration.pact               # 声明原文（启动恢复时回填声明注册表）
+    active.json                    # 活动实例指针 {version, instance, ts, by}（D39；缺省即回退 default）
   index.tursodb                    # 全部实例共用的查询索引（派生物，(domain, instance) 双列）
   index.tursodb-wal
   pactd.lock                       # data_dir 独占 flock（单写者护栏）
@@ -776,6 +827,8 @@ DomainLoaded { name, declaration }   // 声明原文存档，可复现解析
 Seeded     { seq, ts, token }
 Produced   { seq, ts, token }        // token 内含 depends_on / produced_by
 Consumed   { seq, ts, token, by, request_id? }  // token 全量自足；request_id 可选幂等键（D23）
+Imported   { seq, ts, name, declaration, source_domain, source_instance, source_seq,
+             state, consumed_requests }          // 状态交接基线（D39，schema v2）：自足，单行可重放
 Terminated { seq, ts }               // Rule-T 检测结果，信息性
 ```
 
@@ -793,9 +846,10 @@ pact replay <data_dir>/se_lifecycle/default.events.jsonl
 不需要 daemon。重放结果与线上状态逐字段等价（集成测试锚定）。
 崩溃恢复走同一条路径：最新快照 + 其后的事件重放；JSONL 末行半截（写入中途崩溃）可被安全跳过续作。
 
-**事件 schema 版本**：每行事件带顶层 `version`（当前 `1`，如 `{"version":1,"kind":"Seeded",…}`）。
-缺 `version` 的旧日志按 v1 重放（向后兼容）；`version` 高于当前支持版本时 **fail-fast
-（`UnsupportedSchemaVersion`）**，不会静默按 v1 误读——升级 pactd 后旧数据可直接用，降级则须先迁移。
+**事件 schema 版本**：每行事件带顶层 `version`。普通事件为 `1`（如 `{"version":1,"kind":"Seeded",…}`），
+状态交接事件 `Imported` 为 `2`。缺 `version` 的旧日志按 v1 重放（向后兼容）；读取上限为 2，
+`version > 2` 时 **fail-fast（`UnsupportedSchemaVersion`）**，不会静默按 v1 误读——升级 pactd 后旧数据可直接用，降级则须先迁移。
+恢复取最后一个基线（`DomainLoaded` 或 `Imported`），因此目标实例可以只凭 `Imported` 单行恢复。
 
 ### 7.4 日志压缩（D25）
 
@@ -860,6 +914,7 @@ reviewer = ["proj/default"]    # 仅允许 reviewer 读 proj/default
 - `load` / `instantiate` / `unload` / `compact` / `:analyze` / `:compose`：启用签名时取签名身份，否则取 Bearer 令牌归属的参与者，按 `(domain, instance)` 授权。
 - 四类动作（seed / produce / read / consume）：请求体/查询参数的 `participant` 必须与启用签名时的签名身份（或未启用签名时的 Bearer 令牌归属）一致，且参与者对实例有授权。
 - 查询（counter / archive / gates / enabled / status / events / read-audit）：启用签名时取签名身份，否则取 Bearer 令牌归属的参与者，按 `(domain, instance)` 授权。
+- 控制面（handoff / active / freeze）：配置了任何身份后必须认证；交接要求源实例键、目标实例键与 `{d}/*`（会改写域级 `declaration.pact`），`GET /active` 与 freeze 要求实例键，`PUT /active` 要求 `{d}/*`。写入的 `.sealed`/`active.json` 记录 `ts`/`by`。
 - `GET /domains`：按参与者过滤，只返回其有权访问的实例（空域剔除）。
 
 未授权返回 `403 Forbidden`（结构化错误体，含 `domain` `instance`）；无有效身份/身份与 participant 不一致返回 `401 Unauthorized`。未配置 `[auth.acl]` 保持原有信任声明行为（即任何人说自己是谁就是谁，不做域级授权）。
@@ -915,6 +970,10 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 | `domain unload --domain D [--instance I]` | 在线 | 卸载（内存态；事件日志保留） |
 | `domain instantiate --domain D --instance I` | 在线 | 在同一域声明下**新建实例**（D27） |
 | `domain instances --domain D` | 在线 | 打印该域的实例清单 |
+| `domain handoff --domain D --declaration FILE --source I --target I [--no-activate]` | 在线 | 状态交接：冻结源、以新声明建目标并迁移状态（D39；`--source`/`--target` 必填，缺省自动激活） |
+| `domain active --domain D` | 在线 | 打印域的活动实例（无指针为 `default`） |
+| `domain activate --domain D --instance I` | 在线 | 切换活动实例指针（域级运维动作） |
+| `domain freeze --domain D --instance I [--unfreeze]` | 在线 | 冻结/解冻实例（冻结后只读） |
 | `seed --domain D --participant P --type T [--thing-ref R] [--instance I]` | 在线 | Rule-S |
 | `produce --domain D --participant P --type T [--predecessors a,b] [--thing-ref R] [--instance I]` | 在线 | Rule-P |
 | `read --domain D --participant P --token ID [--instance I]` | 在线 | Rule-R |
@@ -930,7 +989,7 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 | `replay <FILE>` | **离线** | 重放 `<instance>.events.jsonl`（校验事件 schema `version`） |
 | `cpn <FILE> --out PATH [--instance I] [--bound T=N]…` | **离线** | 生成单实例 CPN Tools 模型（论文 §4.5/§B；负条件需上界） |
 
-**实例 flag（D27）**：所有域操作命令的 `--instance I` 可选，**缺省 = 默认实例 `default`**——既有不带该 flag 的调用与脚本语义不变。`--force` 仅用于对**非空实例**（`last_seq > DomainLoaded.seq`）的再加载：默认拒绝（`DomainBusy`），加 `--force` 才重置其 Counter。
+**实例 flag（D27/D39）**：所有域操作命令的 `--instance I` 可选，**缺省 = 活动实例**（`active.json`；无指针回退 `default`）——既有不带该 flag 的调用与脚本语义不变；显式给 `--instance` 即直连该实例（不受活动指针影响）。`--force` 仅用于对**非空实例**（含 `Imported` 接手状态）的再加载：默认拒绝（`DomainBusy`），加 `--force` 才重置其 Counter 并清除冻结标记。
 
 输出与退出码：成功 → `0`；失败 → `1`，人类模式把 `error [<code>]: <message>` 写 **stderr**，
 `--json` 模式把 §6.3 错误体写 **stdout**。
@@ -944,9 +1003,9 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 |-----------|--------|----------|
 | `POST /validate` | `{declaration}` | `200` `{ok, types[], participants[], gates, seed_authority}` |
 | `POST /domains` | `{name, declaration[, instance][, force]}` | `201` `DomainSummary{name, instance, types, gates, seed_authority, last_seq}`（declare + instantiate，缺省实例 `default`） |
-| `GET /domains` | — | `200` `{domains: [{name, instances[]}]}` |
+| `GET /domains` | — | `200` `{domains: [{name, instances[], active?}]}`（无活动指针时省略 `active`） |
 | `POST /domains/{d}/instances` | `{instance}` | `201` `DomainSummary`（在同一域声明下新建实例，D27） |
-| `GET /domains/{d}` | — | `200` `{name, counter_size, archive_size, terminated}`（`default` 实例） |
+| `GET /domains/{d}` | — | `200` `{name, counter_size, archive_size, terminated}`（活动实例；无指针为 `default`） |
 | `DELETE /domains/{d}` | — | `204` |
 | `POST /domains/{d}:analyze` | — | `200` `AnalysisReport`（六项，A.5 首位） |
 | `POST /domains/{d}:compose` | `{fragments: [...]}` | `201` `DomainSummary`（**会装载**到 `default` 实例） |
@@ -962,16 +1021,20 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 | `POST /domains/{d}/compact` | `{keep_last?}`（缺省 0） | `200` `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`（D25） |
 | `GET /domains/{d}/events` | — | SSE 流（含 keep-alive），每条 `data:` 是 §6.4 通知 |
 | `GET /domains/{d}/read-audit?limit=` | — | `200` `{records:[...]}`（D25 子项 3；缺省 100、上限 1000） |
+| `POST /domains/{d}/handoff` | `{source_instance, target_instance, declaration, activate?}`（`activate` 缺省 `true`） | `201` `HandoffOutcome{domain, source_instance, target_instance, source_seq, target_seq, counter, archive, consumed_requests, active_instance, activated}`（D39） |
+| `GET /domains/{d}/active` | — | `200` `{domain, instance, ts?, by?}`（无指针时 `instance = "default"`，`ts`/`by` 省略） |
+| `PUT /domains/{d}/active` | `{instance}` | `200` `{domain, instance, ts?, by?}`（域级 ACL 需 `{d}/*`） |
+| `PUT /domains/{d}/instances/{i}/freeze` | `{frozen}` | `204`（`true` 冻结、`false` 解冻） |
 | `POST/GET/DELETE /mcp` | MCP JSON-RPC / 会话控制 | MCP Streamable HTTP（D35；`[mcp].enabled = true` 时存在） |
 | `GET /.well-known/oauth-protected-resource` | — | `200` `{resource, authorization_servers, bearer_methods_supported}`（D36；OIDC 未启用时 `404`） |
 
 **签名错误语义（D34）**：缺头/未知参与者/时间戳越界/签名错误 → `401`；请求体 > 8 MiB → `413`；nonce 重放 → `429`。`/mcp` 的 OIDC 令牌非法 → `401`，IdP/JWKS 不可达 → `503`。
 
-**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。未配置时不做域级授权，但仍受签名/令牌中间件约束。详见 §7.6。
+**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。**未配置 ACL** 时不做域级授权：既有生命周期/查询/压缩端点保持信任声明行为（Bearer 令牌仅约束四类动作端点；启用签名时这些端点仍需签名）；**新增控制面端点**（`handoff` / `freeze` / `active`）在配置了任何身份后仍要求认证（见上）。交接还额外要求域通配键 `{d}/*`——它会改写域级 `declaration.pact`。详见 §7.6。
 
 **运维端点（D25，免身份）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验身份**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不做域级授权（但启用签名时仍需签名；破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
 
-**实例路由（D27）**：上表 `/domains/{d}/…` 的语义 = **`default` 实例**。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events / read-audit 全套同形。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。
+**实例路由（D27/D39）**：上表 `/domains/{d}/…` 的语义 = **活动实例**（`active.json`；无指针回退 `default`）。实例级为 `/domains/{d}/instances/{i}/…` 镜像组——seeds / tokens / tokens/{id}/read / tokens/{id}/consume / counter / archive / gates/{participant} / enabled / status / compact / events / read-audit 全套同形；实例路由不解析活动指针，始终显式。实例名谓词 `[A-Za-z0-9_-]{1,128}`（同域名），非法名返回 `400`。交接 ACL 要求源实例键、目标实例键与域通配键 `{d}/*`；冻结与查询活动实例要求解析到的实例键；活动实例切换要求域通配键 `{d}/*`。
 
 实现注记：`{d}:analyze` / `{d}:compose` 因路由库不支持同段「参数 + 字面量」，
 在 `/domains/{d}` 统一入口内按段内冒号后缀分发，**对外 URL 不变**。
@@ -1006,8 +1069,12 @@ stdio 形态由 agent 拉起为子进程，工具经 REST 转发至 daemon；`--
 | `pact_status` | Counter 概要 + `terminated` 判定 |
 | `pact_compact` | 日志前缀压缩（D25；`keep_last` 缺省 0） |
 | `pact_subscribe` | 注册 Counter 变更通知；事件经 `notifications/pact/event` 推送 |
+| `pact_domain_handoff` | 状态交接：冻结源、以新声明建目标并迁移状态（D39；`activate` 缺省 true） |
+| `pact_domain_active` | 查询域的活动实例（无指针回退 `default`） |
+| `pact_domain_activate` | 切换域的活动实例指针（域级运维动作） |
+| `pact_domain_freeze` | 冻结/解冻实例（`unfreeze` 缺省 false） |
 
-共 **17** 个工具。除 `pact_domain_validate` / `pact_analyze` / `pact_compose` / `pact_list_domains` 外，全部工具接受可选 `instance` 参数（缺省 = `default` 实例，D27）。
+共 **21** 个工具。除 `pact_domain_validate` / `pact_analyze` / `pact_compose` / `pact_list_domains` 外，全部工具接受可选 `instance` 参数（缺省 = 活动实例，无指针回退 `default`，D27/D39）。
 
 ### 8.4 pact-runtime（生产编排）连接参数
 
@@ -1067,8 +1134,10 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `IdempotencyConflict` | 409 | 同一 `request_id` 已用于另一 token 的消费（复用幂等键，D23） |
 | `InstanceNotFound` | 404 | 实例未加载（`domain/instance` 不存在或未 `instantiate`，D27） |
 | `DomainNotDeclared` | 404 | 目标域无声明登记（实例化前须先 declare/load） |
-| `InstanceExists` | 409 | 实例已存在（重复 `instantiate`） |
-| `DomainBusy` | 409 | 对**非空实例**（`last_seq > DomainLoaded.seq`）再加载；须显式 `force` 才重置 |
+| `InstanceExists` | 409 | 实例已存在（重复 `instantiate`；状态交接的目标实例已存在亦同） |
+| `InstanceFrozen` | 409 | 实例已冻结（状态交接后的源实例）：Seed / Produce / 新 Consume 被拒；幂等重放与读取仍可用（D39） |
+| `HandoffIncompatible` | 409 | 交接不兼容：源 Counter 中仍有新声明未声明的类型（D39） |
+| `DomainBusy` | 409 | 对**非空实例**（含 `Imported` 接手状态）再加载；须显式 `force` 才重置并解冻 |
 | `InvalidDomainName` | 400 | 域名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
 | `InvalidInstanceName` | 400 | 实例名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
 | `Unauthorized` | 401 | 令牌/签名缺失或不匹配；签名身份与请求 `participant` 不一致；`/mcp` 的 OIDC 令牌缺失/非法/claim 不合规 |
@@ -1078,8 +1147,8 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `NotFound` | 404 | 路径不存在；OIDC 未启用时 `/.well-known/oauth-protected-resource` 亦返回 404 |
 | `MethodNotAllowed` | 405 | 方法与路径不匹配（如 `GET /domains/{d}:analyze`） |
 | `BadRequest` | 400 | JSON 请求体解析失败 |
-| `Store` | 500 | 存储写入失败；**含 `UnsupportedSchemaVersion`**（日志/快照 `version` 高于当前支持版本）、**`SnapshotRequiredForCompactedLog`**（日志已截断但快照缺失/不覆盖水位）、**顶层遗留单层文件**（`LegacyLayoutDetected`，须人工迁移）、**`ConsumeTargetNotOnCounter`**（提交的消费事件目标已不在 Counter，拒绝重复归档） |
-| `Recovery` | 500 | 启动恢复失败 |
+| `Store` | 500 | 存储写入失败；**含 `UnsupportedSchemaVersion`**（日志/快照 `version` 高于当前支持上限 2）、**`SnapshotRequiredForCompactedLog`**（日志已截断但快照缺失/不覆盖水位）、**顶层遗留单层文件**（`LegacyLayoutDetected`，须人工迁移）、**`ConsumeTargetNotOnCounter`**（提交的消费事件目标已不在 Counter，拒绝重复归档） |
+| `Recovery` | 500 | 启动恢复失败；**含活动指针 `active.json` 损坏或悬空**（指向未加载实例，D39） |
 | `EngineStopped` | 503 | 引擎已停止 |
 | `ServiceUnavailable` | 503 | IdP 发现/JWKS 拉取不可达（仅 `/mcp`，D36） |
 | `Transport` | —（仅 CLI/MCP） | 连不上 daemon：`client error (Connect)` |
@@ -1173,8 +1242,8 @@ PreconditionMismatch { ty: TypeName("deployment"),
 |------|------|
 | [`paper/pactv1_rev3.md`](../paper/pactv1_rev3.md) | 范式规范母本：六原语、六规则、§2 适用性、§3 文法、Appendix A 分析算法 |
 | [`docs/requirements.md`](requirements.md) | 需求与范围（含明确的范围外项） |
-| [`docs/design.md`](design.md) | 实现设计：D1–D37 决策记录、§6 线上格式、§9 接口与身份（TLS/签名/MCP HTTP/OIDC）、§17 DSH 插件 |
-| [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复、§7 DSH 宿主集成 |
+| [`docs/design.md`](design.md) | 实现设计：D1–D39 决策记录、§6 线上格式、§9 接口与身份（TLS/签名/MCP HTTP/OIDC）、§17 DSH 插件 |
+| [`docs/architecture.md`](architecture.md) | 架构视图：进程与部署、关键数据流、启动恢复、§7 DSH 宿主集成、附录 A 文档编号约定 |
 | [`docs/skill-adaptation.md`](skill-adaptation.md) | 领域适配层示例（RE / SE 技能），与本手册正交 |
 | [`examples/README.md`](../examples/README.md) | 五份通用域 + 两条可复现轨迹的逐例讲解 |
 | [`dsh-plugin-pact`](https://github.com/onlookor/pact-dsh#readme) | DSH 插件安装、配置与限制（独立仓库） |

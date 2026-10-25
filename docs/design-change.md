@@ -1,5 +1,52 @@
 # 设计变更记录
 
+> 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
+
+## 2026-10-25（第 65 轮，文档编号清理）
+
+- **触发**：用户要求集中清理对话中自创、文档中无解释使用的编号（`L0–L4`、`P1–P9` 等）。
+- **消费时机引用**：§18 表格中裸 `D1–D6 / P1–P9 / A1–A9` 改为 `TC-D1–TC-D6 / TC-P1–TC-P9 / TC-A1–TC-A9`。
+- **WASM 命名空间**：`S2` → `W-S2`；耦合说明中的 `G1/D27` → `D12/D27`。
+- **自驱策略**：阶段 5/7 描述中的 `P1/P2/P3` 改为“生产优先 / 汇消费 / 等待三档”，不再使用编号。
+- **架构分层标签**：§13 的 `L1/L2/L3` 改为描述性名称（范式引擎层 / 领域适配层 / 生产运行层），与 `architecture.md` 附录 A 一致。
+- **代码与行为零改动**，全量测试仍为 245 项。
+
+## 2026-10-25（第 64 轮，控制面认证、域级授权与审计）
+
+- **#3 认证边界**：新增 `control_principal` / `authorize_control_key` / `authorize_control_wildcard` 及对应检查方法；配置任一身份（Bearer 或签名）后，`handoff` / `freeze` / `GET|PUT /active` 必须可认证；信任声明模式（两者皆空）仍匿名放行。既有生命周期端点不套用此规则。
+- **#4 交接授权**：`POST /domains/{d}/handoff` 在 ACL 下要求源实例键、目标实例键与域通配键 `{d}/*`——交接会改写域级 `declaration.pact`，仅实例键不足以覆盖该副作用。身份只解析一次，三项检查复用同一 principal。
+- **#5 审计**：`write_sealed` / `write_active` 增加 `ts`/`by`；`SealedMarker` 改为 JSON（`{version, reason, ts, by}`），`ActivePointer` 升至版本 2。`Clock::now()` 为唯一时间源，交接中冻结标记、`Imported` 与活动指针共用同一时刻。新增引擎命令/方法 `ActivePointer` / `active_pointer`；`ActiveResp` 增加可选 `ts`/`by`。旧版文件缺字段按 `None` 读取。
+- **兼容**：`Engine::handoff` / `set_frozen` / `activate` 保持原签名（委托 `_as` 变体，`actor = None`），CLI/内部调用零改动。
+- **#11 文档**：`mcp.rs` 模块说明由“缺省 `default`”更正为“缺省活动实例，无指针时为 `default`”；手册 §2.3/§4.7/§7.6/端点表同步审计、认证与 ACL 语义（#6）。
+- **测试**：`daemon_e2e` 新增 `control_endpoints_require_identity_and_record_audit`；`handoff_acl_requires_source_target_and_domain_wildcard_keys` 验证“源+目标键齐备但缺通配键 → 403”。全量 245 项通过。
+
+## 2026-10-25（第 63 轮，冻结完整性修复）
+
+- **问题**：`instantiate` 固定以 `frozen: false` 建会话且不读 `.sealed`；冻结源被 `unload` 后经重载/实例化即可写入，而磁盘标记仍在，重启后又变回冻结。
+- **修复**：`instantiate` 在建会话前检查 `.sealed`，存在即 `InstanceFrozen`；`load_domain` 的 `Some` 空实例分支同样拒绝，`None`（重载）分支仅在 `force` 时清除标记后重建；`handoff` 目标存在性检查纳入 `.sealed`（`InstanceExists`）。
+- **语义边界**：`force` 重置仍是唯一的显式解冻路径（与 §8.6 表格一致）；冻结继续定位为运维护栏而非 ACL 级防篡改边界。
+- **测试**：`crates/pact-engine/tests/handoff.rs` 新增 `frozen_source_rejects_reinstantiation_without_force`、`handoff_rejects_target_with_stale_sealed_marker`；全量 244 项通过。
+
+## 2026-10-25（第 62 轮，移除讨论阶段方案编号）
+
+- **动机**：讨论期使用的临时方案编号只在对话中成立、仓库文档从未定义，且与 `docs/authoring-contract.md` 已有的 H1–H5「硬停」编号冲突。正式文档不应依赖未定义的临时约定，故全局移除。
+- **处置**：全局取消这些编号，改用描述性表述（“显式状态交接”“活动实例别名”“原位换版”“外部 watcher”）。涉及 `docs/requirements.md`、`docs/design.md`、`docs/architecture.md`、`docs/manual.md` 及三份 change 文档、`README.md`、代码注释与错误原因字符串、`.trae/specs/state-handoff/`。
+- **命名**：集成测试文件 `crates/pact-engine/tests/h3c_handoff.rs` → `handoff.rs`；测试名 `h3c_handoff_and_alias_over_unix_socket` → `state_handoff_and_alias_over_unix_socket`、`mcp_h3c_tools_over_stdio` → `mcp_state_handoff_tools_over_stdio`；spec 目录 `h3c-handoff` → `state-handoff`。
+- **顺带修正**：§9.1 `pact_domain_freeze` 参数名改为实际的 `unfreeze`；§9.2 冻结请求体 `{freeze}` → `{frozen}`；读审计短路由说明由“default 实例”改为“按活动实例解析”。
+- **未改**：`docs/authoring-contract.md` 与作者页中既有的 H1–H5 硬停编号保持原样；`paper/pactv1_rev3.md` 零改动。
+- **验证**：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`（242 项）全绿。
+
+## 2026-10-25（第 61 轮，D39 显式状态交接与活动实例别名）
+
+- **动机**：长周期协作流需要在换版时不丢失已积累的 Counter/Archive，且客户端不应被迫改路由；外部 watcher 只解决声明更新、原位保留状态的声明换版改动面过大，取显式状态交接 + 域级活动实例别名。
+- **模型**：新增 `Event::Imported`（自足基线，携带完整 `CounterState`/幂等表/源域/源实例/源 seq/目标声明），写 schema `version = 2`；`SUPPORTED_EVENT_SCHEMA_VERSION = 2`，更高版本 fail-fast。恢复取最后一个基线（`DomainLoaded` 或 `Imported`），`is_baseline` / `baseline_declaration` 统一两者。
+- **存储**：新增 `<domain>/active.json`（`{version, instance}`，原子写、损坏 fail-fast）与 `<domain>/<instance>.sealed` 冻结标记；索引与 `rebuild` 投影 `Imported` 的 Counter/Archive。
+- **引擎**：`handoff` 顺序为 校验名字/目标不存在/解析声明/类型闭包 → 冻结源 → 追加 `Imported`（提交点）→ 建目标会话 → 更新声明注册表 → best-effort 激活；追加失败回滚冻结。新增 `InstanceFrozen` / `HandoffIncompatible`；Seed/Produce/新 Consume 拒绝冻结，幂等重放放行；恢复校验活动指针，悬空 fail-fast；`unload_domain` 清除指针。
+- **接口**：REST `POST /domains/{d}/handoff`、`GET/PUT /domains/{d}/active`、`PUT /domains/{d}/instances/{i}/freeze`；短路由经 `resolve_key` 解析活动实例，长路由显式；交接 ACL 同时校验源/目标键，激活要求 `domain/*`；MCP 工具 17 → 21；CLI 增四命令。
+- **客户端语义收窄**：`base_path` 仅在 `instance = None` 时使用短路由，`Some("default")` 改为显式实例路由，保证别名启用后仍可显式访问源 `default`。
+- **回滚边界**：交接提交后不回滚；源保持只读，可人工解冻或继续以长路由访问；激活失败只反映在 `activated=false`。
+- **未改论文**：`paper/pactv1_rev3.md` 零改动；形式语义按实例成立，实例划分仍属实现自由。
+
 ## 2026-10-25（第 60 轮，README 导览）
 
 - **范围**：只改 `README.md` / `README.zh-CN.md` / `docs/manual.md` 的组织方式，不改代码、不改页面、不改引擎。

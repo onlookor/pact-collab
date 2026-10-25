@@ -148,6 +148,13 @@ pub fn acl_allows_domain(acl: &AclMap, principal: &str, domain: &str) -> bool {
     })
 }
 
+/// ACL 中是否有该域的**通配**授权（`domain/*`）。
+/// 影响整个域的运维动作（如活动实例切换）要求通配授权，单实例授权不足。
+pub fn acl_allows_wildcard(acl: &AclMap, principal: &str, domain: &str) -> bool {
+    acl.get(principal)
+        .is_some_and(|patterns| patterns.iter().any(|p| p == &format!("{domain}/*")))
+}
+
 impl Config {
     /// 读取配置文件；文件不存在返回全默认配置。
     pub fn load(path: &Path) -> Result<Self, ConfigError> {

@@ -1,7 +1,7 @@
 # PACT WASM 本地 Spike 可行性报告与实施计划
 
 - 日期：2026-10-21
-- 状态：**已转正式、受支持的本地分发形态（2026-10-21，D33：去除“实验性”标记）**；Q1/Q2/Q3/Q5/Q6 已于 2026-10-21 冻结；P0 编译探针、P1 纯类型层拆分、P2/S0 WASM 门面、P3/S1 内存语义与对账、P4/S2 Node 持久化已完成（2026-10-21）；P6 决策门评估已产出（§11）并裁决 A；立项已登记于 `requirements.md` FR21 / `design.md` D31+D33 / `architecture.md` §1 及其变更文档；**Q7 CI、金标扩面、`pact-engine-kernel` 抽取与宿主边界安全审视均已完成（2026-10-21，D32）**；**P5 浏览器兼容性评估已完成（2026-10-21，结论：技术可行、未实现，触发条件见 §P5/§11.2）**；**DSH 插件 observe/govern 与 `pact-*` preset 治理型 loop 接管已于 2026-10-22 落地（FR25/D37，阶段 11；2026-10-23 迁至独立仓库 `onlookor/pact-dsh`），并在 `@deepseek-ai/dsh@0.2.1-rc.2` 完成真实装配；WASM 后端已于 2026-10-23 live**
+- 状态：**已转正式、受支持的本地分发形态（2026-10-21，D33：去除“实验性”标记）**；W-Q1/W-Q2/W-Q3/W-Q5/W-Q6 已于 2026-10-21 冻结；W-P0 编译探针、W-P1 纯类型层拆分、W-P2/W-S0 WASM 门面、W-P3/W-S1 内存语义与对账、W-P4/W-S2 Node 持久化已完成（2026-10-21）；W-P6 决策门评估已产出（§11）并裁决 A；立项已登记于 `requirements.md` FR21 / `design.md` D31+D33 / `architecture.md` §1 及其变更文档；**W-Q7 CI、金标扩面、`pact-engine-kernel` 抽取与宿主边界安全审视均已完成（2026-10-21，D32）**；**W-P5 浏览器兼容性评估已完成（2026-10-21，结论：技术可行、未实现，触发条件见 §W-P5/§11.2）**；**DSH 插件 observe/govern 与 `pact-*` preset 治理型 loop 接管已于 2026-10-22 落地（FR25/D37，阶段 11；2026-10-23 迁至独立仓库 `onlookor/pact-dsh`），并在 `@deepseek-ai/dsh@0.2.1-rc.2` 完成真实装配；WASM 后端已于 2026-10-23 live**
 - 范围：PACT 语义核心的 WASM 本地嵌入，优先 Node/DSH 宿主，其次浏览器
 - 结论：**核心语义层高度可行；本地引擎中等偏高；浏览器完整本地运行时中等；整个 `pactd` 编译进 WASM 不可行**
 
@@ -96,7 +96,7 @@ WASM 需要自行重实现或抽取的部分：
 | `StoreError` 含 `PathBuf` / `io::Error` | 不能跨 wasm 边界 | 拆 `ModelError`（JSON/版本/序号）与 `StoreError`（IO/索引） |
 | `AnalysisReport` 位于 `pact-engine` | 不能直接依赖 | 移入 `pact-views` 或由 `pact-wasm` 复用纯类型 |
 | 浏览器无 fsync/flock/stdio | 持久化/互斥/进程能力缺失 | JS 存储适配 + Web Locks/SharedWorker；不承诺原生等价 |
-| wasm32 target | 已安装并通过 5 个纯 crate 的 check/build（2026-10-21） | 后续按 P2 接入 `wasm-bindgen` 与 cdylib |
+| wasm32 target | 已安装并通过 5 个纯 crate 的 check/build（2026-10-21） | 后续按 W-P2 接入 `wasm-bindgen` 与 cdylib |
 
 ### 3.4 编译验证状态
 
@@ -105,10 +105,10 @@ WASM 需要自行重实现或抽取的部分：
   - `cargo check --target wasm32-unknown-unknown -p pact-core -p pact-parser -p pact-analysis -p pact-compose -p pact-cpn` → 通过（3.56s）；
   - `cargo build --target wasm32-unknown-unknown`（同上五个 crate）→ 通过（1.86s），产出 wasm rlib。
 - 结论：五个纯 crate 的**类型检查与代码生成**均通过，`serde`/`logos`/`petgraph` 依赖在 wasm 目标可用。
-- 已由 P2 验证：`wasm-bindgen 0.2.127` 门面导出 6 个业务方法 + `abi_version`；Node 加载 `.wasm` 跑通 `analyze`/`load_domain`/`compose`；bindgen 处理后的 release 产物 **273,394 B（267 KiB）**，gzip 后 **89,054 B（87 KiB）**；模块加载 1.71 ms、构造 0.35 ms、首次 `analyze` 3.24 ms（Node 22，单次冷启动）。
-- 已由 P3 验证：`prepare/commit/abort`、事件写入（内存）、快照导出/恢复、JSONL 双向互通、错误码与原生逐项对账（见 §P3 结果）。
-- 已由 P4 验证：Node 文件存储（JSONL + fsync、快照 tmp/rename）、崩溃后「日志优先」恢复、末尾半行截断、单写者 lockfile、快照自足恢复、原生/WASM 交替打开同一日志。
-- 尚未验证：浏览器 OPFS/SharedWorker（S3，Q6 暂不做）。WASM CI job 已落地（Q7，2026-10-21，见 §9.2）。
+- 已由 W-P2 验证：`wasm-bindgen 0.2.127` 门面导出 6 个业务方法 + `abi_version`；Node 加载 `.wasm` 跑通 `analyze`/`load_domain`/`compose`；bindgen 处理后的 release 产物 **273,394 B（267 KiB）**，gzip 后 **89,054 B（87 KiB）**；模块加载 1.71 ms、构造 0.35 ms、首次 `analyze` 3.24 ms（Node 22，单次冷启动）。
+- 已由 W-P3 验证：`prepare/commit/abort`、事件写入（内存）、快照导出/恢复、JSONL 双向互通、错误码与原生逐项对账（见 §W-P3 结果）。
+- 已由 W-P4 验证：Node 文件存储（JSONL + fsync、快照 tmp/rename）、崩溃后「日志优先」恢复、末尾半行截断、单写者 lockfile、快照自足恢复、原生/WASM 交替打开同一日志。
+- 尚未验证：浏览器 OPFS/SharedWorker（W-S3，W-Q6 暂不做）。WASM CI job 已落地（W-Q7，2026-10-21，见 §9.2）。
 
 ## 4. 建议架构
 
@@ -285,7 +285,7 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
 
 ### 5.3 验收矩阵
 
-| 能力 | S0 编译探针 | S1 内存语义 | S2 Node 持久化 | S3 浏览器 |
+| 能力 | W-S0 编译探针 | W-S1 内存语义 | W-S2 Node 持久化 | W-S3 浏览器 |
 |---|---|---|---|---|
 | load/validate/analyze/compose | 必须 | 必须 | 必须 | 必须 |
 | seed/produce/read/consume | 可选 | 必须 | 必须 | 必须 |
@@ -336,7 +336,7 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
 
 > 以下为阶段与退出条件，不给时间估算。每个阶段必须通过退出条件才进入下一阶段。
 
-### P0：立项与编译探针（已完成，2026-10-21）
+### W-P0：立项与编译探针（已完成，2026-10-21）
 
 - 产出：
   - spike 范围按 §9.1 冻结；
@@ -346,7 +346,7 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   - `cargo check --target wasm32-unknown-unknown -p pact-core -p pact-parser -p pact-analysis -p pact-compose -p pact-cpn` 通过；
   - `cargo build --target wasm32-unknown-unknown`（同五个 crate）通过。
 
-### P1：纯类型层拆分（已完成，2026-10-21）
+### W-P1：纯类型层拆分（已完成，2026-10-21）
 
 - 内容：
   - 新 `pact-store-model`：`Event`、`WireEvent`、`Snapshot`、`InstanceKey`、`apply_event`、`ModelError`、`EVENT_SCHEMA_VERSION`；
@@ -359,7 +359,7 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   - 原生 daemon 读取既有日志与快照的路径由 `pact-store` 恢复测试覆盖；
   - `cargo check --target wasm32-unknown-unknown -p pact-store-model -p pact-views` 通过。
 
-### P2：WASM 编译探针（S0，已完成，2026-10-21）
+### W-P2：WASM 编译探针（W-S0，已完成，2026-10-21）
 
 - 内容：
   - 新 `pact-wasm` crate（`crate-type = ["cdylib", "rlib"]`），原生测试与 wasm 共用 `PactHost`；
@@ -373,9 +373,9 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   - 对账：两个示例的 `analyze` JSON 与原生 `pact --json analyze` **深度相等**；
   - 时延（Node 22）：模块加载 1.71 ms、构造 0.35 ms、首次 `analyze` 3.24 ms。
 - 退出条件（已满足）：`.wasm` 构建成功；分析输出与原生一致；体积与启动时间已记录为预算基线。
-- 未纳入：浏览器绑定（`--target web`）、`wasm-pack` 打包、独立 CI job（Q7 留到 P2 之后另行决定）。
+- 未纳入：浏览器绑定（`--target web`）、`wasm-pack` 打包、独立 CI job（W-Q7 留到 W-P2 之后另行决定）。
 
-### P3：内存语义与对账（S1）
+### W-P3：内存语义与对账（W-S1）
 
 - 内容：
   - `PactWasm` 持有多个 domain/instance；
@@ -388,7 +388,7 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   - WASM 日志可被原生 daemon 加载；
   - 原生日志可被 WASM `restore` 加载；
   - 重复 `request_id` 幂等行为一致。
-- 结果（2026-10-21，已完成，S1）：
+- 结果（2026-10-21，已完成，W-S1）：
   - **内存宿主**：`PactHost` 持有声明注册表 + 多 `(domain, instance)` 会话；每会话独立声明快照、事件序列、`last_seq`/`next_seq`、Rule-E 幂等表与 `terminated`。`load_domain` 对齐原生语义（空实例可重置、非空实例 `DomainBusy`、`load_domain_with(force)` 显式替换），`instantiate` 从已登记声明创建额外实例。
   - **两阶段提交**：`prepare_seed/produce/consume` 校验并分配 seq，返回 `{tx_id, seq, event, result}`（`event` 为完整 JSONL 行）；宿主 append/fsync 后 `commit(tx_id, terminated_ts)` 应用状态并按原生顺序返回 Rule-T `Terminated` 事件；`abort` 丢弃事务并回收 seq，保证日志连续、可被原生 `Store` 加载。
   - **只读与查询**：`read`（Rule-R）、`counter`/`archive`/`gates`/`enabled`/`status`，字段与原生 `pact-views` 同构。
@@ -396,29 +396,29 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   - **金标对账**（`crates/pact-wasm/tests/parity.rs`）：固定 `T0–T8` 与 `seq-0..2` 走完 requirement→design→implementation 生命周期，**8 条事件逐行与原生日志相等**（含 `Terminated`）；`status`/`counter`/`archive`/`gates`/`enabled` 逐项相等；`SeedAuthorityDenied`/`PredecessorNotOnCounter`/`TokenNotOnCounter`/`DomainBusy`/`IdempotencyConflict` 与原生错误码一致；同一 `request_id` 重放不产生事件且返回首次归档结果。
   - **JSONL 双向互通**：原生日志 → WASM `restore`（纯日志路径与「日志 + 快照」快速路径）状态逐字段一致；WASM 导出的日志与快照写入 `pipeline/default.events.jsonl` / `default.snapshot.json` 后，原生 daemon 打开即恢复一致。
   - **Node 运行时**：`abi_version = pact-wasm/0.2`；Node 22 实测 `load_domain_at` → `prepare_seed` → `commit` → `prepare_produce` → `read` → `export_events`/`export_snapshot` → 新实例 `restore` 全链路通过，未授权种子按 `SeedAuthorityDenied` 抛出。
-  - **体积**（`wasm-release`，wasm-bindgen 0.2.127 Node 目标）：原始 514,656 B（503 KiB），bindgen 后 450,190 B（440 KiB），gzip 140,457 B（137 KiB）；相对 S0 的 267 KiB 增加 173 KiB（新增会话/提交/恢复逻辑），仍属可接受预算，记录为新基线。
+  - **体积**（`wasm-release`，wasm-bindgen 0.2.127 Node 目标）：原始 514,656 B（503 KiB），bindgen 后 450,190 B（440 KiB），gzip 140,457 B（137 KiB）；相对 W-S0 的 267 KiB 增加 173 KiB（新增会话/提交/恢复逻辑），仍属可接受预算，记录为新基线。
 
-### P4：Node 持久化与最小宿主（S2）
+### W-P4：Node 持久化与最小宿主（W-S2）
 
 - 内容：
   - JS `PactStore` 的 Node 实现：JSONL + fsync + 快照 tmp/rename；
   - 崩溃/重启测试；
   - 最小 CLI 或 Node demo；
-  - DSH 插件不在本轮范围（Q5），留待 P3 对账后另立项目。
+  - DSH 插件不在本轮范围（W-Q5），留待 W-P3 对账后另立项目。
 - 退出条件：
   - 重启后状态一致；
   - 原生 daemon 与 WASM 宿主可交替打开同一日志；
   - 单写者约束有测试。
-- 结果（2026-10-21，已完成，S2）：
+- 结果（2026-10-21，已完成，W-S2）：
   - **存储适配器**（`crates/pact-wasm/js/pact-store.js`）：布局与原生逐字一致（`<root>/<domain>/<instance>.events.jsonl`、`.snapshot.json`、`.lock`）；`append` 逐行写 + `fsync`；快照走 tmp 写入 + `fsync` + `rename` + 目录 `fsync`；`readEvents` 按字节截断末尾半行（崩溃残留）并 `fsync` 修复。
   - **单写者**：`.lock` 以 `O_EXCL` 创建并写入 pid，关闭时删除；同实例二次打开抛 `InstanceLocked`，持有者进程已消失时回收陈旧锁。
   - **最小宿主**（`pact-host.js`）：`open` 优先以日志/快照恢复（空日志 + 无快照才新建）；写路径严格执行 `prepare → append+fsync → commit`，追加失败即 `abort`；Rule-T `Terminated` 事件提交后追加。
   - **demo**（`js/demo.js`）：建实例 → 种子 → 生产 → 快照 → 关闭 → 重开，输出状态/计数器/归档/事件行数。
   - **测试**（`js/test/persistence.test.js`，`node --test` 7 项全绿）：重启状态一致、append 后未 commit 的「崩溃」按日志优先恢复、末尾半行截断、单写者拒绝/释放后重开、快照自足（清空日志仍可恢复）、幂等键跨重启、Rule-T 终止态落盘。
   - **交替打开**（`parity.rs::native_and_wasm_alternate_on_shared_log`）：原生 A 写入 → WASM B 接力消费并覆写 → 原生 C 打开一致并追加 → WASM D 再次打开一致。
-  - **边界**：Node 版以 lockfile 近似单写者，不提供 `flock` 的内核级互斥；浏览器 OPFS/SharedWorker 仍不做（Q6）。
+  - **边界**：Node 版以 lockfile 近似单写者，不提供 `flock` 的内核级互斥；浏览器 OPFS/SharedWorker 仍不做（W-Q6）。
 
-### P5：浏览器适配（S3，可选）
+### W-P5：浏览器适配（W-S3，可选）
 
 - 内容：
   - OPFS / IndexedDB 存储适配；
@@ -430,9 +430,9 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   - 页面刷新后可恢复；
   - 文档明确“浏览器模式不提供原生 fsync 等价保证”。
 
-**P5 兼容性评估（2026-10-21，仅评估，未实现）**
+**W-P5 兼容性评估（2026-10-21，仅评估，未实现）**
 
-- **结论**：**技术可行、无 Rust/WASM 层阻塞；工程量为中等，主要工作集中在 JS 存储适配与 Worker/锁编排；持久化保证弱于 Node/原生，不建议在没有真实浏览器宿主需求时启动实现**。与 P6 裁决 A 一致：浏览器形态仍不进入 FR21 范围。
+- **结论**：**技术可行、无 Rust/WASM 层阻塞；工程量为中等，主要工作集中在 JS 存储适配与 Worker/锁编排；持久化保证弱于 Node/原生，不建议在没有真实浏览器宿主需求时启动实现**。与 W-P6 裁决 A 一致：浏览器形态仍不进入 FR21 范围。
 - **已具备（无需改动内核）**：
   - `pact-wasm` 已成功构建 `--target web` 与 `--target no-modules`；产物 wasm 455,929 B（gzip 142,196 B），JS 胶水 43–47 KB，体积可接受。
   - 内核不读系统时钟、不依赖 `getrandom`、不使用线程/共享内存/SIMD，因此**不需要** COOP/COEP、`SharedArrayBuffer` 或随机数 polyfill。
@@ -445,7 +445,7 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   - **没有 `O_EXCL` 锁文件**：改用 **Web Locks**（`navigator.locks`，Worker 内可用）做实例级单写者；`ifAvailable: true` 快速失败，或排队等待。`SyncAccessHandle` 自身对单文件的独占只能覆盖单文件，不能覆盖「日志 + 快照」整套实例。
   - **无原生 `fsync` 等价保证**：`SyncAccessHandle.flush()` 只承诺把该文件内容刷出，目录项/元数据与浏览器进程崩溃语义不受控；需配合 `navigator.storage.persist()` 降低淘汰概率，并在文档中明确弱保证。
   - **存储可被淘汰**：OPFS 仍受配额与浏览器清理策略约束（尤其 iOS/Safari 长期未使用场景）；必须提供导出/备份路径，不能把浏览器存储当唯一副本。
-  - **长会话内存**：WASM 宿主当前保留实例完整 `events` 向量，浏览器长生命周期页面会累积；P5 需增加「重载自快照/日志」或暴露压缩能力，避免内存无界增长。
+  - **长会话内存**：WASM 宿主当前保留实例完整 `events` 向量，浏览器长生命周期页面会累积；W-P5 需增加「重载自快照/日志」或暴露压缩能力，避免内存无界增长。
 - **浏览器能力基线（桌面）**：
 
   | 能力 | 要求 | 支持基线 |
@@ -463,11 +463,11 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
   3. **日志优先恢复**：末尾半行用 `SyncAccessHandle.truncate()` 截断；快照原位写 + 校验，损坏即忽略。
   4. **不依赖 SharedWorker**：避免 iOS 与生命周期不确定性；多 tab 协调只依赖 Web Locks。
   5. 差异仅落在 JS 适配层；Rust 内核与 ABI 不变，Node 形态继续使用现有 `FileStore`。
-- **测试与 CI 影响**：Node 的 `node:test` 无法覆盖 OPFS。需要 Playwright/Chromium 无头测试（Worker + OPFS + 刷新恢复 + 双 tab 锁）；Firefox/WebKit 可做人工或独立矩阵，不建议在 spike 阶段全量接入。现有 `wasm` CI job 无需改动，P5 另立 job。
+- **测试与 CI 影响**：Node 的 `node:test` 无法覆盖 OPFS。需要 Playwright/Chromium 无头测试（Worker + OPFS + 刷新恢复 + 双 tab 锁）；Firefox/WebKit 可做人工或独立矩阵，不建议在 spike 阶段全量接入。现有 `wasm` CI job 无需改动，W-P5 另立 job。
 - **风险判断**：语义漂移风险低（内核共用）；主要风险是**持久化弱保证、浏览器存储淘汰、跨浏览器锁/Worker 差异**与测试成本。适合作为「浏览器本地单用户、可接受导出备份」的实验形态，不适合作为唯一权威存储。
 - **状态**：**未实现**。触发条件仍按 §11.2：出现明确的浏览器宿主/离线单用户需求，且接受弱持久化边界。
 
-### P6：决策门
+### W-P6：决策门
 
 - 评估：
   - 是否抽取 `pact-engine-kernel`，让原生与 WASM 共用命令层（**已完成，2026-10-21，D32**）；
@@ -482,16 +482,16 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
 
 | 编号 | 风险 | 影响 | 缓解 |
 |---|---|---|---|
-| R1 | WASM 与原生引擎语义漂移 | 高 | 金标对账；必要时抽 `pact-engine-kernel` |
-| R2 | 事件模型拆分引入回归 | 中 | 纯重构、零格式变化、全量测试 |
-| R3 | wasm 工具链/CI 缺失 | 中 | P0 安装 target；增加 wasm CI job |
-| R4 | `wasm-bindgen` ABI 复杂 | 中 | v0 用 JSON 字符串 ABI |
-| R5 | token id / 时间不可复现 | 中 | JS 注入；测试固定序列 |
-| R6 | 浏览器持久化弱于原生 | 中 | Node 先做 fsync；浏览器文档化；关键场景用 daemon |
-| R7 | 多 tab/多写者 | 高 | SharedWorker/Web Locks；单写者测试 |
-| R8 | wasm 体积/启动超预算 | 低中 | 实测；按需裁剪 analysis；wasm-opt |
-| R9 | 客户端无 ACL/审计 | 高（多用户） | 本地模式限定单用户；多用户走 v2 daemon |
-| R10 | DSH 预发布 API 漂移 | 中 | 插件适配层；版本锁定；不把 DSH 作为 P0/P1 前置 |
+| W-R1 | WASM 与原生引擎语义漂移 | 高 | 金标对账；必要时抽 `pact-engine-kernel` |
+| W-R2 | 事件模型拆分引入回归 | 中 | 纯重构、零格式变化、全量测试 |
+| W-R3 | wasm 工具链/CI 缺失 | 中 | W-P0 安装 target；增加 wasm CI job |
+| W-R4 | `wasm-bindgen` ABI 复杂 | 中 | v0 用 JSON 字符串 ABI |
+| W-R5 | token id / 时间不可复现 | 中 | JS 注入；测试固定序列 |
+| W-R6 | 浏览器持久化弱于原生 | 中 | Node 先做 fsync；浏览器文档化；关键场景用 daemon |
+| W-R7 | 多 tab/多写者 | 高 | SharedWorker/Web Locks；单写者测试 |
+| W-R8 | wasm 体积/启动超预算 | 低中 | 实测；按需裁剪 analysis；wasm-opt |
+| W-R9 | 客户端无 ACL/审计 | 高（多用户） | 本地模式限定单用户；多用户走 v2 daemon |
+| W-R10 | DSH 预发布 API 漂移 | 中 | 插件适配层；版本锁定；不把 DSH 作为 W-P0/W-P1 前置 |
 
 ## 9. 决策与待决问题
 
@@ -499,37 +499,37 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
 
 | 编号 | 问题 | 决定 | 理由 |
 |---|---|---|---|
-| Q1 | 纯类型层命名 | 拆为 `pact-store-model` + `pact-views`，不合并 `pact-model` | 事件模型只依赖 `pact-core`+`serde`；views 依赖 `pact-analysis`。合并会让 WASM 无谓引入分析依赖 |
-| Q2 | v0 ABI | JSON 字符串 | 跨语言稳定、易与原生 CLI 对账；后续可在 JS 包装层升级为对象，不改 Rust 内部 |
-| Q3 | 写协议 | `prepare/commit` 作为唯一写路径；S1 用即时提交的内存适配器演练同一 API | 与原生“日志先于内存确认”一致；避免 `execute+rollback` 形成第二条语义路径 |
-| Q5 | DSH 插件范围 | 本轮不做；P3 对账通过后另立项目 | DSH 为 developer preview，API 漂移风险 R10；WASM core 应独立可交付 |
-| Q6 | 浏览器 OPFS | 本轮不做；S3 仅保留为 P4 后的可选门 | 浏览器持久化弱保证、SharedWorker 复杂度高；浏览器共享团队本身条件依赖 NFR6 v2 |
+| W-Q1 | 纯类型层命名 | 拆为 `pact-store-model` + `pact-views`，不合并 `pact-model` | 事件模型只依赖 `pact-core`+`serde`；views 依赖 `pact-analysis`。合并会让 WASM 无谓引入分析依赖 |
+| W-Q2 | v0 ABI | JSON 字符串 | 跨语言稳定、易与原生 CLI 对账；后续可在 JS 包装层升级为对象，不改 Rust 内部 |
+| W-Q3 | 写协议 | `prepare/commit` 作为唯一写路径；W-S1 用即时提交的内存适配器演练同一 API | 与原生“日志先于内存确认”一致；避免 `execute+rollback` 形成第二条语义路径 |
+| W-Q5 | DSH 插件范围 | 本轮不做；W-P3 对账通过后另立项目 | DSH 为 developer preview，API 漂移风险 W-R10；WASM core 应独立可交付 |
+| W-Q6 | 浏览器 OPFS | 本轮不做；W-S3 仅保留为 W-P4 后的可选门 | 浏览器持久化弱保证、SharedWorker 复杂度高；浏览器共享团队本身条件依赖 NFR6 v2 |
 
 ### 9.2 延后决策门
 
 | 编号 | 问题 | 决策点 | 当前处置 |
 |---|---|---|---|
-| Q7 | 独立 WASM CI job | P2 产出稳定 `.wasm` 后 | **已完成（2026-10-21）**：`ci.yml` 新增 `wasm` job——wasm32 构建 + clippy + ABI/语义/体积门禁（`js/ci-smoke.js`）+ Node 持久化测试；设计见 `docs/design-change.md` 第 34 轮 |
-| Q4 | 抽取 `pact-engine-kernel` | P6 决策门 | P3 明确不抽；先量化 WASM 内核与原生命令层的对账差异，再决定是否共用 |
+| W-Q7 | 独立 WASM CI job | W-P2 产出稳定 `.wasm` 后 | **已完成（2026-10-21）**：`ci.yml` 新增 `wasm` job——wasm32 构建 + clippy + ABI/语义/体积门禁（`js/ci-smoke.js`）+ Node 持久化测试；设计见 `docs/design-change.md` 第 34 轮 |
+| W-Q4 | 抽取 `pact-engine-kernel` | W-P6 决策门 | W-P3 明确不抽；先量化 WASM 内核与原生命令层的对账差异，再决定是否共用 |
 
 ## 10. 结论与建议
 
 - **技术可行性：高（核心语义）/ 中高（本地引擎）/ 中（浏览器）/ 低（完整 daemon WASI）。**
-- **建议立项形态：** P0–P4 已完成“语义核心 + 内存引擎 + 金标对账 + Node 持久化”，全程不碰浏览器、不碰 DSH、不碰 NFR6 v2；P6 评估见 §11，用户裁决 **A（条件立项）**，随后按 D33 去除“实验性”标记、转为受支持的本地分发形态。
+- **建议立项形态：** W-P0–W-P4 已完成“语义核心 + 内存引擎 + 金标对账 + Node 持久化”，全程不碰浏览器、不碰 DSH、不碰 NFR6 v2；W-P6 评估见 §11，用户裁决 **A（条件立项）**，随后按 D33 去除“实验性”标记、转为受支持的本地分发形态。
 - **最重要的架构约束：** 事件 schema、快照格式、存储布局必须与原生共用；WASM 不能成为第二套语义或第二套日志格式。
 - **与 NFR6 的关系：** 无硬依赖；本地 WASM 可独立推进；只有远程团队/多用户模式才条件依赖 v2。
-- **下一步：** P4/S2 已完成；P6 评估见 §11——用户裁决 **A（条件立项）**，并按 D33 去除“实验性”标记：WASM 作为受支持的本地分发形态维护（FR21/D31/D33），权威仍是原生引擎。Q7 CI、金标扩面、`pact-engine-kernel` 抽取与宿主边界安全审视均已完成（2026-10-21）；P5 浏览器兼容性评估已完成但未实现；DSH `govern`、v2、浏览器均不推进。立项与转正登记已写入需求/设计/架构及其变更文档。
+- **下一步：** W-P4/W-S2 已完成；W-P6 评估见 §11——用户裁决 **A（条件立项）**，并按 D33 去除“实验性”标记：WASM 作为受支持的本地分发形态维护（FR21/D31/D33），权威仍是原生引擎。W-Q7 CI、金标扩面、`pact-engine-kernel` 抽取与宿主边界安全审视均已完成（2026-10-21）；W-P5 浏览器兼容性评估已完成但未实现；DSH `govern`、v2、浏览器均不推进。立项与转正登记已写入需求/设计/架构及其变更文档。
 
-## 11. P6 决策门评估（2026-10-21）
+## 11. W-P6 决策门评估（2026-10-21）
 
 ### 11.1 证据基线
 
 | 维度 | 结果 |
 |---|---|
-| 语义一致性 | 代表性生命周期 8 条事件与原生逐行相等；5 类错误码一致；幂等重放一致（P3） |
-| 互操作 | 原生日志 ↔ WASM `restore` 双向通过；原生与 WASM 交替打开同一日志通过（P3/P4） |
-| 持久化 | Node JSONL+fsync、快照 tmp/rename、崩溃后日志优先、半行截断、单写者均有测试（P4） |
-| 分发体积 | bindgen 后 440 KiB、gzip 137 KiB（P3 基线） |
+| 语义一致性 | 代表性生命周期 8 条事件与原生逐行相等；5 类错误码一致；幂等重放一致（W-P3） |
+| 互操作 | 原生日志 ↔ WASM `restore` 双向通过；原生与 WASM 交替打开同一日志通过（W-P3/W-P4） |
+| 持久化 | Node JSONL+fsync、快照 tmp/rename、崩溃后日志优先、半行截断、单写者均有测试（W-P4） |
+| 分发体积 | bindgen 后 440 KiB、gzip 137 KiB（W-P3 基线） |
 | 代码规模 | `pact-engine/src/engine.rs` 1635 行（含 actor/store/通知/压缩）；`pact-wasm/src/host.rs` 1107 行（含注释与 8 项单测）；真正重叠的命令编排约 300 行量级 |
 | 覆盖缺口 | 金标语料只覆盖单域单实例单生命周期；未覆盖多实例并发、组合域、GateExpr 条件分支、压缩后恢复 |
 | 生产消费者 | 尚无真实宿主接入（无 Electron/Node 应用、无 DSH 插件），浏览器未验证 |
@@ -538,26 +538,26 @@ PACT 的 Counter 单权威前提不能被多个 WASM 实例直接写同一份日
 
 | 问题 | 结论 | 理由与触发条件 |
 |---|---|---|
-| Q4 抽取 `pact-engine-kernel` | **已抽取（2026-10-21，D32）**；立项后列为第一优先工程项并完成 | P3 已量化双实现在 seq 分配、幂等表、Rule-T 终止、恢复锚点四处重复（R1）。金标扩面完成后，`pact-engine-kernel` 以纯 `Session` 统一实例会话语义，原生与 WASM 仅保留持久化/通知/审计/错误映射等外围差异；约 300 行双实现漂移消除，全量 184 项测试与 parity 7 项通过 |
-| Q5 DSH 推进到 `govern` | **已完成（2026-10-22/23，阶段 11，用户裁决；FR25/D37）** | 用户明确要求推进 loop 替换，接受 DSH developer preview 的 API 漂移风险（R10）。落地为独立仓库 `onlookor/pact-dsh`（当时位于本仓库 `plugins/dsh/`）：observe 镜像 + govern 门控 + `pact-*` preset 选择性工厂接管（`PactAgentLoop extends AgentLoop`），其余 agent 旁路；后端可注入，`FakePactBackend` 与 `WasmPactBackend` 均已接线。真实 DSH 装配已在 `@deepseek-ai/dsh@0.2.1-rc.2` 验证；`backend=wasm` 以 `wasm-bindgen 0.2.127` 产物在 headless profile 中实跑允许/工具拒绝/预检拒绝三条路径并通过 |
+| W-Q4 抽取 `pact-engine-kernel` | **已抽取（2026-10-21，D32）**；立项后列为第一优先工程项并完成 | W-P3 已量化双实现在 seq 分配、幂等表、Rule-T 终止、恢复锚点四处重复（W-R1）。金标扩面完成后，`pact-engine-kernel` 以纯 `Session` 统一实例会话语义，原生与 WASM 仅保留持久化/通知/审计/错误映射等外围差异；约 300 行双实现漂移消除，全量 184 项测试与 parity 7 项通过 |
+| W-Q5 DSH 推进到 `govern` | **已完成（2026-10-22/23，阶段 11，用户裁决；FR25/D37）** | 用户明确要求推进 loop 替换，接受 DSH developer preview 的 API 漂移风险（W-R10）。落地为独立仓库 `onlookor/pact-dsh`（当时位于本仓库 `plugins/dsh/`）：observe 镜像 + govern 门控 + `pact-*` preset 选择性工厂接管（`PactAgentLoop extends AgentLoop`），其余 agent 旁路；后端可注入，`FakePactBackend` 与 `WasmPactBackend` 均已接线。真实 DSH 装配已在 `@deepseek-ai/dsh@0.2.1-rc.2` 验证；`backend=wasm` 以 `wasm-bindgen 0.2.127` 产物在 headless profile 中实跑允许/工具拒绝/预检拒绝三条路径并通过 |
 | NFR6 v2 远端模式 | **不需要** | 本地 WASM 单用户模式无 v2 依赖；v2 只服务跨设备/共享团队/多用户 ACL 与审计。触发条件：出现浏览器共享团队或跨设备协作需求 |
-| 是否正式立项 | **A. 条件立项**，2026-10-21 用户裁决；同日按 D33 去除“实验性”标记、转为受支持形态 | 按 11.4 边界登记为 FR21/D31/D33；Q7 CI、金标扩面、kernel 抽取与安全审视均已完成 |
+| 是否正式立项 | **A. 条件立项**，2026-10-21 用户裁决；同日按 D33 去除“实验性”标记、转为受支持形态 | 按 11.4 边界登记为 FR21/D31/D33；W-Q7 CI、金标扩面、kernel 抽取与安全审视均已完成 |
 
 ### 11.3 立项选项
 
 | 选项 | 内容 | 代价 | 适用判断 |
 |---|---|---|---|
-| A. 条件立项（后按 D33 转正式） | 把 WASM 本地运行登记为本地分发形态（Node/桌面宿主）；不替代 `pactd`，不含浏览器与多用户。稳定化验收完成后去除“实验性”标记 | 需补 Q7 CI、ABI 版本策略、安全审视；稳定化前完成 kernel 抽取与覆盖扩展 | 仓库已投入 P0–P4 且质量达标，若继续保留代码，CI 是防止腐烂的最低成本；推荐 |
+| A. 条件立项（后按 D33 转正式） | 把 WASM 本地运行登记为本地分发形态（Node/桌面宿主）；不替代 `pactd`，不含浏览器与多用户。稳定化验收完成后去除“实验性”标记 | 需补 W-Q7 CI、ABI 版本策略、安全审视；稳定化前完成 kernel 抽取与覆盖扩展 | 仓库已投入 W-P0–W-P4 且质量达标，若继续保留代码，CI 是防止腐烂的最低成本；推荐 |
 | B. 保持 spike 不立项 | 代码留仓库、文档标注 spike；不接 CI | 零新增承诺 | 适合“暂无宿主需求、也不愿承担 CI 维护”的情形；但 wasm target/绑定版本会随时间腐烂 |
 | C. 正式立项（含浏览器/v2） | 含 OPFS/SharedWorker、多用户与远端 v2 | 高：浏览器持久化弱保证、SharedWorker 复杂度、v2 全套安全能力 | 当前无需求证据，不建议 |
 
-### 11.4 P6 建议
+### 11.4 W-P6 建议
 
 **推荐 A（条件立项）——已于 2026-10-21 由用户裁决采纳，并于同日按 D33 去除“实验性”标记、转为受支持形态**，边界与前置条件：
 
 1. **定位**：WASM 是 `pactd` 之外的**受支持本地分发形态**，权威仍是原生引擎；不承诺浏览器与多用户能力。
-2. **准入条件（均已满足）**：Q7 CI（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）；ABI 采用 `pact-wasm/0.x` 并记录破坏性变更；推送/发布前完成宿主边界安全审视。
-3. **工程项顺序**：Q7 CI（**已完成**）→ 扩大金标（多实例、组合域、条件分支、压缩恢复，**已完成**）→ 抽取 `pact-engine-kernel` 消除双实现（**已完成，D32**）→ 浏览器兼容性评估（**已完成，未实现**）。
+2. **准入条件（均已满足）**：W-Q7 CI（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）；ABI 采用 `pact-wasm/0.x` 并记录破坏性变更；推送/发布前完成宿主边界安全审视。
+3. **工程项顺序**：W-Q7 CI（**已完成**）→ 扩大金标（多实例、组合域、条件分支、压缩恢复，**已完成**）→ 抽取 `pact-engine-kernel` 消除双实现（**已完成，D32**）→ 浏览器兼容性评估（**已完成，未实现**）。
 4. **不纳入**：DSH 团队级原生运行时、NFR6 v2、浏览器 OPFS；触发条件见 11.2。DSH 的 observe/govern 与 `pact-*` preset 治理型 loop 接管已由阶段 11 单独落地（FR25/D37），不使用 WASM 内核作为先行条件。
 5. **文档落点**：需求 FR21（`requirements-change.md` 第 18–19 轮）、设计 D31 + §16（`design-change.md` 第 33 轮）、D32（第 36 轮）与 D33（第 37 轮）、架构 §1 组件边界（`architecture-change.md` 第 20–22 轮）；DSH 插件见 FR25/D37（requirements 第 21 轮、design 第 40 轮、architecture 第 24 轮）。
 

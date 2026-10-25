@@ -1,7 +1,7 @@
 //! D35：MCP 工具层（daemon 内建 `/mcp` 与 stdio `pact-mcp` 共用）。
 //!
-//! 17 个 `pact_` 工具经 [`crate::client`] 接入 daemon；错误以 §6.3 结构化 JSON 返回。
-//! 域双键（D27）：域级工具均接受可选 `instance`（缺省 `default`）。
+//! 21 个 `pact_` 工具经 [`crate::client`] 接入 daemon；错误以 §6.3 结构化 JSON 返回。
+//! 域双键（D27）：域级工具均接受可选 `instance`（缺省活动实例，无指针时为 `default`）。
 
 use crate::client::{Client, ClientError};
 use crate::dto::ErrorBody;
@@ -91,6 +91,50 @@ struct DomainIn {
     /// 目标实例名（缺省 default）。
     #[serde(default)]
     instance: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct HandoffIn {
+    /// 域名。
+    domain: String,
+    /// 目标实例使用的新声明原文。
+    declaration: String,
+    /// 源实例（交接后冻结只读）。
+    source_instance: String,
+    /// 目标实例（必须不存在）。
+    target_instance: String,
+    /// 交接后切换活动实例指针（缺省 true）。
+    #[serde(default = "default_true")]
+    activate: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ActivateIn {
+    /// 域名。
+    domain: String,
+    /// 活动实例名（必须已加载）。
+    instance: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ActiveIn {
+    /// 域名。
+    domain: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct FreezeIn {
+    /// 域名。
+    domain: String,
+    /// 实例名。
+    instance: String,
+    /// 解除冻结（缺省 false = 冻结）。
+    #[serde(default)]
+    unfreeze: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -533,6 +577,83 @@ impl PactMcp {
                 .await
                 .map_err(to_err)?,
         )
+    }
+
+    #[tool(
+        name = "pact_domain_handoff",
+        description = "状态交接：冻结源实例，以新声明创建目标并继承 Counter/Archive/幂等表，缺省切换活动实例"
+    )]
+    async fn domain_handoff(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(in_): Parameters<HandoffIn>,
+    ) -> Result<String, String> {
+        let client = self.client_for(&ctx);
+        to_ok(
+            &client
+                .handoff(
+                    &in_.domain,
+                    &in_.source_instance,
+                    &in_.target_instance,
+                    &in_.declaration,
+                    in_.activate,
+                )
+                .await
+                .map_err(to_err)?,
+        )
+    }
+
+    #[tool(
+        name = "pact_domain_activate",
+        description = "切换域的活动实例指针（短路由 /domains/{d}/... 解析目标）"
+    )]
+    async fn domain_activate(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(in_): Parameters<ActivateIn>,
+    ) -> Result<String, String> {
+        let client = self.client_for(&ctx);
+        to_ok(
+            &client
+                .activate(&in_.domain, &in_.instance)
+                .await
+                .map_err(to_err)?,
+        )
+    }
+
+    #[tool(
+        name = "pact_domain_active",
+        description = "查询域的活动实例（无指针 → default）"
+    )]
+    async fn domain_active(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(in_): Parameters<ActiveIn>,
+    ) -> Result<String, String> {
+        let client = self.client_for(&ctx);
+        to_ok(&client.active_instance(&in_.domain).await.map_err(to_err)?)
+    }
+
+    #[tool(
+        name = "pact_domain_freeze",
+        description = "冻结/解冻实例：冻结后拒绝新的 Seed/Produce/Consume（读与幂等重放仍可用）"
+    )]
+    async fn domain_freeze(
+        &self,
+        ctx: RequestContext<RoleServer>,
+        Parameters(in_): Parameters<FreezeIn>,
+    ) -> Result<String, String> {
+        let client = self.client_for(&ctx);
+        client
+            .set_frozen(&in_.domain, &in_.instance, !in_.unfreeze)
+            .await
+            .map_err(to_err)?;
+        Ok(serde_json::json!({
+            "domain": in_.domain,
+            "instance": in_.instance,
+            "frozen": !in_.unfreeze
+        })
+        .to_string())
     }
 
     #[tool(

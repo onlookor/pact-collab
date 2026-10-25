@@ -57,6 +57,28 @@ pub struct DomainListing {
     pub name: String,
     /// 该声明下已存在的实例名（排序去重）。
     pub instances: Vec<String>,
+    /// 短路由当前解析到的实例（活动实例别名）；`None` = 回退 `default`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<String>,
+}
+
+/// 状态交接结果（`POST /domains/{d}/handoff`）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandoffOutcome {
+    pub domain: String,
+    pub source_instance: String,
+    pub target_instance: String,
+    /// 导出时源实例的最后事件序号。
+    pub source_seq: u64,
+    /// 目标实例交接基线事件的 seq。
+    pub target_seq: u64,
+    pub counter: usize,
+    pub archive: usize,
+    pub consumed_requests: usize,
+    /// 交接后短路由实际解析到的实例（激活失败时可能仍为源实例或旧指针）。
+    pub active_instance: String,
+    /// 是否已成功切换活动实例指针。
+    pub activated: bool,
 }
 
 /// 日志前缀压缩结果（D25 子项 1；`POST …/compact` 响应）。

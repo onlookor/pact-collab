@@ -31,6 +31,26 @@ gates {
 seed_authority { external: seeds requirement }
 "#;
 
+/// 换版声明：新增 `review` 类型与门。
+const DECL_V2: &str = r#"
+types { requirement; design; implementation; review }
+
+preconditions {
+    requirement → design;
+    design → implementation;
+    design → review
+}
+
+gates {
+    architect: reads requirement, consumes requirement, produces design;
+    developer: reads design, consumes design, produces implementation;
+    reviewer: consumes design, produces review;
+    user: consumes implementation
+}
+
+seed_authority { external: seeds requirement }
+"#;
+
 /// 进程内起一个真实 daemon（临时目录 + unix socket）。
 async fn spawn_daemon(dir: &Path) -> PathBuf {
     let store = Store::open(dir.join("data")).await.unwrap();
@@ -97,9 +117,9 @@ async fn mcp_full_lifecycle_over_stdio() {
     .expect("启动 pact-mcp 子进程失败");
     let client = ().serve(transport).await.expect("MCP 握手失败");
 
-    // —— 工具清单（§9.1 + D27 + D25：17 个） ——
+    // —— 工具清单（§9.1 + D27 + D25 + D39：21 个） ——
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 17, "应注册 17 个工具: {tools:?}");
+    assert_eq!(tools.len(), 21, "应注册 21 个工具: {tools:?}");
 
     // —— 域生命周期 ——
     let v = tool_ok(
@@ -268,6 +288,120 @@ async fn mcp_full_lifecycle_over_stdio() {
     let after = tool_ok(&client, "pact_status", json!({ "domain": "proj" })).await;
     assert_eq!(after["counter_size"], 1);
     assert_eq!(after["archive_size"], 1);
+
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn mcp_state_handoff_tools_over_stdio() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = spawn_daemon(dir.path()).await;
+
+    let (transport, _stderr) = TokioChildProcess::builder(
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_pact-mcp")).configure(|c| {
+            c.arg("--unix").arg(&sock);
+        }),
+    )
+    .spawn()
+    .expect("启动 pact-mcp 子进程失败");
+    let client = ().serve(transport).await.expect("MCP 握手失败");
+
+    tool_ok(
+        &client,
+        "pact_domain_load",
+        json!({ "name": "proj", "declaration": DECL }),
+    )
+    .await;
+    let seed = tool_ok(
+        &client,
+        "pact_seed",
+        json!({ "domain": "proj", "participant": "external", "type": "requirement" }),
+    )
+    .await;
+    let req_id = seed["token"]["id"].as_str().unwrap().to_owned();
+    tool_ok(
+        &client,
+        "pact_produce",
+        json!({
+            "domain": "proj", "participant": "architect", "type": "design",
+            "predecessors": [req_id]
+        }),
+    )
+    .await;
+
+    // 交接：源 default → 目标 v2，默认激活。
+    let out = tool_ok(
+        &client,
+        "pact_domain_handoff",
+        json!({
+            "domain": "proj",
+            "declaration": DECL_V2,
+            "source_instance": "default",
+            "target_instance": "v2"
+        }),
+    )
+    .await;
+    assert_eq!(out["counter"], 2);
+    assert_eq!(out["archive"], 0);
+    assert_eq!(out["active_instance"], "v2");
+    assert_eq!(out["activated"], true);
+
+    let active = tool_ok(&client, "pact_domain_active", json!({ "domain": "proj" })).await;
+    assert_eq!(active["instance"], "v2");
+
+    // 短路由工具（不传 instance）解析到 v2。
+    let short = tool_ok(&client, "pact_counter_query", json!({ "domain": "proj" })).await;
+    assert_eq!(short["size"], 2);
+
+    // 源实例已冻结：显式实例调用被拒。
+    let denied = tool_err(
+        &client,
+        "pact_seed",
+        json!({ "domain": "proj", "instance": "default", "participant": "external", "type": "requirement" }),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], "InstanceFrozen");
+
+    // 冻结工具：解冻后源恢复可写，再冻结立即生效。
+    let unfrozen = tool_ok(
+        &client,
+        "pact_domain_freeze",
+        json!({ "domain": "proj", "instance": "default", "unfreeze": true }),
+    )
+    .await;
+    assert_eq!(unfrozen["frozen"], false);
+    tool_ok(
+        &client,
+        "pact_seed",
+        json!({ "domain": "proj", "instance": "default", "participant": "external", "type": "requirement" }),
+    )
+    .await;
+    tool_ok(
+        &client,
+        "pact_domain_freeze",
+        json!({ "domain": "proj", "instance": "default" }),
+    )
+    .await;
+    let denied = tool_err(
+        &client,
+        "pact_seed",
+        json!({ "domain": "proj", "instance": "default", "participant": "external", "type": "requirement" }),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], "InstanceFrozen");
+
+    // 切换活动实例。
+    let switched = tool_ok(
+        &client,
+        "pact_domain_activate",
+        json!({ "domain": "proj", "instance": "default" }),
+    )
+    .await;
+    assert_eq!(switched["instance"], "default");
+    assert_eq!(
+        tool_ok(&client, "pact_domain_active", json!({ "domain": "proj" })).await["instance"],
+        "default"
+    );
 
     client.cancel().await.unwrap();
 }

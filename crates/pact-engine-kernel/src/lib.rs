@@ -177,50 +177,47 @@ impl Session {
             .max(base_seq)
             .max(snap_seq);
 
-        let dl_idx = events
-            .iter()
-            .rposition(|e| matches!(e, Event::DomainLoaded { .. }));
-        let (declaration, dl_seq, snapshot_is_anchor) = match dl_idx {
-            Some(idx) => match &events[idx] {
-                Event::DomainLoaded {
-                    declaration, seq, ..
-                } => (declaration.clone(), *seq, false),
-                _ => unreachable!(),
-            },
+        let baseline_idx = events.iter().rposition(Event::is_baseline);
+        let baseline = baseline_idx.map(|idx| &events[idx]);
+        let (declaration, dl_seq) = match baseline {
+            Some(ev) => {
+                let (_, declaration) = ev
+                    .baseline_declaration()
+                    .ok_or_else(|| KernelError::Recovery("基线事件缺少声明原文".to_owned()))?;
+                (declaration.to_owned(), ev.seq())
+            }
             None => match snapshot {
-                Some(s) => (s.declaration.clone(), s.dl_seq, true),
+                Some(s) => (s.declaration.clone(), s.dl_seq),
                 None => {
                     return Err(KernelError::Recovery(
-                        "日志无 DomainLoaded 且无可用快照：历史状态不可恢复".to_owned(),
+                        "日志无 DomainLoaded/Imported 且无可用快照：历史状态不可恢复".to_owned(),
                     ))
                 }
             },
         };
         let domain = load_domain(&declaration)?;
 
-        let (mut state, state_base) = match (snapshot, snapshot_is_anchor) {
-            (Some(s), true) => (s.state.clone(), s.seq),
-            (Some(s), false) if s.seq >= dl_seq && s.seq <= last_seq => (s.state.clone(), s.seq),
-            _ => (CounterState::new(), dl_seq),
+        // 快照可用条件：覆盖基线之后的状态（seq >= dl_seq）且不越过日志末尾。
+        let snapshot_fresh =
+            snapshot.filter(|s| baseline_idx.is_none() || (s.seq >= dl_seq && s.seq <= last_seq));
+
+        let (mut state, state_base, mut consumed_requests) = match snapshot_fresh {
+            Some(s) => (s.state.clone(), s.seq, s.consumed_requests.clone()),
+            None => match baseline {
+                Some(Event::Imported {
+                    state: imported_state,
+                    consumed_requests: imported_requests,
+                    ..
+                }) => (imported_state.clone(), dl_seq, imported_requests.clone()),
+                _ => (CounterState::new(), dl_seq, BTreeMap::new()),
+            },
         };
         for ev in events.iter().filter(|e| e.seq() > state_base) {
             apply_event(&mut state, ev)?;
         }
 
-        // 幂等表：快照锚以快照为基，补快照之后的事件；否则从最近一次重置之后重建。
-        let idem_floor = if snapshot_is_anchor {
-            state_base
-        } else {
-            dl_seq
-        };
-        let mut consumed_requests: BTreeMap<String, (TokenId, ArchiveEntry)> = if snapshot_is_anchor
-        {
-            snapshot
-                .map(|s| s.consumed_requests.clone())
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
+        // 幂等表：快照可用则以快照为基；否则从交接基线的幂等表或空表起步。
+        let idem_floor = state_base;
         for ev in events.iter().filter(|e| e.seq() > idem_floor) {
             if let Event::Consumed {
                 token,
@@ -264,9 +261,14 @@ impl Session {
         })
     }
 
-    /// 「实例非空」：最后一次 `DomainLoaded` 之后已有事件。
+    /// 「实例非空」：基线之后已有事件，或交接基线携带了非空状态。
+    ///
+    /// 状态交接的 `Imported` 基线可以把 `last_seq == dl_seq` 的非空状态带进来，
+    /// 因此不能只看序号。
     pub fn is_occupied(&self) -> bool {
         self.last_seq > self.dl_seq
+            || !self.state.counter.is_empty()
+            || !self.state.archive.is_empty()
     }
 
     // —— 动作准备（不改变已提交状态） ——
@@ -746,5 +748,87 @@ seed_authority { external: seeds requirement }
         assert_eq!(recovered.status(), s.status());
         assert_eq!(recovered.counter(None), s.counter(None));
         assert_eq!(recovered.declaration, s.declaration);
+    }
+
+    fn mk_token(id: &str, ty: &str, by: &str, at: &str) -> Token {
+        Token {
+            id: TokenId(id.into()),
+            ty: TypeName(ty.into()),
+            thing_ref: ThingRef::none(),
+            produced_by: ParticipantName(by.into()),
+            depends_on: vec![],
+            produced_at: at.into(),
+        }
+    }
+
+    #[test]
+    fn recover_from_imported_baseline() {
+        let (name, _) = key();
+        let requirement = mk_token("t1", "requirement", "external", "T1");
+        let design = mk_token("t2", "design", "architect", "T2");
+        let entry = ArchiveEntry {
+            token: requirement.clone(),
+            exhausted_by: ParticipantName("architect".into()),
+            exhausted_at: "T3".into(),
+        };
+        let mut state = CounterState::new();
+        state.counter.insert(design.id.clone(), design.clone());
+        state.archive.push(entry.clone());
+        let mut consumed = BTreeMap::new();
+        consumed.insert("req-1".to_owned(), (requirement.id.clone(), entry.clone()));
+
+        let imported = Event::Imported {
+            seq: 1,
+            ts: "T3".into(),
+            name: name.into(),
+            declaration: DECL.into(),
+            source_domain: name.into(),
+            source_instance: "old".into(),
+            source_seq: 4,
+            state: state.clone(),
+            consumed_requests: consumed,
+        };
+        let s = Session::recover(std::slice::from_ref(&imported), None, 0).unwrap();
+
+        assert_eq!(s.state, state);
+        assert_eq!(s.last_seq, 1);
+        assert_eq!(s.next_seq, 2);
+        assert_eq!(s.dl_seq, 1);
+        assert_eq!(s.consumed_requests["req-1"], (requirement.id, entry));
+        // 导入态非空但 last_seq == dl_seq：仍应视为已占用。
+        assert!(s.is_occupied());
+        assert_eq!(s.declaration, DECL);
+    }
+
+    #[test]
+    fn imported_baseline_applies_subsequent_events() {
+        let (name, _) = key();
+        let design = mk_token("t2", "design", "architect", "T2");
+        let mut state = CounterState::new();
+        state.counter.insert(design.id.clone(), design.clone());
+        let imported = Event::Imported {
+            seq: 1,
+            ts: "T2".into(),
+            name: name.into(),
+            declaration: DECL.into(),
+            source_domain: name.into(),
+            source_instance: "old".into(),
+            source_seq: 2,
+            state,
+            consumed_requests: BTreeMap::new(),
+        };
+        let requirement = mk_token("t9", "requirement", "external", "T3");
+        let produced = Event::Produced {
+            seq: 2,
+            ts: "T3".into(),
+            token: requirement.clone(),
+        };
+
+        let s = Session::recover(&[imported, produced], None, 0).unwrap();
+        assert_eq!(s.state.counter.len(), 2);
+        assert!(s.state.counter.contains_key(&design.id));
+        assert!(s.state.counter.contains_key(&requirement.id));
+        assert_eq!(s.last_seq, 2);
+        assert_eq!(s.next_seq, 3);
     }
 }

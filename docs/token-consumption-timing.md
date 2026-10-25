@@ -68,44 +68,44 @@
 |---|---|---|---|---|---|---|
 | TC1 | 多读者共享只读 | §1.4 Rule-R | 可 | 任意多个 read gate；无需复制 | 读不改变状态，但消费后不可再读 | A.3 可提示无 consumer；无 reader 计数 |
 | TC2 | 前驱复用与重复生产（扇出预算） | §1.4 Rule-P Note | 可 | 保持前驱在 Counter；每次 Rule-P 可复用同一实例 | 消费前驱即终止未来扇出；无“扇出次数”计数 | A.1/A.2；无扇出计数 |
-| TC3 | 末位消费者归档 | 无 | 不可直接表达 | 外部协调者、ack 汇聚（P4）、每消费者副本（P3）；或约定唯一消费者 | 无 last-consumer 事件；协调者必须可信 | A.3；无静态保证 |
-| TC4 | 全下游完成后消费（屏障） | §1.4 Rule-E | 仅可近似 | P4：下游 read 后 produce 每角色 ack；`consumes t when count ack >= n` | ack 与消费者实例不能一一对应；ack 自身需清理；参与者可能未真正完成工作 | A.3/A.6；无 ack 完整性检查 |
+| TC3 | 末位消费者归档 | 无 | 不可直接表达 | 外部协调者、ack 汇聚（TC-P4）、每消费者副本（TC-P3）；或约定唯一消费者 | 无 last-consumer 事件；协调者必须可信 | A.3；无静态保证 |
+| TC4 | 全下游完成后消费（屏障） | §1.4 Rule-E | 仅可近似 | TC-P4：下游 read 后 produce 每角色 ack；`consumes t when count ack >= n` | ack 与消费者实例不能一一对应；ack 自身需清理；参与者可能未真正完成工作 | A.3/A.6；无 ack 完整性检查 |
 | TC5 | 按消费者复制（copy fan-out） | §1.4 Rule-P | 可 | 每次生产一份下游副本；共享前驱保留到所有副本产生完毕；各副本独立消费 | 副本是不同 `TokenId`；“同一对象”需域解释；副本数量无结构约束 | A.1/A.2；无副本数约束 |
-| TC6 | 见证存活（`via`） | §1.4.0 | 可（正向） | P2：所有 `via` 依赖动作完成前不消费见证 | 见证长期占用，可能阻止 Rule-T；`not via` 不可编码（B23） | A.6 精确/保守报告 |
-| TC7 | 消费导致下游搁浅 | §1.6 | 现象可表达，避免需设计 | P1 下游优先排空；P2；P6 见证 token；设计避免共享见证 | 无法自动恢复、无撤销；只能重载域 | A.6 |
-| TC8 | 保留 / 租约 / 资源占用 | §1.4 Rule-E；B17 | 仅可近似 | P5：consume 资源=占用；释放时重新 seed 一个资源 token | 新 `TokenId`，资源谱系不连续；崩溃可能泄漏；无自动过期 | 无；需外部锁/审计 |
-| TC9 | 幂等重试与至多一次 | §1.4 Rule-E；实现 D23 | 实现层可 | P8：`request_id` 同键同 token 重放首次结果；异 token 冲突 | 不阻止其他参与者抢先消费；不是分布式锁；并发结论依赖宿主单写者串行化（P8） | 集成测试覆盖；无静态分析 |
-| TC10 | 自动清理 | §1.6；§2.2 Archival Policy | 仅可近似 | P7：清洁工参与者 / Archival Policy，仍是显式 Rule-E | 引擎不自动执行；策略需可信；可能误删见证 | A.3 提示无 consumer |
+| TC6 | 见证存活（`via`） | §1.4.0 | 可（正向） | TC-P2：所有 `via` 依赖动作完成前不消费见证 | 见证长期占用，可能阻止 Rule-T；`not via` 不可编码（B23） | A.6 精确/保守报告 |
+| TC7 | 消费导致下游搁浅 | §1.6 | 现象可表达，避免需设计 | TC-P1 下游优先排空；TC-P2；TC-P6 见证 token；设计避免共享见证 | 无法自动恢复、无撤销；只能重载域 | A.6 |
+| TC8 | 保留 / 租约 / 资源占用 | §1.4 Rule-E；B17 | 仅可近似 | TC-P5：consume 资源=占用；释放时重新 seed 一个资源 token | 新 `TokenId`，资源谱系不连续；崩溃可能泄漏；无自动过期 | 无；需外部锁/审计 |
+| TC9 | 幂等重试与至多一次 | §1.4 Rule-E；实现 D23 | 实现层可 | TC-P8：`request_id` 同键同 token 重放首次结果；异 token 冲突 | 不阻止其他参与者抢先消费；不是分布式锁；并发结论依赖宿主单写者串行化（TC-P8） | 集成测试覆盖；无静态分析 |
+| TC10 | 自动清理 | §1.6；§2.2 Archival Policy | 仅可近似 | TC-P7：清洁工参与者 / Archival Policy，仍是显式 Rule-E | 引擎不自动执行；策略需可信；可能误删见证 | A.3 提示无 consumer |
 | TC11 | 引用计数 / 存活判定 | 无 | 范式外 | 外部索引、协调者 token、ack 计数；或把“仍需要”编码成显式 token | PACT 不知道谁还需要；无法 O(1) 判定 | 无 |
-| TC12 | 消费成功 ≠ 外部动作成功 | 实现 D23；§1.6 | 实现层可 | P6 witness-token 前移；或后置 saga 补偿 | 二者最终一致；消费不回滚 | 无范式级检查 |
-| TC13 | 终止压力与消费顺序 | §1.4 Rule-T | 可计算，不可强制 | P1 下游优先；最后消费见证/ack；P7 归档策略；或接受不终止 | **Counter 上**保留任何 token 即不终止（Archive 中的 token 不阻止终止）；顺序错误会搁浅 | `termination_holds`；A.6 |
+| TC12 | 消费成功 ≠ 外部动作成功 | 实现 D23；§1.6 | 实现层可 | TC-P6 witness-token 前移；或后置 saga 补偿 | 二者最终一致；消费不回滚 | 无范式级检查 |
+| TC13 | 终止压力与消费顺序 | §1.4 Rule-T | 可计算，不可强制 | TC-P1 下游优先；最后消费见证/ack；TC-P7 归档策略；或接受不终止 | **Counter 上**保留任何 token 即不终止（Archive 中的 token 不阻止终止）；顺序错误会搁浅 | `termination_holds`；A.6 |
 
 ## 4. 判定准则
 
-对目标 token `t`，消费前依次检查 D1–D6。**任一为“仍需要”即不得消费**，除非先完成对应动作或明确接受其后果。
+对目标 token `t`，消费前依次检查 TC-D1–TC-D6。**任一为“仍需要”即不得消费**，除非先完成对应动作或明确接受其后果。
 
 | 编号 | 问题 | 判据 | 处置 |
 |---|---|---|---|
-| D1 | 未来 Rule-P 是否还需要 `type(t)` 作前驱？ | 存在生产规则以该类型为前驱，且域仍希望该规则可执行 | 保留；或明确放弃未来扇出后再消费 |
-| D2 | 是否存在 `via type(t)` 依赖，且目标 token 的 `depends_on` 含 `t.id`？ | 有 read/consume gate 使用 `via`，且依赖 token 尚未被消费 | 先处理下游（P1），或保留见证（P2），或改用 ack（P4） |
-| D3 | 是否存在 `count type(t) >= n` / `= n` gate？ | `count` 在**准入时**按当前 Counter 求值；若 `T = type(t)`，目标自身仍计入阈值，消费后计数才减一 | 保留至阈值不再需要；或拆类型 |
-| D4 | 是否仍有参与方需要持续观察？ | 报表、审计、复核依赖 Read；Read 只在 Counter 上有效 | 不消费；改用外部索引/归档查询（P9） |
-| D5 | 本次消费是否代表外部副作用？ | 外部产物是否已就位，或已有补偿方案 | P6 witness-token，或 saga 补偿 |
-| D6 | 域是否要求 Rule-T？ | `Counter` 必须最终为空 | 制定完整排空顺序；否则接受不终止 |
+| TC-D1 | 未来 Rule-P 是否还需要 `type(t)` 作前驱？ | 存在生产规则以该类型为前驱，且域仍希望该规则可执行 | 保留；或明确放弃未来扇出后再消费 |
+| TC-D2 | 是否存在 `via type(t)` 依赖，且目标 token 的 `depends_on` 含 `t.id`？ | 有 read/consume gate 使用 `via`，且依赖 token 尚未被消费 | 先处理下游（TC-P1），或保留见证（TC-P2），或改用 ack（TC-P4） |
+| TC-D3 | 是否存在 `count type(t) >= n` / `= n` gate？ | `count` 在**准入时**按当前 Counter 求值；若 `T = type(t)`，目标自身仍计入阈值，消费后计数才减一 | 保留至阈值不再需要；或拆类型 |
+| TC-D4 | 是否仍有参与方需要持续观察？ | 报表、审计、复核依赖 Read；Read 只在 Counter 上有效 | 不消费；改用外部索引/归档查询（TC-P9） |
+| TC-D5 | 本次消费是否代表外部副作用？ | 外部产物是否已就位，或已有补偿方案 | TC-P6 witness-token，或 saga 补偿 |
+| TC-D6 | 域是否要求 Rule-T？ | `Counter` 必须最终为空 | 制定完整排空顺序；否则接受不终止 |
 
 决策：
 
 - 全部为否 → 可消费；
-- D1 为是 → 保留，或接受“最后一次生产”。
-- D2 为是 → 下游优先排空；或见证保留；或 ack 汇聚。
-- D3 为是 → 保留至阈值失效；若阈值本意是“累积”，永不消费该类型。
-- D4 为是 → 不消费；审计需求用 Read + 外部索引，而不是把 token 留在 Counter 当作审计。
-- D5 为是 → 先确认物化（P6），或安排补偿。
-- D6 为是 → 所有 token（含 ack、readiness、见证）都必须有最终消费者。
+- TC-D1 为是 → 保留，或接受“最后一次生产”。
+- TC-D2 为是 → 下游优先排空；或见证保留；或 ack 汇聚。
+- TC-D3 为是 → 保留至阈值失效；若阈值本意是“累积”，永不消费该类型。
+- TC-D4 为是 → 不消费；审计需求用 Read + 外部索引，而不是把 token 留在 Counter 当作审计。
+- TC-D5 为是 → 先确认物化（TC-P6），或安排补偿。
+- TC-D6 为是 → 所有 token（含 ack、readiness、见证）都必须有最终消费者。
 
 ## 5. 消费模式
 
-### P1 下游优先排空（downstream-first drain）
+### TC-P1 下游优先排空（downstream-first drain）
 
 - **做法**：先消费叶子 token（无 `via` 依赖）→ 中间 token → 根/见证最后。
 - **保证**：`via` 见证在依赖动作发生时仍在 Counter 上。
@@ -113,15 +113,15 @@
 - **适用**：生命周期有明确汇点、要求终止。
 - **检查**：A.6 报告为空或仅 `potential`。
 
-### P2 见证保留（keep-as-witness）
+### TC-P2 见证保留（keep-as-witness）
 
 - **做法**：在依赖 `T_a` 的所有 `via` 动作完成前，不消费 `T_a` 的见证实例。
 - **保证**：依赖动作不会因见证消失而失败。
 - **丢失**：见证长期占用；若无最终消费者，Rule-T 不触发；可能累积。
 - **适用**：审计、复核需要上游在场。
-- **检查**：A.6；`termination_holds` 预期为 false，或需要 P7。
+- **检查**：A.6；`termination_holds` 预期为 false，或需要 TC-P7。
 
-### P3 按消费者复制（copy fan-out）
+### TC-P3 按消费者复制（copy fan-out）
 
 - **做法**：每次需要独立下游时，用 Rule-P 产生一份新的下游 token（或按角色生产不同 RHS 类型）；共享前驱保留到所有副本产生完毕。
 - **保证**：每个副本可独立消费，不互相阻塞。
@@ -129,7 +129,7 @@
 - **适用**：多个下游独立完成、互不影响（母本 §4.2 fan-out 的结构）。
 - **检查**：A.1/A.2；无副本计数。
 
-### P4 ack 汇聚（barrier）
+### TC-P4 ack 汇聚（barrier）
 
 ```text
 consumer_a: reads shared, produces ack_a
@@ -146,7 +146,7 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 - **适用**：需要“所有下游完成才归档”的显式汇点。
 - **检查**：A.3（ack 是否有 consumer）、A.6（ack 的消费顺序）。
 
-### P5 租约 / 资源
+### TC-P5 租约 / 资源
 
 - **做法**：资源 = 可消费 token；acquire = `consume`；release = 重新 seed/produce 一个同类 token。
 - **保证**：同一时刻只有一个持有者（资源实例被移除）。
@@ -154,7 +154,7 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 - **适用**：互斥资源、许可、配额。
 - **检查**：A.1/A.2；外部审计。
 
-### P6 外部物化见证
+### TC-P6 外部物化见证
 
 - **做法**：外部系统就绪后 seed/produce `readiness`；消费 gate 写 `when exists readiness`。
 - **保证**：就位确认与消费在同一次 GateHolds 判定（无 TOCTOU）。
@@ -162,7 +162,7 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 - **适用**：consume 触发外部动作。
 - **检查**：A.3/A.6；见 `docs/design.md` §8.3。
 
-### P7 归档策略 / 清洁工
+### TC-P7 归档策略 / 清洁工
 
 - **做法**：指定参与者持有 `consumes` gate，按域策略定期消费。Archival Policy 是域/工具层的约定（可选第五注入点），**等价于**由该参与者显式执行 Rule-E；引擎本身不内置 AP。
 - **保证**：清理是显式、可审计的。
@@ -170,7 +170,7 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 - **适用**：长期运行、需要控制累积。
 - **检查**：A.3；A.6。
 
-### P8 幂等重试
+### TC-P8 幂等重试
 
 - **做法**：consume 带 `request_id`；同键同 token 返回首次归档结果；同键异 token 返回 `IdempotencyConflict`。
 - **保证**：网络重试不会重复消费。
@@ -178,7 +178,7 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 - **适用**：客户端重试、at-least-once 传输。
 - **检查**：集成测试；无静态检查。
 
-### P9 审计保留（不消费）
+### TC-P9 审计保留（不消费）
 
 - **做法**：审计/报表需求用 Read + Archive 查询或外部索引；不为“清理”而消费仍需观察的 token。
 - **保证**：持续可读。
@@ -190,15 +190,15 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 
 | 编号 | 反模式 | 后果 / 纠正 |
 |---|---|---|
-| A1 | 生产完立刻消费前驱 | 有 `via` 下游时直接搁浅；即使无 `via` 也终止未来扇出。先跑 D1/D2 与 A.6 |
-| A2 | 把 Read 当租约 | Read 不改变状态、不保留；别人仍可 consume |
-| A3 | 把 `depends_on` 当存活保证 | 它是 provenance，允许指向已归档 token；不阻止上游被消费 |
-| A4 | 用 `Timestamp` 排消费序 | `Timestamp` 无语义、不保证单调（§1.3）；排序只能靠见证/外部协调 |
-| A5 | 把 consume 当 release 但不重新 seed | 资源消失，后续 acquire 不可能 |
-| A6 | 为触发 Rule-T 而消费共享 token | 可能搁浅下游或破坏未来生产；终止是派生结果，不是消费理由 |
-| A7 | 指望引擎自动清理 | 零隐式动作；Archival Policy 也要显式 Rule-E |
-| A8 | 用 `count T` 推断“最后一个读者” | `count` 是当前 token 数，不是读者数；没有 last-reader 事件 |
-| A9 | 认为同一 `request_id` 能阻止他人抢先消费 | 幂等只对同键重试生效，不是锁 |
+| TC-A1 | 生产完立刻消费前驱 | 有 `via` 下游时直接搁浅；即使无 `via` 也终止未来扇出。先跑 TC-D1/TC-D2 与 A.6 |
+| TC-A2 | 把 Read 当租约 | Read 不改变状态、不保留；别人仍可 consume |
+| TC-A3 | 把 `depends_on` 当存活保证 | 它是 provenance，允许指向已归档 token；不阻止上游被消费 |
+| TC-A4 | 用 `Timestamp` 排消费序 | `Timestamp` 无语义、不保证单调（§1.3）；排序只能靠见证/外部协调 |
+| TC-A5 | 把 consume 当 release 但不重新 seed | 资源消失，后续 acquire 不可能 |
+| TC-A6 | 为触发 Rule-T 而消费共享 token | 可能搁浅下游或破坏未来生产；终止是派生结果，不是消费理由 |
+| TC-A7 | 指望引擎自动清理 | 零隐式动作；Archival Policy 也要显式 Rule-E |
+| TC-A8 | 用 `count T` 推断“最后一个读者” | `count` 是当前 token 数，不是读者数；没有 last-reader 事件 |
+| TC-A9 | 认为同一 `request_id` 能阻止他人抢先消费 | 幂等只对同键重试生效，不是锁 |
 
 ## 7. 实现映射
 
@@ -210,7 +210,7 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 | `via` | `crates/pact-core/src/gate.rs` `GateExpr::Via` | 只查当前 Counter 且 `id ∈ depends_on` | 见证归档即失效；同类型其他实例无效 |
 | `count` | 同文件 `Count` | 当前 Counter 计数 | 消费改变阈值；不区分读者 |
 | Rule-T | `crates/pact-core/src/wait.rs` `termination_holds` | Counter 空且无 Rule-P-enabled | Counter 上保留任何 token 即不终止（Archive 中的 token 不阻止终止） |
-| 消费幂等 | `crates/pact-engine-kernel/src/lib.rs` `prepare_consume` | `request_id` 重放首次结果；异 token 冲突 | 重试安全；不是互斥；并发结论依赖宿主单写者串行化（P8） |
+| 消费幂等 | `crates/pact-engine-kernel/src/lib.rs` `prepare_consume` | `request_id` 重放首次结果；异 token 冲突 | 重试安全；不是互斥；并发结论依赖宿主单写者串行化（TC-P8） |
 | TokenId 守卫 | 同文件 `used_ids` | Counter+Archive 历史 id 唯一 | 只防 id 复用，不代表存活或引用计数 |
 | A.3 | `crates/pact-analysis/src/lib.rs` `consumption_reachability` | 无 consumer 类型清单 | 提示可能永不清理；也可能是有意保留 |
 | A.6 | 同文件 `stranding_risk` | `via` 见证被消费的风险 | 消费顺序的静态预警 |
@@ -234,9 +234,9 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 - [ ] 枚举每个共享类型 `T`：readers、consumers、producers、`via` 依赖者、`count` 阈值。
 - [ ] 为每个需要清理的 `T` 指定消费所有者（参与者/角色）与触发条件。
 - [ ] 标注 `T` 的保留策略：短期（用完即消费）/ 见证（保留至依赖完成）/ 审计（不消费）。
-- [ ] 若存在 `via T`：选择 P1/P2 或 P4；跑 A.6，确认无不可接受的搁浅。
+- [ ] 若存在 `via T`：选择 TC-P1/TC-P2 或 TC-P4；跑 A.6，确认无不可接受的搁浅。
 - [ ] 若存在 `count T >= n`：确认消费不会使阈值永久不可达；必要时拆类型或改用 ack。
-- [ ] 若 consume 触发外部动作：选 P6（前移）或 saga（后置补偿），不要假设原子。
+- [ ] 若 consume 触发外部动作：选 TC-P6（前移）或 saga（后置补偿），不要假设原子。
 - [ ] 若域要求终止：确认每个 token（含 ack、readiness、见证）都有最终消费者；否则接受不终止。
 - [ ] 若需要重试：统一使用 `request_id`，并明确它不提供跨参与者互斥。
 - [ ] 跑 A.3/A.6，记录“无 consumer”是技术债还是有意只读。
@@ -245,9 +245,9 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 ## 9. 与表达力边界的关系
 
 - B8（两次消费之间的时序）：本文件给出消费顺序与 ack 汇聚的落地程序。
-- B17（资源竞争）：P5 是资源租约的具体编码。
-- B21（上游存活 / 悬空引用）：D2 + P1/P2 是避免搁浅的判定与模式。
-- B22（自动清理）：P7/P9 是清理与审计保留的分工。
+- B17（资源竞争）：TC-P5 是资源租约的具体编码。
+- B21（上游存活 / 悬空引用）：TC-D2 + TC-P1/TC-P2 是避免搁浅的判定与模式。
+- B22（自动清理）：TC-P7/TC-P9 是清理与审计保留的分工。
 - 本文件**不新增 B/X 编号**；引用计数、末位消费者若需范式原语，属扩展候选，另行评估。
 - 边界文档回答“能不能表达”；本文件回答“何时消费、由谁消费、顺序如何、怎么验证”。
 

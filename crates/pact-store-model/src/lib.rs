@@ -13,6 +13,9 @@ mod key;
 mod snapshot;
 
 pub use error::{validate_domain_name, validate_instance_name, ModelError};
-pub use event::{apply_event, to_wire_json, ApplyOutcome, Event, WireEvent, EVENT_SCHEMA_VERSION};
+pub use event::{
+    apply_event, to_wire_json, ApplyOutcome, Event, WireEvent, EVENT_SCHEMA_VERSION,
+    IMPORTED_EVENT_SCHEMA_VERSION, SUPPORTED_EVENT_SCHEMA_VERSION,
+};
 pub use key::InstanceKey;
 pub use snapshot::Snapshot;

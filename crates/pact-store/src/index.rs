@@ -235,6 +235,24 @@ impl IndexStore for TursoIndexStore {
             for ev in events {
                 apply_event(&mut state, ev)?;
                 match ev {
+                    Event::Imported {
+                        state: imported, ..
+                    } => {
+                        for token in imported.counter.values() {
+                            self.upsert_token(key, token, &TokenStatus::Counter).await?;
+                        }
+                        for entry in &imported.archive {
+                            self.upsert_token(
+                                key,
+                                &entry.token,
+                                &TokenStatus::Archived {
+                                    exhausted_by: entry.exhausted_by.clone(),
+                                    exhausted_at: entry.exhausted_at.clone(),
+                                },
+                            )
+                            .await?;
+                        }
+                    }
                     Event::Seeded { token, .. } | Event::Produced { token, .. } => {
                         self.upsert_token(key, token, &TokenStatus::Counter).await?;
                     }

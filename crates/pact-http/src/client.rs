@@ -4,9 +4,10 @@
 //! 手动解析 `data:` 行为 [`Notification`]。
 
 use crate::dto::{
-    CompactReq, ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledResp, EntryResp, ErrorBody,
-    ErrorDetail, GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq,
-    ReadAuditResp, SeedReq, TokenResp, ValidateReq, ValidateResp,
+    ActivateReq, ActiveResp, CompactReq, ComposeReq, ConsumeReq, DomainInfo, DomainsResp,
+    EnabledResp, EntryResp, ErrorBody, ErrorDetail, FreezeReq, GatesResp, HandoffReq,
+    InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, ReadAuditResp, SeedReq, TokenResp,
+    ValidateReq, ValidateResp,
 };
 use crate::sign::SigningIdentity;
 use axum::Router;
@@ -19,9 +20,9 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use pact_engine::notify::Notification;
 use pact_engine::views::{
-    AnalysisReport, ArchiveView, CompactionOutcome, CounterView, DomainSummary, StatusView,
+    AnalysisReport, ArchiveView, CompactionOutcome, CounterView, DomainSummary, HandoffOutcome,
+    StatusView,
 };
-use pact_engine::DEFAULT_INSTANCE;
 use serde::de::DeserializeOwned;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -33,11 +34,11 @@ use tower_service::Service;
 
 type Hyper<C> = hyper_util::client::legacy::Client<C, Full<Bytes>>;
 
-/// 域/实例 → 路径基：`None` 或 `default` ⇒ 默认实例路径族；
-/// 其余 ⇒ 实例级镜像组（D27）。
+/// 域/实例 → 路径基：`None` ⇒ 短路由（域级，按活动实例别名解析）；
+/// `Some(i)` ⇒ 实例级镜像组（显式实例，含 `default`，D27/D39）。
 fn base_path(domain: &str, instance: Option<&str>) -> String {
     match instance {
-        None | Some(DEFAULT_INSTANCE) => format!("/domains/{domain}"),
+        None => format!("/domains/{domain}"),
         Some(i) => format!("/domains/{domain}/instances/{i}"),
     }
 }
@@ -263,6 +264,62 @@ impl Client {
             }),
         )?;
         decode(self.dispatch(req).await?).await
+    }
+
+    /// `POST /domains/{d}/handoff`：状态交接。
+    pub async fn handoff(
+        &self,
+        domain: &str,
+        source_instance: &str,
+        target_instance: &str,
+        declaration: &str,
+        activate: bool,
+    ) -> Result<HandoffOutcome, ClientError> {
+        let req = self.json_request(
+            Method::POST,
+            &format!("/domains/{domain}/handoff"),
+            Some(&HandoffReq {
+                source_instance: source_instance.to_owned(),
+                target_instance: target_instance.to_owned(),
+                declaration: declaration.to_owned(),
+                activate,
+            }),
+        )?;
+        decode(self.dispatch(req).await?).await
+    }
+
+    /// `GET /domains/{d}/active`：当前活动实例。
+    pub async fn active_instance(&self, domain: &str) -> Result<ActiveResp, ClientError> {
+        let req =
+            self.json_request::<()>(Method::GET, &format!("/domains/{domain}/active"), None)?;
+        decode(self.dispatch(req).await?).await
+    }
+
+    /// `PUT /domains/{d}/active`：切换活动实例指针。
+    pub async fn activate(&self, domain: &str, instance: &str) -> Result<ActiveResp, ClientError> {
+        let req = self.json_request(
+            Method::PUT,
+            &format!("/domains/{domain}/active"),
+            Some(&ActivateReq {
+                instance: instance.to_owned(),
+            }),
+        )?;
+        decode(self.dispatch(req).await?).await
+    }
+
+    /// `PUT /domains/{d}/instances/{i}/freeze`：冻结/解冻实例。
+    pub async fn set_frozen(
+        &self,
+        domain: &str,
+        instance: &str,
+        frozen: bool,
+    ) -> Result<(), ClientError> {
+        let req = self.json_request(
+            Method::PUT,
+            &format!("/domains/{domain}/instances/{instance}/freeze"),
+            Some(&FreezeReq { frozen }),
+        )?;
+        expect_empty(self.dispatch(req).await?).await
     }
 
     pub async fn list_domains(&self) -> Result<DomainsResp, ClientError> {

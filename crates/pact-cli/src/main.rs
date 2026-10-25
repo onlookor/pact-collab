@@ -256,6 +256,45 @@ enum DomainCmd {
         #[arg(long)]
         instance: Option<String>,
     },
+    /// 状态交接：冻结源，以新声明创建目标并继承状态（默认切活动实例）
+    Handoff {
+        #[arg(long)]
+        domain: String,
+        /// 新声明文件（目标实例使用）
+        #[arg(long)]
+        declaration: PathBuf,
+        /// 源实例（只读化）
+        #[arg(long)]
+        source: String,
+        /// 目标实例（必须不存在）
+        #[arg(long)]
+        target: String,
+        /// 交接后不切换活动实例指针
+        #[arg(long)]
+        no_activate: bool,
+    },
+    /// 切换域的活动实例指针（短路由别名）
+    Activate {
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        instance: String,
+    },
+    /// 查看域的活动实例
+    Active {
+        #[arg(long)]
+        domain: String,
+    },
+    /// 冻结/解冻实例（冻结 = 拒绝新的 Seed/Produce/Consume）
+    Freeze {
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        instance: String,
+        /// 解除冻结
+        #[arg(long)]
+        unfreeze: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -493,6 +532,77 @@ async fn run(cli: Cli) -> ExitCode {
                 c.unload_domain(&domain, instance.as_deref()).await,
                 |()| {
                     println!("unloaded {domain}");
+                },
+            )
+        }
+        Command::Domain {
+            cmd:
+                DomainCmd::Handoff {
+                    domain,
+                    declaration,
+                    source,
+                    target,
+                    no_activate,
+                },
+        } => {
+            let text = match read_file(&declaration, json) {
+                Ok(t) => t,
+                Err(c) => return c,
+            };
+            let c = online!(conn, json);
+            done(
+                json,
+                c.handoff(&domain, &source, &target, &text, !no_activate)
+                    .await,
+                |r| {
+                    println!(
+                        "handoff {}/{} -> {}: counter={} archive={} idem={} active={} activated={}",
+                        r.domain,
+                        r.source_instance,
+                        r.target_instance,
+                        r.counter,
+                        r.archive,
+                        r.consumed_requests,
+                        r.active_instance,
+                        r.activated
+                    );
+                },
+            )
+        }
+        Command::Domain {
+            cmd: DomainCmd::Activate { domain, instance },
+        } => {
+            let c = online!(conn, json);
+            done(json, c.activate(&domain, &instance).await, |r| {
+                println!("active {}/{}", r.domain, r.instance);
+            })
+        }
+        Command::Domain {
+            cmd: DomainCmd::Active { domain },
+        } => {
+            let c = online!(conn, json);
+            done(json, c.active_instance(&domain).await, |r| {
+                println!("active {}/{}", r.domain, r.instance);
+            })
+        }
+        Command::Domain {
+            cmd:
+                DomainCmd::Freeze {
+                    domain,
+                    instance,
+                    unfreeze,
+                },
+        } => {
+            let c = online!(conn, json);
+            done(
+                json,
+                c.set_frozen(&domain, &instance, !unfreeze).await,
+                |()| {
+                    if unfreeze {
+                        println!("unfroze {domain}/{instance}");
+                    } else {
+                        println!("froze {domain}/{instance}");
+                    }
                 },
             )
         }
@@ -1109,6 +1219,11 @@ fn offline_replay(json: bool, file: &PathBuf) -> ExitCode {
             Ok(ApplyOutcome::DomainReset { name, .. }) => {
                 state = CounterState::new();
                 domain_name = Some(name);
+            }
+            Ok(ApplyOutcome::Imported { name, .. }) => {
+                // apply_event 已用事件携带的状态整体替换。
+                domain_name = Some(name);
+                applied += 1;
             }
             Ok(ApplyOutcome::Informational) => {}
             Err(e) => {

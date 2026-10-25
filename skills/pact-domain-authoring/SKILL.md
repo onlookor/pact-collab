@@ -101,7 +101,7 @@ pact --version
 | 入口 | 第一个件从哪来 | `seed_authority` |
 | 共享与消费 | 谁读、谁归档、有没有多方共用同一件 | `gates` + 决策记录 |
 | 终止 | 域要不要最终清空 Counter | 消费裁决 |
-| 外部动作 | 消费是否代表外部副作用完成 | R4 / P6 |
+| 外部动作 | 消费是否代表外部副作用完成 | 契约配方 R4 / TC-P6 |
 
 ### S4 选形状（契约 §4）
 
@@ -222,5 +222,5 @@ pact domain load <file>
 | `docs/authoring-contract.md` | **权威流程**：闸门、五步问题树、形状配方、自检清单 |
 | `docs/manual.md` §3–§4 | 语法细节、动作顺序、错误码 |
 | `docs/expressiveness-boundaries.md` | B1–B25 / X1–X6，命中硬停时查 |
-| `docs/token-consumption-timing.md` | TC1–TC13 / D1–D6 / P1–P9，消费裁决时查 |
+| `docs/token-consumption-timing.md` | TC1–TC13 / TC-D1–TC-D6 / TC-P1–TC-P9，消费裁决时查 |
 | `examples/` | 可运行域与实录轨迹；需要更复杂骨架时参考 |

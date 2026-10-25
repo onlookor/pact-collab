@@ -102,7 +102,7 @@
 
 引擎保持被动（FR11、决策 D5）：不编排、不拉起 agent。生产系统须在引擎之外补齐：
 
-- **可复用的参与者驱动运行时**：给定参与者名与其门（`my_gates` / `enabled` / `subscribe`），实现「等待 → 决策 → 行动」自驱循环，并负责 N 个 agent 进程的启动与编排。当前该逻辑仅存在于 e2e 测试（`pact-mcp/tests/unattended_e2e.rs` 的 P1/P2/P3），无可复用交付物。
+- **可复用的参与者驱动运行时**：给定参与者名与其门（`my_gates` / `enabled` / `subscribe`），实现「等待 → 决策 → 行动」自驱循环，并负责 N 个 agent 进程的启动与编排。当前该逻辑仅存在于 e2e 测试（`pact-mcp/tests/unattended_e2e.rs` 的生产优先 / 汇消费 / 等待三档策略），无可复用交付物。
 - **外部副作用执行器**：订阅 `Consumed` 事件（或经 outbox）真正落地外部动作；失败按 FR15 边界以追加补偿事实（saga）承担，不表现为消费回滚。
 - **归属**：本仓库新增 crate（决策 D24）。引擎、存储、核心语义零改动。
 
@@ -112,7 +112,7 @@
   - **截断机制**：**前缀删除 + 旁路水位清单**——快照为提交点，`<instance>.logmeta.json` 记 `base_seq` 水位（先于日志重写），日志原子重写（tmp+fsync+rename）仅保留 `seq > base_seq` 行；水位单调不回退。
   - **快照自足与幂等存活**：压缩后日志可能不含 `DomainLoaded`，故快照须承载 `version` / `seq` / `dl_seq` / `declaration` / `state` / `consumed_requests`（**Rule-E 幂等表随快照持久化**，否则前缀内 `Consumed` 行被丢弃会破坏跨重启幂等）；恢复以快照为锚补尾部事件。
   - **数据安全优先**：日志已截断而快照缺失或不覆盖水位 ⇒ **fail-fast**（`SnapshotRequiredForCompactedLog`），不静默丢数据。
-  - **版本兼容契约**：`EVENT_SCHEMA_VERSION = 1`；缺 `version` 的旧日志/旧快照视同 v1（向后兼容）；`version > 当前` ⇒ **fail-fast `UnsupportedSchemaVersion`**（不静默按 v1 重放）。
+  - **版本兼容契约**：普通事件 `EVENT_SCHEMA_VERSION = 1`，状态交接事件 `Imported` 写 `IMPORTED_EVENT_SCHEMA_VERSION = 2`，读取上限 `SUPPORTED_EVENT_SCHEMA_VERSION = 2`（见 FR26）；缺 `version` 的旧日志/旧快照视同 v1（向后兼容）；`version > 上限` ⇒ **fail-fast `UnsupportedSchemaVersion`**（不静默按 v1 重放）。
   - **触发方式**：运维显式接口（REST `POST .../compact`、CLI `pact compact`、MCP `pact_compact`）+ 可选启动自动压缩（`pact.toml` 的 `compact_on_start` / `compact_keep_last`；缺省关闭）。
   - **固有取舍（须文档化）**：压缩后被丢弃前缀不再可查——审计视图退化为「快照 + 保留尾部事件」，`events` 索引行被裁剪（`tokens` 投影行保留）；NFR2 的「日志即完整审计」在压缩后由「快照 + 保留尾部」共同承担。v1 不做自动周期性轮转。
 - **运维接口**：daemon 提供 `GET /health`（存活）、`GET /ready`（就绪：引擎可应答）、`GET /metrics`（Prometheus 文本格式运行指标，含 uptime 与域实例计数）；可选 `pid_file`（缺省不写，含陈旧检测）；信号化优雅停机（SIGINT/SIGTERM → 停止接受新连接 → 有界等待在途 → 终态快照 → 清理）。运维端点**不校验令牌**（仅供本地/内网探活与抓取）。
@@ -132,20 +132,20 @@
 
 - **定义键 / 实例键分离**：同一域声明（定义键 `domain`）可并发承载多个 **Counter 实例**（实例键 `instance`），各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / Rule-E 幂等表。
 - **实例为接口层一等键**：REST 路由、CLI、MCP、ACL、审计读视图、日志压缩、运维指标均以实例为键维度——原「以域名为唯一会话键」的语义收窄为「以实例为会话键」。
-- **默认回退**：不指定实例 ⇒ 默认实例（`default`）；既有 `--domain` 调用与既有脚本语义不变（落到 `default` 实例）。
+- **默认回退**：不指定实例且无活动指针 ⇒ 默认实例（`default`）；活动指针存在 ⇒ 短路由落到活动实例（FR26/D39）。既有 `--domain` 调用在未交接时仍落到 `default`，语义不变。
 - **旧日志不兼容（用户裁决）**：双键布局下只识别 `<data_dir>/<domain>/<instance>.events.jsonl`；顶层遗留单层文件（`<domain>.events.jsonl` / `<domain>.snapshot.json`）**不再被识别**，启动恢复时 **fail-fast**（`StoreError::LegacyLayoutDetected`），须人工迁移，不静默丢数据。
-- **实例键承载形态（用户裁决）**：实例名作为**路径段**承载（`/domains/{d}/instances/{i}/…`），`/domains/{d}` 语义等价于 `default` 实例；`DomainLoaded` 事件**不新增 `instance` 字段**（实例由文件路径承载）。
+- **实例键承载形态（用户裁决）**：实例名作为**路径段**承载（`/domains/{d}/instances/{i}/…`），`/domains/{d}` 解析域的**活动实例**（无指针回退 `default`，FR26/D39）；`DomainLoaded` 事件**不新增 `instance` 字段**（实例由文件路径承载）。
 - **声明原文另存**：`declare` 时把声明原文写入 `<data_dir>/<domain>/declaration.pact`，`recover` 用它回填声明注册表（支持重启后新增实例）。
-- **形式依据**：论文 rev3 §1.3「Counter instantiation and partitioning」——实例划分属**实现自由**，论文全部规则与性质**按实例成立**（Rule-T 各实例独立终止；§1.4.1 TokenId 唯一性作用域为「该 Counter」，实现以 ULID 加强为跨实例唯一，见 Q4 裁定）；跨实例协同不在范式范围内。
-- **通用护栏（用户裁决）**：同一 `data_dir` 上 daemon 启动须获取独占 flock（`<data_dir>/pactd.lock`），第二实例启动即拒绝；对**非空实例**（`last_seq > DomainLoaded.seq`）的再加载默认拒绝（`DomainBusy`），须显式 `force` 才重置。
+- **形式依据**：论文 rev3 §1.3「Counter instantiation and partitioning」——实例划分属**实现自由**，论文全部规则与性质**按实例成立**（Rule-T 各实例独立终止；§1.4.1 TokenId 唯一性作用域为「该 Counter」，实现以 ULID 加强为跨实例唯一，见 W-Q4 裁定）；跨实例协同不在范式范围内。
+- **通用护栏（用户裁决）**：同一 `data_dir` 上 daemon 启动须获取独占 flock（`<data_dir>/pactd.lock`），第二实例启动即拒绝；对**非空实例**（Counter/Archive 非空，或 `last_seq > 基线 seq`；含 `Imported` 接手状态）的再加载默认拒绝（`DomainBusy`），须显式 `force` 才重置并解冻。
 - **归属**：`pact-store` + `pact-engine` + 接口层（`pact-http` / `pact-cli` / `pact-mcp` / `pact-runtime`）；`pact-core` / `pact-parser` / `pact-analysis` / `pact-compose` 零改动（形式语义不变）。
-- **实现状态**：已实现（阶段 10，路径 β）。存储 `(domain, instance)` 双列 + 域子目录布局；引擎声明注册表（`declare` / `instantiate` 分离）；接口全链（REST 默认族 + 实例镜像族、CLI `--instance`/`--force`/`instantiate`/`instances`、MCP 16 工具含 `pact_domain_instantiate`、`pact-runtime` 实例透传）；键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。
+- **实现状态**：已实现（阶段 10，路径 β）。存储 `(domain, instance)` 双列 + 域子目录布局；引擎声明注册表（`declare` / `instantiate` 分离）；接口全链（REST 默认族 + 实例镜像族、CLI `--instance`/`--force`/`instantiate`/`instances`、MCP 21 工具含 `pact_domain_instantiate` 与四个状态交接工具、`pact-runtime` 实例透传）；键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越。
 
 ### FR20 CPN 编码生成（阶段 6，D12/D28）
 
 - **目标**：把一份良构域声明离线编码为 CPN Tools 彩色 Petri 网模型（论文 §4.5/附录 B），供形式验证与可视化检查；**不进入**引擎、存储、接口运行时路径。
 - **入口**：新 crate `pact-cpn`（lib）+ CLI 离线命令 `pact cpn <FILE> --out PATH [--instance I] [--bound T=N]…`；不依赖 daemon。
-- **单实例作用域（G1/D27）**：一次生成只编码**一个 Counter 实例**，库所/迁移以实例名命名空间化，不跨实例共享；跨实例协同不进入 `N(D)`。
+- **单实例作用域（D12/D27）**：一次生成只编码**一个 Counter 实例**，库所/迁移以实例名命名空间化，不跨实例共享；跨实例协同不进入 `N(D)`。
 - **编码映射**：每类型一个库所 + 一个 Archive 库所；token 颜色 = `TokenId × Participant × ThingRef × PrecondRefs × Timestamp`；生产迁移对前驱使用 test arc（输入绑定 + 同变量输出，不消费）；读迁移自环；消费迁移消耗目标并输出到 Archive；种子迁移无输入弧。
 - **条件编码**：`and`/`or`/`not` 先化 NNF 再化 DNF；`or` 展开为多条迁移；`not` 下推为 `count T <= k`，用互补库所编码（调用方须为涉及类型提供 `--bound T=N` 的**真实并发上界**）；`not via` 无法用计数互补表达，显式拒绝；条件恒假的迁移保留并置 `guard=false`；DNF 项数与 `count >= n` 的展开规模各设 1024 上限，超限显式失败。
 - **输出与验收**：CPN Tools XML（`format='6'`）；生成结果须通过 CPN DTD 校验、XML 良构与结构断言（库所/迁移/弧计数、test arc、互补不变量、单实例前缀）。CPN Tools GUI 内的交互式加载与状态空间实验由人工验收，不纳入 CI（沙箱无 GUI）。
@@ -154,12 +154,12 @@
 ### FR21 WASM 本地分发形态（D31/D33）
 
 - **定位**：WASM 构建是 `pactd` 之外的**可选本地分发形态**，供 Node/桌面宿主内嵌运行；**权威仍是原生引擎**，NFR4 的单一静态二进制形态不变，WASM 不替代 `pactd`、不承担服务端角色。
-- **实现状态**：**已稳定（2026-10-21，D33）**。稳定化前置 (1) Q7 独立 CI job、(2) 金标覆盖扩展、(3) `pact-engine-kernel` 抽取、(4) 宿主边界安全审视均已完成；WASM 作为受支持的本地分发形态维护，但**不在 `dist/` 产物集内**，仍不替代 `pactd`。
-- **能力范围（S2 已实现，2026-10-21）**：语义核心（解析/良构校验/静态分析/片段组合/CPN 投影）、内存多实例会话（`(domain, instance)` 键）、Rule-S/P/R/E 与 Rule-T、两阶段提交（`prepare → 宿主持久化 → commit` / `abort`）、事件日志 JSONL 导出、自足快照导出与 `restore`、查询视图；事件 schema、快照结构与磁盘布局与原生共用（`pact-store-model` / `pact-views`）。
+- **实现状态**：**已稳定（2026-10-21，D33）**。稳定化前置 (1) W-Q7 独立 CI job、(2) 金标覆盖扩展、(3) `pact-engine-kernel` 抽取、(4) 宿主边界安全审视均已完成；WASM 作为受支持的本地分发形态维护，但**不在 `dist/` 产物集内**，仍不替代 `pactd`。
+- **能力范围（W-S2 已实现，2026-10-21）**：语义核心（解析/良构校验/静态分析/片段组合/CPN 投影）、内存多实例会话（`(domain, instance)` 键）、Rule-S/P/R/E 与 Rule-T、两阶段提交（`prepare → 宿主持久化 → commit` / `abort`）、事件日志 JSONL 导出、自足快照导出与 `restore`、查询视图；事件 schema、快照结构与磁盘布局与原生共用（`pact-store-model` / `pact-views`）。
 - **宿主职责**：持久化（JSONL append + fsync、快照 tmp+rename）、崩溃恢复（日志优先、末尾半行截断）、单写者（lockfile）由宿主适配层承担；WASM 内核不假定拥有 fsync、flock、socket 或进程能力。Node 适配层已交付（`crates/pact-wasm/js/`）。
 - **能力边界**：不含浏览器 OPFS/SharedWorker、多用户 ACL/读审计、MCP/HTTP 服务、TLS、turso 索引、日志压缩与 `pactd` 运维接口；DSH `govern` 与 NFR6 v2 无硬依赖（见范围外）。**安全边界为本地单用户**，不得视为多用户安全边界。
 - **ABI 策略**：`pact-wasm/0.x`，全部方法使用 JSON 字符串；破坏性变更须提升 ABI 版本并记入 `docs/design-change.md`；版本探测入口为 `abi_version`。去除非实验性标记不改变 ABI 版本策略。
-- **稳定化验收（已完成）**：(1) Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）——**已实现（2026-10-21，`ci.yml` 的 `wasm` job）**；(2) 金标覆盖扩展（多实例、组合域、条件分支、压缩后恢复）——**已实现（2026-10-21，`crates/pact-wasm/tests/parity.rs` 7 项金标）**；(3) `pact-engine-kernel` 抽取——**已实现（2026-10-21，原生 `pact-engine` 与 `pact-wasm` 共用实例会话语义，D32）**；(4) 推送/发布前宿主边界安全审视——**已完成（2026-10-21，无新增可利用发现）**。四项验收完成后按 D33 去除实验性标记。
+- **稳定化验收（已完成）**：(1) W-Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）——**已实现（2026-10-21，`ci.yml` 的 `wasm` job）**；(2) 金标覆盖扩展（多实例、组合域、条件分支、压缩后恢复）——**已实现（2026-10-21，`crates/pact-wasm/tests/parity.rs` 7 项金标）**；(3) `pact-engine-kernel` 抽取——**已实现（2026-10-21，原生 `pact-engine` 与 `pact-wasm` 共用实例会话语义，D32）**；(4) 推送/发布前宿主边界安全审视——**已完成（2026-10-21，无新增可利用发现）**。四项验收完成后按 D33 去除实验性标记。
 
 ### FR22 TLS 与 Ed25519 请求签名身份（NFR6 v2）
 
@@ -171,7 +171,7 @@
 
 ### FR23 MCP Streamable HTTP（NFR6 v2）
 
-- daemon 在 `[mcp].enabled = true` 时于同一监听端口内建 `/mcp`（MCP Streamable HTTP），工具面与 stdio 完全一致（17 个 `pact_*` 工具）；`pact-mcp` 保留 stdio 形态，作为薄封装经 REST 接入 daemon。
+- daemon 在 `[mcp].enabled = true` 时于同一监听端口内建 `/mcp`（MCP Streamable HTTP），工具面与 stdio 完全一致（21 个 `pact_*` 工具）；`pact-mcp` 保留 stdio 形态，作为薄封装经 REST 接入 daemon。
 - **线上契约**：`POST/GET/DELETE /mcp`；`[mcp].public_url` 为对外可达基址，用于 `allowed_hosts` 与 OIDC 元数据。
 - **鉴权**：令牌表非空时要求 `Authorization: Bearer <token>`；配置 OIDC 时按 FR24 校验 JWT；两者皆无时为本地信任模式（仅单机/回环，启动打印警告）。`[auth.keys]` 非空而令牌表为空且无 OIDC 时拒绝启动，避免 `/mcp` 仅凭公钥冒用身份。
 - **本地调用**：daemon 内建 MCP 通过进程内 tower 路由调用自身 REST，不发起网络自连接；工具调用使用随机内部能力令牌 `x-pact-internal-auth`，并仅按当前请求注入已验证参与者，禁止跨会话串用或把外部 JWT 转发给 REST。
@@ -194,6 +194,21 @@
 - **审计边界**：只记录 `type/seq/工具名/call id`，**不记录**工具参数、结果内容、密钥或用户数据；实例键由 session id 消毒后生成（`[A-Za-z0-9_-]{1,128}`）。
 - **已知限制**：`resume` 的钩子在会话发布后安装，恢复后的首步不受门控；本轮不做 token 级工具映射、saga 补偿与 PACT 原生工具注册（阶段 12 评估）；依赖 DSH 预发布 API，DSH 升级须复核。
 - **实现状态**：已实现（2026-10-22，阶段 11），Node 22 内置测试 49 项通过；已在 `@deepseek-ai/dsh@0.2.1-rc.2` 上完成真实装配验证（profile 安装、`--dump-config` 组合、启动后 `ctx.agentLoop` 为 `PactAgentLoop`）。已在真实 `deepseek-official/deepseek-flash` 模型会话中验证 `pact-*` 门控三条路径：允许（bash 执行并返回 `PACT_TOOL_OK`）、`denyTools:["bash"]`（工具结果 `Error: pact: tool denied by policy`）、`fakeEnabled=false`（`agent/pre-step` 拒绝，`turn/start` 后直接 `turn/end`，无模型请求）。**WASM 后端已 live（2026-10-23）**：以官方 `wasm-bindgen 0.2.127` 构建 `pact-wasm` Node 产物，经新增 `crates/pact-wasm/js/open-host.js` 组装 `PactHost + FileStore`，在 DSH headless profile 中复跑同一三条路径——允许（bash 实际执行，`isError:false`）、`denyTools` 拒绝、空 Counter 实例的 `agent/pre-step` 拒绝（仅 `turn/start → turn/end`），WASM 存储日志由插件运行时创建。**npm 分发（2026-10-23）**：`dsh-plugin-pact@0.1.2` 经 tag `v0.1.2` 由 `release.yml` OIDC 发布；全新 profile 以 `add dsh-plugin-pact` 解析为 `^0.1.2` 并启动，两条 patch 行均激活。
+
+### FR26 显式状态交接与活动实例别名（D39）
+
+- **定位**：在域双键（FR19）基础上提供「声明换版但不中断协作」的显式路径。该路径 = 冻结源实例 → 以新声明创建目标实例 → 迁移 Counter / Archive / Rule-E 幂等表 → 可选切换活动实例 → 源实例只读。不替代原位保留状态的声明换版，也不提供双活、流量分割或跨实例协同。
+- **`Imported` 自足基线**：交接事件 `Imported` 携带完整 `CounterState`、幂等表、源域/源实例/源 `seq` 与目标声明原文；与 `DomainLoaded` 同为恢复基线（取最后一个），单行即可独立审计与重放（NFR2）。
+- **事件 schema v2**：普通事件 `version = 1`；`Imported` 写 `version = 2`；读取上限 `SUPPORTED_EVENT_SCHEMA_VERSION = 2`，更高版本 **fail-fast**（`UnsupportedSchemaVersion`），不静默降级。
+- **迁移范围与兼容性下界**：迁移 Counter、Archive 与幂等表；源 Counter 中所有 token 类型必须仍被新声明声明（Archive 可保留已删除类型，历史只读）。不满足 ⇒ `HandoffIncompatible`（409），交接失败且无副作用。
+- **冻结**：交接成功后源实例持久只读（`<domain>/<instance>.sealed`）；拒绝新的 Seed / Produce / Consume，Rule-R 读取与幂等重放仍返回首次归档；冻结标记跨重启保持，可显式解冻。**卸载不解除冻结**：已冻结实例的重载/实例化在未显式 `force` 时返回 `InstanceFrozen`，`force` 重置才清除标记；交接目标若残留 `.sealed` 视为已存在并拒绝。
+- **活动实例别名**：域级指针 `<data_dir>/<domain>/active.json`；短路由 `/domains/{d}/…` 解析活动实例，无指针回退 `default`；实例级路由 `/domains/{d}/instances/{i}/…` 始终显式。指针切换是域级运维动作，ACL 要求 `domain/*` 授权。
+- **控制面认证与授权**：配置了任何身份（令牌或签名，至少其一）后，`handoff` / `freeze` / `activate` / `active` 必须可认证；信任声明模式（两者皆空）免身份。ACL 启用时，`handoff` 要求源实例键、目标实例键与域通配键 `domain/*`（交接会改写域级 `declaration.pact`）；`freeze` 与 `GET active` 要求解析到的实例键；`PUT active` 要求 `domain/*`。
+- **控制面审计**：`.sealed` 与 `active.json` 记录 `ts`（注入时钟）与 `by`（已认证身份，信任声明模式为 `None`）；`GET /domains/{d}/active` 返回这两个字段。旧版 `.sealed`（纯文本）与无审计字段的 `active.json` 保持可读。
+- **原子性与激活**：先冻结源，再追加 `Imported` 作为提交点；追加失败回滚冻结且不创建目标。活动指针切换为 best-effort，结果携带 `activated` 与 `active_instance`；指针失败不回滚已提交的交接。
+- **恢复与卸载**：恢复以最后基线解释状态；活动指针悬空 ⇒ 启动 fail-fast；卸载活动实例时清除指针。
+- **接口面**：REST `POST /domains/{d}/handoff`、`GET/PUT /domains/{d}/active`、`PUT /domains/{d}/instances/{i}/freeze`；CLI `pact domain handoff|activate|active|freeze`；MCP `pact_domain_handoff|activate|active|freeze`（工具总数 21）。
+- **实现状态**：已实现（2026-10-25）。模型/内核/存储/引擎/HTTP/CLI/MCP/WASM 视图贯通；测试覆盖交接迁移、冻结只读与幂等重放、别名切换与回退、重启恢复、类型闭包失败无副作用、目标冲突与 ACL。
 
 ## 5. 非功能需求
 

@@ -2,12 +2,12 @@
 //!
 //! 被拒动作返回 4xx + §6.3 结构化错误体；错误码 = RuleError / Problem 变体名。
 
-use crate::config::{acl_allows, acl_allows_domain, AclMap};
+use crate::config::{acl_allows, acl_allows_domain, acl_allows_wildcard, AclMap};
 use crate::dto::{
-    conflicts_detail, problem_detail, rule_error_detail, CompactReq, ComposeReq, ConsumeReq,
-    DomainInfo, DomainsResp, EnabledOption, EnabledResp, EntryResp, ErrorBody, ErrorDetail,
-    GatesResp, InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, ReadAuditResp, SeedReq,
-    TokenResp, ValidateReq, ValidateResp,
+    conflicts_detail, problem_detail, rule_error_detail, ActivateReq, ActiveResp, CompactReq,
+    ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledOption, EnabledResp, EntryResp,
+    ErrorBody, ErrorDetail, FreezeReq, GatesResp, HandoffReq, InstantiateReq, LoadDomainReq,
+    ParticipantReq, ProduceReq, ReadAuditResp, SeedReq, TokenResp, ValidateReq, ValidateResp,
 };
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
@@ -15,7 +15,7 @@ use axum::extract::{FromRequest, Path, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, post, put};
 use axum::{Json, Router};
 use futures::StreamExt;
 use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
@@ -239,6 +239,12 @@ impl ServerState {
         Ok(())
     }
 
+    /// 短路由 `/domains/{d}/...` 的实例解析：活动实例指针（无指针 → `default`）。
+    async fn resolve_key(&self, domain: &str) -> Result<InstanceKey, ApiError> {
+        let instance = self.engine.active_instance(domain).await?;
+        Ok(InstanceKey::new(domain, &instance))
+    }
+
     /// 实例级端点（生命周期/查询/压缩）：ACL 未启用时保持旧行为；
     /// 启用时从令牌解出参与者并按 `(domain, instance)` 授权。
     fn authorize_key(&self, headers: &HeaderMap, key: &InstanceKey) -> Result<(), ApiError> {
@@ -259,6 +265,82 @@ impl ServerState {
         }
         let principal = self.require_principal(headers)?;
         if !acl_allows_domain(&self.acl, &principal, domain) {
+            return Err(Self::forbidden(domain, "*"));
+        }
+        Ok(())
+    }
+
+    /// 控制面端点认证（#3）：只要配置了任何身份（Bearer 令牌或请求签名），
+    /// 就必须能认证出调用者；信任声明模式（两者皆无）才放行匿名。
+    fn control_principal(&self, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+        if self.auth_tokens.is_empty() && !self.signing_enabled() {
+            return Ok(None);
+        }
+        self.authenticated_principal(headers)
+    }
+
+    /// 控制面实例端点：认证 +（ACL 启用时）实例授权。
+    /// 返回已认证的操作者（信任声明模式为 `None`），供审计字段使用。
+    fn authorize_control_key(
+        &self,
+        headers: &HeaderMap,
+        key: &InstanceKey,
+    ) -> Result<Option<String>, ApiError> {
+        let principal = self.control_principal(headers)?;
+        self.check_control_key(principal.as_deref(), key)?;
+        Ok(principal)
+    }
+
+    /// 已认证后的实例授权检查（ACL 未启用放行）。
+    fn check_control_key(
+        &self,
+        principal: Option<&str>,
+        key: &InstanceKey,
+    ) -> Result<(), ApiError> {
+        if !self.acl_enabled() {
+            return Ok(());
+        }
+        let Some(p) = principal else {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "ACL 已启用但未配置身份（配置非法）".to_owned(),
+            ));
+        };
+        if !acl_allows(&self.acl, p, &key.domain, &key.instance) {
+            return Err(Self::forbidden(&key.domain, &key.instance));
+        }
+        Ok(())
+    }
+
+    /// 控制面域级端点：认证 +（ACL 启用时）域通配授权 `domain/*`。
+    fn authorize_control_wildcard(
+        &self,
+        headers: &HeaderMap,
+        domain: &str,
+    ) -> Result<Option<String>, ApiError> {
+        let principal = self.control_principal(headers)?;
+        self.check_control_wildcard(principal.as_deref(), domain)?;
+        Ok(principal)
+    }
+
+    /// 已认证后的域通配授权检查（ACL 未启用放行）。
+    fn check_control_wildcard(
+        &self,
+        principal: Option<&str>,
+        domain: &str,
+    ) -> Result<(), ApiError> {
+        if !self.acl_enabled() {
+            return Ok(());
+        }
+        let Some(p) = principal else {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "ACL 已启用但未配置身份（配置非法）".to_owned(),
+            ));
+        };
+        if !acl_allows_wildcard(&self.acl, p, domain) {
             return Err(Self::forbidden(domain, "*"));
         }
         Ok(())
@@ -347,6 +429,24 @@ impl From<EngineError> for ApiError {
                     message: format!(
                         "实例 {domain}/{instance} 非空：加载将重置其 Counter，如确认替换请显式 force"
                     ),
+                },
+            },
+            EngineError::InstanceFrozen { domain, instance } => ApiError {
+                status: StatusCode::CONFLICT,
+                detail: ErrorDetail {
+                    code: "InstanceFrozen".to_owned(),
+                    detail: serde_json::json!({ "domain": domain, "instance": instance }),
+                    message: format!(
+                        "实例 {domain}/{instance} 已冻结（状态交接后只读；请使用目标实例或显式解冻）"
+                    ),
+                },
+            },
+            EngineError::HandoffIncompatible { detail } => ApiError {
+                status: StatusCode::CONFLICT,
+                detail: ErrorDetail {
+                    code: "HandoffIncompatible".to_owned(),
+                    detail: serde_json::json!({ "detail": detail }),
+                    message: format!("状态交接不兼容：{detail}"),
                 },
             },
             EngineError::Parse(p) => ApiError {
@@ -503,6 +603,10 @@ pub fn router(state: Arc<ServerState>) -> Router {
         )
         // 日志前缀压缩（D25 子项 1；default 实例与实例级镜像）
         .route("/domains/{d}/compact", post(compact_default))
+        // 状态交接 + 活动实例别名（短路由按 active 解析）
+        .route("/domains/{d}/handoff", post(handoff))
+        .route("/domains/{d}/active", get(active).put(activate))
+        .route("/domains/{d}/instances/{i}/freeze", put(set_freeze))
         // 实例级镜像组（D27）
         .route("/domains/{d}/instances/{i}/seeds", post(seed_instance))
         .route("/domains/{d}/instances/{i}/tokens", post(produce_instance))
@@ -857,10 +961,106 @@ async fn compact_default(
     headers: HeaderMap,
     JsonReq(req): JsonReq<CompactReq>,
 ) -> Result<Json<pact_engine::views::CompactionOutcome>, ApiError> {
-    let key = default_key(&d);
+    let key = st.resolve_key(&d).await?;
     st.authorize_key(&headers, &key)?;
     let out = st.engine.compact(key, req.keep_last).await?;
     Ok(Json(out))
+}
+
+/// `POST /domains/{d}/handoff`：状态交接（冻结源 → 新声明目标 → 可选切别名）。
+async fn handoff(
+    State(st): State<Arc<ServerState>>,
+    Path(d): Path<String>,
+    headers: HeaderMap,
+    JsonReq(req): JsonReq<HandoffReq>,
+) -> Result<(StatusCode, Json<pact_engine::views::HandoffOutcome>), ApiError> {
+    let principal = st.control_principal(&headers)?;
+    st.check_control_key(
+        principal.as_deref(),
+        &InstanceKey::new(&d, &req.source_instance),
+    )?;
+    st.check_control_key(
+        principal.as_deref(),
+        &InstanceKey::new(&d, &req.target_instance),
+    )?;
+    // 交接会改写域级 `declaration.pact`（影响后续新实例），故额外要求域通配授权。
+    st.check_control_wildcard(principal.as_deref(), &d)?;
+    let out = st
+        .engine
+        .handoff_as(
+            &d,
+            &req.source_instance,
+            &req.target_instance,
+            &req.declaration,
+            req.activate,
+            principal.as_deref(),
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(out)))
+}
+
+/// `GET /domains/{d}/active`：当前活动实例（含控制面审计字段）。
+async fn active(
+    State(st): State<Arc<ServerState>>,
+    Path(d): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<ActiveResp>, ApiError> {
+    let principal = st.control_principal(&headers)?;
+    let pointer = st.engine.active_pointer(&d).await?;
+    let instance = pointer
+        .as_ref()
+        .map(|p| p.instance.clone())
+        .unwrap_or_else(|| DEFAULT_INSTANCE.to_owned());
+    st.check_control_key(principal.as_deref(), &InstanceKey::new(&d, &instance))?;
+    let (ts, by) = match pointer {
+        Some(p) => (p.ts, p.by),
+        None => (None, None),
+    };
+    Ok(Json(ActiveResp {
+        domain: d,
+        instance,
+        ts,
+        by,
+    }))
+}
+
+/// `PUT /domains/{d}/active`：切换活动实例指针（域级权限）。
+async fn activate(
+    State(st): State<Arc<ServerState>>,
+    Path(d): Path<String>,
+    headers: HeaderMap,
+    JsonReq(req): JsonReq<ActivateReq>,
+) -> Result<Json<ActiveResp>, ApiError> {
+    let principal = st.authorize_control_wildcard(&headers, &d)?;
+    let instance = st
+        .engine
+        .activate_as(&d, &req.instance, principal.as_deref())
+        .await?;
+    let (ts, by) = match st.engine.active_pointer(&d).await? {
+        Some(p) => (p.ts, p.by),
+        None => (None, None),
+    };
+    Ok(Json(ActiveResp {
+        domain: d,
+        instance,
+        ts,
+        by,
+    }))
+}
+
+/// `PUT /domains/{d}/instances/{i}/freeze`：设置/解除实例冻结。
+async fn set_freeze(
+    State(st): State<Arc<ServerState>>,
+    Path((d, i)): Path<(String, String)>,
+    headers: HeaderMap,
+    JsonReq(req): JsonReq<FreezeReq>,
+) -> Result<StatusCode, ApiError> {
+    let key = InstanceKey::new(d, i);
+    let principal = st.authorize_control_key(&headers, &key)?;
+    st.engine
+        .set_frozen_as(key, req.frozen, principal.as_deref())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /domains`：启用 ACL 时仅返回调用者可访问的实例（空域被剔除）。
@@ -875,6 +1075,11 @@ async fn list_domains(
             listing
                 .instances
                 .retain(|i| acl_allows(&st.acl, &principal, &listing.name, i));
+            if let Some(active) = &listing.active {
+                if !acl_allows(&st.acl, &principal, &listing.name, active) {
+                    listing.active = None;
+                }
+            }
         }
         domains.retain(|l| !l.instances.is_empty());
     }
@@ -908,7 +1113,7 @@ async fn domain_info(
     Path(d): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<DomainInfo>, ApiError> {
-    let key = default_key(&d);
+    let key = st.resolve_key(&d).await?;
     st.authorize_key(&headers, &key)?;
     domain_info_inner(&st, key).await
 }
@@ -942,7 +1147,7 @@ async fn unload_domain(
     Path(d): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    let key = default_key(&d);
+    let key = st.resolve_key(&d).await?;
     st.authorize_key(&headers, &key)?;
     unload_inner(&st, key).await
 }
@@ -991,7 +1196,7 @@ async fn seed(
     headers: HeaderMap,
     JsonReq(req): JsonReq<SeedReq>,
 ) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
-    seed_inner(&st, default_key(&d), headers, req).await
+    seed_inner(&st, st.resolve_key(&d).await?, headers, req).await
 }
 
 async fn seed_instance(
@@ -1028,7 +1233,7 @@ async fn produce(
     headers: HeaderMap,
     JsonReq(req): JsonReq<ProduceReq>,
 ) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
-    produce_inner(&st, default_key(&d), headers, req).await
+    produce_inner(&st, st.resolve_key(&d).await?, headers, req).await
 }
 
 async fn produce_instance(
@@ -1067,7 +1272,7 @@ async fn counter(
     headers: HeaderMap,
     Query(q): Query<TypeQuery>,
 ) -> Result<Json<pact_engine::views::CounterView>, ApiError> {
-    counter_inner(&st, default_key(&d), headers, q).await
+    counter_inner(&st, st.resolve_key(&d).await?, headers, q).await
 }
 
 async fn counter_instance(
@@ -1095,7 +1300,7 @@ async fn archive(
     headers: HeaderMap,
     Query(q): Query<TypeQuery>,
 ) -> Result<Json<pact_engine::views::ArchiveView>, ApiError> {
-    archive_inner(&st, default_key(&d), headers, q).await
+    archive_inner(&st, st.resolve_key(&d).await?, headers, q).await
 }
 
 async fn archive_instance(
@@ -1123,7 +1328,7 @@ async fn read_token(
     headers: HeaderMap,
     JsonReq(req): JsonReq<ParticipantReq>,
 ) -> Result<Json<TokenResp>, ApiError> {
-    read_inner(&st, default_key(&d), id, headers, req).await
+    read_inner(&st, st.resolve_key(&d).await?, id, headers, req).await
 }
 
 async fn read_token_instance(
@@ -1156,7 +1361,7 @@ async fn consume_token(
     headers: HeaderMap,
     JsonReq(req): JsonReq<ConsumeReq>,
 ) -> Result<Json<EntryResp>, ApiError> {
-    consume_inner(&st, default_key(&d), id, headers, req).await
+    consume_inner(&st, st.resolve_key(&d).await?, id, headers, req).await
 }
 
 async fn consume_token_instance(
@@ -1193,7 +1398,7 @@ async fn gates(
     Path((d, participant)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Json<GatesResp>, ApiError> {
-    gates_inner(&st, default_key(&d), participant, headers).await
+    gates_inner(&st, st.resolve_key(&d).await?, participant, headers).await
 }
 
 async fn gates_instance(
@@ -1224,7 +1429,7 @@ async fn enabled(
     headers: HeaderMap,
     Query(q): Query<ParticipantQuery>,
 ) -> Result<Json<EnabledResp>, ApiError> {
-    enabled_inner(&st, default_key(&d), headers, q).await
+    enabled_inner(&st, st.resolve_key(&d).await?, headers, q).await
 }
 
 async fn enabled_instance(
@@ -1277,7 +1482,7 @@ async fn read_audit_default(
     headers: HeaderMap,
     Query(q): Query<ReadAuditQuery>,
 ) -> Result<Json<ReadAuditResp>, ApiError> {
-    read_audit_inner(&st, default_key(&d), headers, q).await
+    read_audit_inner(&st, st.resolve_key(&d).await?, headers, q).await
 }
 
 async fn read_audit_instance(
@@ -1305,7 +1510,7 @@ async fn status(
     Path(d): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<StatusView>, ApiError> {
-    status_inner(&st, default_key(&d), headers).await
+    status_inner(&st, st.resolve_key(&d).await?, headers).await
 }
 
 async fn status_instance(
@@ -1331,7 +1536,7 @@ async fn events(
     Path(d): Path<String>,
     headers: HeaderMap,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    events_inner(&st, default_key(&d), headers).await
+    events_inner(&st, st.resolve_key(&d).await?, headers).await
 }
 
 async fn events_instance(

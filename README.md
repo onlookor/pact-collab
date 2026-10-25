@@ -25,7 +25,7 @@ PACT (Precondition-governed Autonomous Counter-based Token) is a coordination pa
 
 ## Where to start
 
-PACT has one onboarding ladder: authoring contract (L0) → [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) (L1) → browser workbench (L2) → sandbox (L3) → connection wizard (L4). The three browser steps are also online at **<https://onlookor.github.io/pact-collab/>**; every path ends at `pact analyze` and the [user manual](docs/manual.md).
+PACT has one onboarding ladder: authoring contract → [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) → browser workbench → sandbox → connection wizard. The three browser steps are also online at **<https://onlookor.github.io/pact-collab/>**; every path ends at `pact analyze` and the [user manual](docs/manual.md).
 
 | If you want to… | Start here | Then |
 |---|---|---|
@@ -135,7 +135,7 @@ pact status --domain proj
 | `pact-store` | Append-only event log, snapshots, crash recovery |
 | `pact-engine` | Session runtime, notifications, deterministic clock/id |
 | `pact-http` | Axum REST daemon (unix socket / TCP + TLS/mTLS, bearer or Ed25519 signature, SSE), daemon-hosted `/mcp`, OIDC resource server, and typed client |
-| `pact-mcp` | MCP stdio thin wrapper (17 `pact_*` tools, backed by REST) |
+| `pact-mcp` | MCP stdio thin wrapper (21 `pact_*` tools, backed by REST) |
 | `pact-runtime` | Multi-agent orchestrator: participant drive loops, gates, outbox/saga executors |
 | `pact-cpn` | CPN Tools XML encoding of a declaration (positive fragment + complementary places; offline, no I/O) |
 | `pact-cli` | Single `pact` binary: daemon control, online operations, offline validate/analyze/compose/replay/cpn |
@@ -146,12 +146,12 @@ pact status --domain proj
 cargo test --workspace
 ```
 
-219 tests across the workspace, covering:
+245 tests across the workspace, covering:
 
 - **Golden traces** for the paper's four example domains — the software lifecycle above, a healthcare pathway (fan-in preconditions, `via` provenance), a ReAct loop (cyclic topology), and a discriminating deadlock scenario.
 - **Property-based tests** — declaration round-trip identity and execution invariants (512 cases each).
 - **Unit tests** per crate, including well-formedness rejections (duplicate LHS, empty LHS, zero/leading-zero count literals) and all three enforcement layers of source-production legality.
-- **End-to-end over all access paths** — HTTP daemon full lifecycle (error mapping, SSE, compose/unload), CLI against a real subprocess daemon, MCP stdio, and Streamable HTTP `/mcp` with all 17 tools.
+- **End-to-end over all access paths** — HTTP daemon full lifecycle (error mapping, SSE, compose/unload), CLI against a real subprocess daemon, MCP stdio, and Streamable HTTP `/mcp` with all 21 tools.
 - **NFR6 v2 security** — TLS/mTLS handshakes with a custom CA, Ed25519 signature positive/negative cases (tampered body, nonce replay, participant mismatch), OIDC positive/negative (iss/aud/exp/nbf/alg/crit/claim mapping/unknown kid), RFC 9728 metadata, and IdP-unreachable 503.
 - **Unattended multi-agent scenarios** — real `pact-mcp` subprocesses autonomously driving domains to `Terminated` with zero human intervention: a ReAct loop and five concurrent workers on the lifecycle domain.
 - **CPN encoding** — structural assertions for test arcs, complementary places, DNF expansion, instance namespacing, and error paths; generated models validate against the CPN DTD.

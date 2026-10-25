@@ -307,6 +307,67 @@ async fn auth_tokens_gate_participant_endpoints() {
 }
 
 #[tokio::test]
+async fn control_endpoints_require_identity_and_record_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tokens = BTreeMap::new();
+    tokens.insert("external".to_owned(), "sekret".to_owned());
+    let (sock, _engine) = spawn_daemon(dir.path(), tokens).await;
+
+    let anon = Client::unix(sock.clone());
+    anon.load_domain("proj", DECL, None, false).await.unwrap();
+
+    // #3：配置了令牌后，新控制面端点即使未启用 ACL 也要求认证。
+    for err in [
+        anon.active_instance("proj").await.unwrap_err(),
+        anon.activate("proj", "default").await.unwrap_err(),
+        anon.set_frozen("proj", "default", true).await.unwrap_err(),
+        anon.handoff("proj", "default", "v2", DECL_V2, true)
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(
+            matches!(&err, ClientError::Api(d) if d.code == "Unauthorized"),
+            "期望 Unauthorized，实际：{err:?}"
+        );
+    }
+
+    let ok = Client::unix(sock).with_bearer("sekret");
+    ok.seed("proj", None, "external", "requirement", None)
+        .await
+        .unwrap();
+
+    // #5：冻结标记记录操作者与时间。
+    ok.set_frozen("proj", "default", true).await.unwrap();
+    let sealed = std::fs::read_to_string(dir.path().join("data/proj/default.sealed")).unwrap();
+    let sealed: serde_json::Value = serde_json::from_str(&sealed).unwrap();
+    assert_eq!(sealed["reason"], "manual freeze");
+    assert_eq!(sealed["by"], "external");
+    assert!(sealed["ts"].as_str().is_some_and(|s| !s.is_empty()));
+    ok.set_frozen("proj", "default", false).await.unwrap();
+
+    // 交接写入活动指针；GET /active 返回 `ts`/`by`。
+    ok.handoff("proj", "default", "v2", DECL_V2, true)
+        .await
+        .unwrap();
+    let active = ok.active_instance("proj").await.unwrap();
+    assert_eq!(active.instance, "v2");
+    assert_eq!(active.by.as_deref(), Some("external"));
+    assert!(active.ts.is_some());
+
+    let pointer = std::fs::read_to_string(dir.path().join("data/proj/active.json")).unwrap();
+    let pointer: serde_json::Value = serde_json::from_str(&pointer).unwrap();
+    assert_eq!(pointer["instance"], "v2");
+    assert_eq!(pointer["by"], "external");
+    assert_eq!(pointer["ts"], active.ts.unwrap());
+
+    // 显式激活同样记录操作者。
+    ok.activate("proj", "default").await.unwrap();
+    let active = ok.active_instance("proj").await.unwrap();
+    assert_eq!(active.instance, "default");
+    assert_eq!(active.by.as_deref(), Some("external"));
+}
+
+#[tokio::test]
 async fn tcp_listener_equivalent() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("data")).await.unwrap();
@@ -811,4 +872,239 @@ async fn read_audit_view_reports_rule_r_records() {
         .unwrap()
         .records
         .is_empty());
+}
+
+// ============ 状态交接 + 活动实例别名（D39） ============
+
+/// 换版声明：新增 `review` 类型与门。
+const DECL_V2: &str = r#"
+types { requirement; design; implementation; review }
+
+preconditions {
+    requirement → design;
+    design → implementation;
+    design → review
+}
+
+gates {
+    architect: reads requirement, consumes requirement, produces design;
+    developer: reads design, consumes design, produces implementation;
+    reviewer: consumes design, produces review;
+    user: consumes implementation
+}
+
+seed_authority { external: seeds requirement }
+"#;
+
+/// 不兼容声明：未声明源 Counter 中仍存在的 `requirement`。
+const DECL_MISSING: &str = r#"
+types { design; implementation }
+
+preconditions {
+    design → implementation
+}
+
+gates {
+    developer: consumes design, produces implementation
+}
+
+seed_authority { external: seeds design }
+"#;
+
+/// 在 `domain/default` 上铺出 requirement(归档) + design(Counter)，含幂等键。
+async fn seed_and_produce(c: &Client, domain: &str) {
+    let req = c
+        .seed(domain, None, "external", "requirement", Some("urn:req:1"))
+        .await
+        .unwrap();
+    let design = c
+        .produce(
+            domain,
+            None,
+            "architect",
+            "design",
+            vec![req.token.id.0.clone()],
+            Some("urn:design:1"),
+        )
+        .await
+        .unwrap();
+    c.consume(domain, None, "architect", &req.token.id.0, Some("req-1"))
+        .await
+        .unwrap();
+    assert_eq!(design.token.ty.0, "design");
+}
+
+#[tokio::test]
+async fn state_handoff_and_alias_over_unix_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn_daemon(dir.path(), BTreeMap::new()).await;
+    let c = Client::unix(sock);
+
+    c.load_domain("proj", DECL, None, false).await.unwrap();
+    seed_and_produce(&c, "proj").await;
+
+    let out = c
+        .handoff("proj", "default", "v2", DECL_V2, true)
+        .await
+        .unwrap();
+    assert_eq!((out.counter, out.archive, out.consumed_requests), (1, 1, 1));
+    assert!(out.activated);
+    assert_eq!(out.active_instance, "v2");
+
+    // 别名与清单。
+    assert_eq!(c.active_instance("proj").await.unwrap().instance, "v2");
+    let list = c.list_domains().await.unwrap();
+    assert_eq!(list.domains[0].instances, vec!["default", "v2"]);
+    assert_eq!(list.domains[0].active.as_deref(), Some("v2"));
+
+    // 短路由透明落到 v2（可写）。
+    c.seed("proj", None, "external", "requirement", None)
+        .await
+        .unwrap();
+    assert_eq!(c.counter("proj", Some("v2"), None).await.unwrap().size, 2);
+
+    // 长路由显式：源实例可读、目标可写。
+    assert_eq!(
+        c.counter("proj", Some("default"), None).await.unwrap().size,
+        1
+    );
+
+    // 切回冻结源：短路由写入 → 409。
+    assert_eq!(
+        c.activate("proj", "default").await.unwrap().instance,
+        "default"
+    );
+    let err = c
+        .seed("proj", None, "external", "requirement", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        ClientError::Api(d) if d.code == "InstanceFrozen"
+    ));
+
+    // 解冻后短路由恢复可写；再冻结立即生效。
+    c.set_frozen("proj", "default", false).await.unwrap();
+    c.seed("proj", None, "external", "requirement", None)
+        .await
+        .unwrap();
+    c.set_frozen("proj", "default", true).await.unwrap();
+    let err = c
+        .seed("proj", None, "external", "requirement", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        ClientError::Api(d) if d.code == "InstanceFrozen"
+    ));
+}
+
+#[tokio::test]
+async fn handoff_acl_requires_source_target_and_domain_wildcard_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut tokens = BTreeMap::new();
+    tokens.insert("architect".to_owned(), "tok-arch".to_owned());
+    tokens.insert("external".to_owned(), "tok-ext".to_owned());
+    let mut acl = BTreeMap::new();
+    // 源 + 目标实例键都有，但缺域通配键：交接会改写域级声明 → 仍拒绝。
+    acl.insert(
+        "architect".to_owned(),
+        vec!["proj/default".to_owned(), "proj/v2".to_owned()],
+    );
+    // 域级授权（覆盖新实例与活动指针）。
+    acl.insert("external".to_owned(), vec!["proj/*".to_owned()]);
+    let (sock, _engine) = spawn_daemon_full(dir.path(), tokens, acl, EngineConfig::default()).await;
+
+    let ext = Client::unix(sock.clone()).with_bearer("tok-ext");
+    let arch = Client::unix(sock).with_bearer("tok-arch");
+    ext.load_domain("proj", DECL, None, false).await.unwrap();
+
+    let req = ext
+        .seed("proj", None, "external", "requirement", None)
+        .await
+        .unwrap();
+    arch.produce(
+        "proj",
+        None,
+        "architect",
+        "design",
+        vec![req.token.id.0.clone()],
+        None,
+    )
+    .await
+    .unwrap();
+
+    // 源 + 目标实例键齐备但缺 `proj/*` → 403（#4：交接改写域级声明）。
+    let err = arch
+        .handoff("proj", "default", "v2", DECL_V2, true)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        ClientError::Api(d) if d.code == "Forbidden"
+    ));
+    // 域级键 → 放行。
+    ext.handoff("proj", "default", "v2", DECL_V2, true)
+        .await
+        .unwrap();
+
+    // 激活需要域级键：单实例键 → 403。
+    let err = arch.activate("proj", "default").await.unwrap_err();
+    assert!(matches!(
+        err,
+        ClientError::Api(d) if d.code == "Forbidden"
+    ));
+    assert_eq!(
+        ext.activate("proj", "default").await.unwrap().instance,
+        "default"
+    );
+    assert_eq!(
+        ext.active_instance("proj").await.unwrap().instance,
+        "default"
+    );
+}
+
+#[tokio::test]
+async fn handoff_conflicts_map_to_409() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn_daemon(dir.path(), BTreeMap::new()).await;
+    let c = Client::unix(sock);
+
+    c.load_domain("proj", DECL, None, false).await.unwrap();
+    seed_and_produce(&c, "proj").await;
+    c.handoff("proj", "default", "v2", DECL_V2, true)
+        .await
+        .unwrap();
+
+    // 目标已存在。
+    let err = c
+        .handoff("proj", "default", "v2", DECL_V2, true)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        ClientError::Api(d) if d.code == "InstanceExists"
+    ));
+
+    // 类型闭包不兼容。
+    c.load_domain("incompat", DECL, None, false).await.unwrap();
+    c.seed("incompat", None, "external", "requirement", None)
+        .await
+        .unwrap();
+    let err = c
+        .handoff("incompat", "default", "v2", DECL_MISSING, true)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        ClientError::Api(d) if d.code == "HandoffIncompatible"
+    ));
+    // 失败无副作用：源未冻结、别名未改。
+    c.seed("incompat", None, "external", "requirement", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        c.active_instance("incompat").await.unwrap().instance,
+        "default"
+    );
 }

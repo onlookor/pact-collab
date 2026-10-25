@@ -40,7 +40,9 @@
         │ pact-analysis  │  │   .events.jsonl 真相源       │
         │ pact-compose   │  │   .snapshot.json（自足锚）    │
         └────────────────┘  │   .logmeta.json（压缩水位）   │
+                            │   .sealed（冻结，D39）        │
                             │  declaration.pact           │
+                            │  active.json（活动实例指针）  │
                             │  index.tursodb              │
                             │   (domain,instance) 双列     │
                             │   (turso, IndexStore 隔离)   │
@@ -93,9 +95,11 @@ daemon 启动（pact daemon start / pactd）→ 先取 data_dir 独占 flock（<
                无快照或不覆盖 max(base_seq, 首行seq-1) ⇒ fail-fast（SnapshotRequiredForCompactedLog）
        → 校验/重建 index.tursodb（含 base_seq > 0 时补 prune_events 自愈）→ 重建实例内存态
        → 恢复声明注册表（读 <domain>/declaration.pact）→ 恢复订阅总线
+       → 读取 <domain>/active.json 校验活动指针（损毁或悬空 ⇒ fail-fast，避免静默误路由）与各实例 .sealed 冻结标记
        → compact_on_start 为真时逐实例自动压缩（单个失败仅告警，不阻断启动）
 中部损坏行（完整行非法 JSON）→ fail-fast，命令以恢复失败统一应答（需人工介入）。
-事件 schema 版本：缺 version 视为 v1；version > EVENT_SCHEMA_VERSION ⇒ fail-fast（UnsupportedSchemaVersion）。
+事件基线：取最后一个 DomainLoaded 或 Imported（状态交接自足基线，D39）；恢复以基线状态为基重放后续事件。
+事件 schema 版本：缺 version 视为 v1；version > SUPPORTED_EVENT_SCHEMA_VERSION(2) ⇒ fail-fast（UnsupportedSchemaVersion）。
 ```
 
 ### 2.4 日志压缩（D25 子项 1）
@@ -130,7 +134,7 @@ REST 入口（除 /health|/ready|/metrics|/mcp|RFC 9728 元数据外）
                启用的 ACL 覆盖生命周期 / 四类动作 / 查询 / compact / read-audit 视图
 ```
 
-ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；`/compact` 在启用 ACL 后与其它实例端点同等受 `(domain, instance)` 约束。
+ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；`/compact` 在启用 ACL 后与其它实例端点同等受 `(domain, instance)` 约束。显式状态交接（D39）：交接要求源实例键、目标实例键与域通配键 `domain/*`（会改写域级 `declaration.pact`），活动实例切换要求 `domain/*`，冻结/查询按实例键约束。控制面端点（handoff / freeze / active）在配置了任何身份后必须认证；其写入的 `.sealed` / `active.json` 记录 `ts` 与 `by`（信任声明模式为 `None`）。
 
 ### 2.6 CPN 编码生成（阶段 6，离线）
 
@@ -270,38 +274,39 @@ v2 不在本仓库引入新进程或新内部组件，只把接口层的传输�
 | 安全边界 | 默认 unix socket 本地单用户；可选 daemon 内 TLS/mTLS（`[tls]`，D34）与静态 Bearer / Ed25519 签名（`[auth.keys]`，D34）。**启用 `[auth.acl]` 后**（D25 子项 3）全部域作用域端点按 `(domain, instance)` 授权（支持 `domain/*` 通配），无身份 `401`、越权 `403`，`GET /domains` 按授权过滤；ACL 非空而令牌表与密钥表均为空 ⇒ 拒绝启动。未配置 ACL 时保持既有信任声明行为。`/health` `/ready` `/metrics` 免身份，由部署网络边界兜底；`/validate` 在签名启用时仍需签名。核心不感知认证 |
 | 联网身份与传输（NFR6 v2，D34–D36） | TLS 终止在 pactd（可选 mTLS；内置客户端只验证服务端，不出示客户端证书）；REST 支持 Ed25519 签名（±300s、nonce 防重放、8 MiB；启用后非豁免请求必须签名，Bearer 不能替代）+ 静态 Bearer；`/mcp` 支持 OIDC 资源服务器（alg 白名单、iss/aud/exp/nbf、JWKS 有界缓存、claim 映射）或静态 Bearer，信任模式仅限无身份配置的单机/回环；OIDC 令牌不缓存、不转发 REST，IdP 故障只影响 `/mcp`（503） |
 | 可运维性（NFR7，D25，**子项 1+2+3 已实现**） | **子项 2（2026-10-20）**：daemon 暴露**免身份** `/health`（存活）、`/ready`（就绪：引擎可应答）、`/metrics`（Prometheus 文本格式），可选 `pid_file`（启动写入/退出删除/陈旧检测），SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → `engine.shutdown()` 终态快照）。**子项 1（2026-10-20）**：事件日志前缀压缩（REST `/compact`、CLI `pact compact`、MCP `pact_compact`、可选启动自动压缩）+ schema 版本化（`WireEvent.version`，更高版本 fail-fast），详见 §2.3/§2.4。**子项 3（2026-10-20）**：域级 ACL 阻止任意客户端装卸域/触发压缩（`(domain, instance)` 授权，见 §2.5）；可选读审计流（`read_audit = true`，append+fsync，fail-closed）与只读视图 `GET .../read-audit` |
-| 多实例承载（FR19，D27，**已实现**） | 同一域声明可并发承载多个 **Counter 实例**（实例键 `instance`）；实例为接口层一等键，各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / 幂等表。**存储布局（已定案 + 已实现）**：域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、审计流 `‹instance›.read-audit.jsonl`、声明原文 `declaration.pact` 同目录）；索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键）。顶层遗留单层文件（`‹domain›.events.jsonl`）**不识别、fail-fast**（`LegacyLayoutDetected`）。同一 `data_dir` 上多实例以 flock（`‹data_dir›/pactd.lock`）保证单写者，禁止交错写同一日志；非空实例再加载默认拒绝（`DomainBusy`，须 `force`）。实例键以路径段承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` ≡ `default`），键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越 |
+| 多实例承载（FR19，D27，**已实现**） | 同一域声明可并发承载多个 **Counter 实例**（实例键 `instance`）；实例为接口层一等键，各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / 幂等表。**存储布局（已定案 + 已实现）**：域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、审计流 `‹instance›.read-audit.jsonl`、声明原文 `declaration.pact` 同目录）；索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键）。顶层遗留单层文件（`‹domain›.events.jsonl`）**不识别、fail-fast**（`LegacyLayoutDetected`）。同一 `data_dir` 上多实例以 flock（`‹data_dir›/pactd.lock`）保证单写者，禁止交错写同一日志；非空实例再加载默认拒绝（`DomainBusy`，须 `force`）。实例键以路径段承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` 解析活动实例，无指针回退 `default`），键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越 |
+| 声明换版可用性（FR26，D39，**已实现**） | 显式状态交接：在引擎临界区内冻结源（`.sealed`）→ 追加 `Imported` 自足基线（完整 Counter/Archive/幂等表/声明原文，schema v2）→ 建目标实例 → best-effort 切换域级 `active.json` 别名。源实例保留全部状态且只读（幂等重放仍可返回），目标可独立恢复；失败路径（类型闭包/目标冲突/源已冻结）无副作用；活动指针悬空在启动期 fail-fast。不提供原位保留状态的声明换版、双活或自动回滚；`.sealed`/`active.json` 为控制面文件，不进入事件日志、`seq`、快照与压缩 |
 | 表达力边界（B1–B25） | 母本 §1.3/§1.4/§1.4.4/§2.3 声明范式不能直接表达什么；实现侧在 `docs/expressiveness-boundaries.md` 集中登记可编码模式、仅可近似项、范式外项与工具层边界，并以 `B<编号>` 在文档与代码注释中引用。摘要落点见 `docs/design.md` §18 |
-| Token 消费时机（TC1–TC13） | 母本 §1.6/§1.7.3 提供规范依据（消费时机是域策略、Read 非 reservation、ack 屏障）；多下游共享 token 的消费所有者、顺序与保留策略集中登记于 `docs/token-consumption-timing.md`：判定准则 D1–D6、模式 P1–P9、反模式 A1–A9，并以 `TC<编号>` 引用。静态预警由 A.3（无 consumer）与 A.6（搁浅风险）承接；与表达力边界 B8/B17/B21/B22 交叉引用，不新增范式原语 |
+| Token 消费时机（TC1–TC13） | 母本 §1.6/§1.7.3 提供规范依据（消费时机是域策略、Read 非 reservation、ack 屏障）；多下游共享 token 的消费所有者、顺序与保留策略集中登记于 `docs/token-consumption-timing.md`：判定准则 TC-D1–TC-D6、模式 TC-P1–TC-P9、反模式 TC-A1–TC-A9，并以 `TC<编号>` 引用。静态预警由 A.3（无 consumer）与 A.6（搁浅风险）承接；与表达力边界 B8/B17/B21/B22 交叉引用，不新增范式原语 |
 | 层边界（D24–D26） | 范式机制限于 `crates/`；领域内容在独立仓库；生产驱动逻辑收于 `pact-runtime` crate（已实现，经 REST 接入 daemon，不内嵌引擎）；分发产物在同仓库 `dist/`（**阶段 9 已交付**：容器镜像 / systemd unit / musl 静态打包，详见 §6） |
 
-## 6. 生产运行层与分发（D24–D26，2026-10-19 裁决；L3 运行层已实现）
+## 6. 生产运行层与分发（D24–D26，2026-10-19 裁决；生产运行层已实现）
 
-在既有全量架构之上补一层 **L3 生产运行层**，与 L1 引擎、L2 领域层并列；引擎的被动性（D5）不变。
+在既有全量架构之上补一层 **生产运行层**，与范式引擎层、领域适配层并列；引擎的被动性（D5）不变。
 
 ```
 受控联网生产形态（v2）
 ┌──────────────────────── 主机 ────────────────────────┐
-│  pact-runtime（L3，已交付 lib + bin）                  │
+│  pact-runtime（生产运行层，已交付 lib + bin）          │
 │    ├─ 参与者驱动循环（订阅/轮询 → my_gates/enabled）    │
 │    ├─ 多 agent 编排（N 个 MCP/HTTP 客户端进程）         │
 │    └─ 外部副作用执行器（消费 Consumed，saga 补偿）      │
-│  pact-server (daemon, L1)  ← MCP stdio / /mcp / REST+SSE │
+│  pact-server (daemon, 范式引擎层) ← MCP stdio / /mcp / REST+SSE │
 │    └─ data_dir（JSONL + snapshot + index.tursodb）       │
 │  dist/（阶段 9 已交付）: Dockerfile · pactd.service · musl 静态打包  │
 └──────────────────────────────────────────────────────┘
 ```
 
 - **依赖方向**：`pact-runtime → pact-http / pact-engine / pact-core`（lib 层；REST 经 `pact_http::client`，线上视图取自 `pact-engine`，标识符·token 类型取自 `pact-core`）；`pact-mcp` 仅作可执行文件由编排 spawn、**不**作 lib 依赖；不反向；引擎、存储、核心语义零改动。
-- **落地形态（阶段 7 已完成，2026-10-19）**：`crates/pact-runtime/` 交付 `ParticipantClient` 传输抽象（`RestClient` / `McpClient`）、驱动循环 `drive()`（P1/P2/P3 + 订阅推送/轮询兜底 + `pristine` 守卫与终止宽限）、编排 `Orchestrator`（每 agent `tokio::spawn`）、副作用执行器 `SideEffectExecutor`（archive 游标增量 + Rule-S 补偿事实）、TOML 配置驱动的 bin `pact-runtime`。
+- **落地形态（阶段 7 已完成，2026-10-19）**：`crates/pact-runtime/` 交付 `ParticipantClient` 传输抽象（`RestClient` / `McpClient`）、驱动循环 `drive()`（**生产优先 / 汇消费 / 等待**三策略 + 订阅推送/轮询兜底 + `pristine` 守卫与终止宽限）、编排 `Orchestrator`（每 agent `tokio::spawn`）、副作用执行器 `SideEffectExecutor`（archive 游标增量 + Rule-S 补偿事实）、TOML 配置驱动的 bin `pact-runtime`。
 - **进程拓扑**：`pact-runtime` 作为 systemd 托管的常驻编排进程（或独立 bin），拉起 daemon 与各 agent 子进程；MCP server 由 agent 宿主按配置以 stdio 子进程拉起（保留），或由远程客户端直连 daemon `/mcp`（v2，D35）。runtime 的 REST 客户端支持 `--https/--tls-ca` 与 `--sign-key/--sign-as`；其 stdio MCP 子进程当前只透传 TLS 与 Bearer。
-- **归属边界**：L1 生产化增强（日志压缩/schema 版本、health/ready/metrics/PID/优雅停机、域级 ACL 与可选审计读视图）仍在 `crates/`（阶段 8，已交付）；L2 领域内容仍在独立仓库；L3 收于 `pact-runtime`；分发产物入本仓库 `dist/`（阶段 9，已交付；不接入 CI 语义测试，D26）。
+- **归属边界**：范式引擎层的生产化增强（日志压缩/schema 版本、health/ready/metrics/PID/优雅停机、域级 ACL 与可选审计读视图）仍在 `crates/`（阶段 8，已交付）；领域适配层内容仍在独立仓库；生产运行层收于 `pact-runtime`；分发产物入本仓库 `dist/`（阶段 9，已交付；不接入 CI 语义测试，D26）。
 - **分发形态（阶段 9 已完成，2026-10-20）**：`dist/` 提供三条部署路径，均以**同一批静态二进制**为载荷（`pact` / `pactd` / `pact-mcp` / `pact-runtime`）——① 容器：`dist/Dockerfile` 多阶段构建（`rust:1.98-alpine` → `alpine:3.22`），非 root uid 10001、数据卷 `/var/lib/pact`、`EXPOSE 8787`、`HEALTHCHECK` 探 `/health`，默认配置 `dist/pact.container.toml`；② systemd：`dist/pactd.service` 以 `pact` 用户运行 `pactd --config /etc/pact/pact.toml`，`StateDirectory`/`RuntimeDirectory` 提供 `/var/lib/pact` 与 `/run/pact`，`TimeoutStopSec=20s` 覆盖 10s 优雅停机；③ 静态包：`dist/build-static.sh` 交叉构建 `x86_64-unknown-linux-musl` 并产出含 `SHA256SUMS` 的 tar.gz。三条路径均不改变进程拓扑、依赖方向与数据流；容器与 systemd 默认仅绑回环/受信网络，需要跨主机时启用 v2 TLS/mTLS 或由外部 TLS 终结并配合 `[auth.tokens]`/`[auth.keys]` + `[auth.acl]`。
 - **MCP 提供形态**：权威恒为 daemon；`pact-mcp` 是传输适配器，随本仓库交付、由 agent 宿主拉起；daemon 内建 Streamable HTTP `/mcp` 已落地（v2，D35），与 stdio 共用工具实现，不另立项目。
 
 ## 7. DSH 宿主集成（D37，阶段 11）
 
-在既有 L1/L2/L3 之外增加一个**宿主侧控制层**，只存在于 DSH 进程内，不改变 daemon、引擎与存储拓扑。
+在既有的范式引擎层、领域适配层、生产运行层之外增加一个**宿主侧控制层**，只存在于 DSH 进程内，不改变 daemon、引擎与存储拓扑。
 
 ```
 DSH 宿主进程
@@ -332,3 +337,34 @@ DSH 宿主进程
 - **装配与门控验证（2026-10-22/23）**：在 `@deepseek-ai/dsh@0.2.1-rc.2` 上以 web profile 完成安装与启动；`--dump-config` 显示原 `agent-loop` 禁用、`pact-agent-loop` 插入；运行时 `ctx.agentLoop` 为 `PactAgentLoop`，DSH 按 peer 解析 `@deepseek-ai/dsh-agent-loop`。另在 headless profile 中以 `pact-demo` preset 和 `deepseek-official/deepseek-flash` 驱动真实 agent turn，验证允许、工具拒绝与预检拒绝三条路径；拓扑与依赖方向不变。
 - **WASM 后端接缝（2026-10-23）**：组装入口 `crates/pact-wasm/js/open-host.js`（CommonJS）把 wasm-bindgen 产物、`FileStore` 与声明组装为 `PactHost`；插件通过配置里的文件路径动态 import，**不形成 ESM 包依赖**，`crates/` 仍不被 `plugins/` 依赖。已在同一 headless profile 中以 `backend=wasm` 复跑三条路径：允许（bash 实际执行）、`denyTools` 拒绝、空 Counter 实例的 `pre-step` 拒绝；实例日志与锁由 WASM 宿主在 DSH 进程内创建，拓扑仍为“宿主内控制层 + 本地文件存储”。
 
+
+## 附录 A 文档标识符与编号约定
+
+本仓库文档中的字母+数字标识符必须有唯一权威定义，禁止在对话中临时自创后在文档中裸用。下表是当前全部命名空间及其权威文件；新增编号须先在此登记，再在其他文档引用。
+
+| 命名空间 | 权威定义位置 | 含义 | 跨文件引用形式 |
+|---|---|---|---|
+| `FR<n>` / `NFR<n>` | `docs/requirements.md` | 功能 / 非功能需求 | `FR26`、`NFR7` |
+| `D<n>` | `docs/design.md` §0 决策记录 | 设计决策 | `D39` |
+| `TC<n>` | `docs/token-consumption-timing.md` §3 | 消费能力条目 | `TC1`–`TC13` |
+| `TC-D<n>` / `TC-P<n>` / `TC-A<n>` | 同上 §4 / §5 / §6 | 判定准则 / 可行模式 / 反模式 | `TC-D1`、`TC-P8`、`TC-A3` |
+| `TC-Q<n>` | `docs/authoring-contract.md` §5 | 消费裁决问卷 | `TC-Q7` |
+| `B<n>` | `docs/expressiveness-boundaries.md` | 表达力边界 | `B8`、`B23` |
+| `X<n>` | 同上 §4 | 范式需扩展的能力缺口（与 `B<n>` 边界条目一一对应） | `X1`、`X6` |
+| `W-P<n>` / `W-S<n>` / `W-Q<n>` / `W-R<n>` | `docs/wasm-local-spike-feasibility.md` | WASM 阶段 / 宿主持久化阶段 / 待决问题 / 风险 | `W-P3`、`W-Q7`、`W-R10` |
+| `G1`–`G5` / `H1`–`H5` / `R1`–`R6` | `docs/authoring-contract.md` §1.1 / §1.2 / §4 | 适用闸门 / 硬停模式 / 形状配方 | `G1`、`H3`、`R4` |
+| `E1`–`E7` | `docs/skill-adaptation.md` §7.1 | SE 技能适配的落地结论 | `E6` |
+| `S0`–`S7` | `skills/pact-domain-authoring/SKILL.md` | 域作者 skill 的工作流步骤 | `S5` |
+| Rule-P / Rule-R / Rule-W / Rule-E / Rule-T | `paper/pactv1_rev3.md` | 范式规则（外部规范） | `Rule-E` |
+| `C1`–`C4` | `paper/pactv1_rev3.md` §1.8 | 片段并行组合的四条件（外部规范） | `C2` |
+| `A0`–`A5` | `paper/pactv1_rev3.md` §0.19.2 | 权威六级的全序（外部规范） | `A0` |
+| `A.1`–`A.6` | `paper/pactv1_rev3.md` 附录 A | 静态分析（外部规范） | `A.5` |
+
+约定：
+
+1. **先登记后使用**：新增编号先写入本表并落到权威文件，再在其他文档、代码注释与测试名中引用。
+2. **跨文件带前缀**：同一命名空间跨文件引用时保留前缀；单文件内部可省略。已有 `TC-` 与 `W-` 前缀即为此目的。
+3. **不复用含义**：同一字母序列不得在两个文件表示不同含义。历史上 `L1`–`L3` 曾同时指架构层与上手阶梯、`P1`–`P9` 曾同时指消费模式与 WASM 阶段，均已消除；架构分层改用描述性名称（范式引擎层 / 领域适配层 / 生产运行层 / 宿主侧控制层）。
+4. **描述性概念不用标签**：架构分层、上手阶梯等概念使用描述性名称，不引入新的字母+数字编号。
+5. **历史不回溯**：`*-change.md` 保留当时的编号与措辞，不回改；现行编号以本表为准。
+6. **测试夹具除外**：测试内的 token 序列（如 `T0`–`T8`）是代码夹具而非文档编号，不受本约定约束。

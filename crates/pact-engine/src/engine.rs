@@ -8,7 +8,7 @@ use crate::idgen::IdGen;
 use crate::notify::{Notification, NotificationKind, NotificationSummary};
 use crate::views::{
     AnalysisReport, ArchiveView, CompactionOutcome, CounterView, DomainListing, DomainSummary,
-    GateClause, StatusView,
+    GateClause, HandoffOutcome, StatusView,
 };
 use pact_compose::{compose as compose_fragments, Conflict};
 use pact_core::{
@@ -17,8 +17,10 @@ use pact_core::{
 };
 use pact_engine_kernel::{analysis_report, ConsumePreparation, KernelError, Session};
 use pact_parser::{emit_domain, load_domain, Problem};
-use pact_store::{Event, InstanceKey, ModelError, ReadAuditRecord, Snapshot, Store, StoreError};
-use std::collections::BTreeMap;
+use pact_store::{
+    ActivePointer, Event, InstanceKey, ModelError, ReadAuditRecord, Snapshot, Store, StoreError,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -47,6 +49,15 @@ pub enum EngineError {
     DomainBusy {
         domain: String,
         instance: String,
+    },
+    /// 实例已冻结（状态交接后的源实例只读）。
+    InstanceFrozen {
+        domain: String,
+        instance: String,
+    },
+    /// 状态交接不兼容（如源 Counter 中仍有新声明未声明的类型）。
+    HandoffIncompatible {
+        detail: String,
     },
     Store(StoreError),
     Parse(Problem),
@@ -79,6 +90,12 @@ impl std::fmt::Display for EngineError {
                 "实例 {domain}/{instance} 非空（Reserved）：加载将重置其 Counter，\
                  如确认替换请显式 --force"
             ),
+            EngineError::InstanceFrozen { domain, instance } => {
+                write!(f, "实例 {domain}/{instance} 已冻结（状态交接后只读）")
+            }
+            EngineError::HandoffIncompatible { detail } => {
+                write!(f, "状态交接不兼容：{detail}")
+            }
             EngineError::Store(e) => write!(f, "存储失败：{e}"),
             EngineError::Parse(e) => write!(f, "域声明无效：{e:?}"),
             EngineError::Rule(e) => write!(f, "规则拒绝：{e:?}"),
@@ -293,6 +310,41 @@ pub enum Command {
         keep_last: u64,
         resp: Responder<CompactionOutcome>,
     },
+    /// 显式状态交接：冻结源实例 → 以新声明创建目标实例并继承状态 → 可选切别名。
+    Handoff {
+        domain: String,
+        source_instance: String,
+        target_instance: String,
+        declaration: String,
+        activate: bool,
+        /// 控制面审计：发起者（信任声明模式下为 `None`）。
+        actor: Option<String>,
+        resp: Responder<HandoffOutcome>,
+    },
+    /// 设置实例冻结状态（只读护栏；冻结标记持久化）。
+    SetFrozen {
+        key: InstanceKey,
+        frozen: bool,
+        actor: Option<String>,
+        resp: Responder<()>,
+    },
+    /// 切换域的活动实例指针（短路由别名）。
+    Activate {
+        domain: String,
+        instance: String,
+        actor: Option<String>,
+        resp: Responder<String>,
+    },
+    /// 查询域的活动实例（无指针 → `default`）。
+    ActiveInstance {
+        domain: String,
+        resp: Responder<String>,
+    },
+    /// 查询域的活动实例指针（含审计字段；无指针 → `None`）。
+    ActivePointer {
+        domain: String,
+        resp: Responder<Option<ActivePointer>>,
+    },
     Shutdown {
         resp: Responder<()>,
     },
@@ -352,6 +404,21 @@ impl Command {
             Command::Compact { resp, .. } => {
                 let _ = resp.send(Err(err));
             }
+            Command::Handoff { resp, .. } => {
+                let _ = resp.send(Err(err));
+            }
+            Command::SetFrozen { resp, .. } => {
+                let _ = resp.send(Err(err));
+            }
+            Command::Activate { resp, .. } => {
+                let _ = resp.send(Err(err));
+            }
+            Command::ActiveInstance { resp, .. } => {
+                let _ = resp.send(Err(err));
+            }
+            Command::ActivePointer { resp, .. } => {
+                let _ = resp.send(Err(err));
+            }
             Command::Shutdown { resp } => {
                 let _ = resp.send(Err(err));
             }
@@ -374,6 +441,8 @@ struct InstanceSession {
     core: Session,
     events_since_snapshot: u64,
     notify: broadcast::Sender<Notification>,
+    /// 实例冻结：只读护栏（Seed/Produce/Consume 拒绝），持久化在 `.sealed` 标记。
+    frozen: bool,
 }
 
 impl std::ops::Deref for InstanceSession {
@@ -463,6 +532,20 @@ impl EngineActor {
             self.recover_instance(ri)?;
         }
 
+        // 活动实例指针校验：悬空指针会让短路由静默指向不存在的实例，
+        // 属数据/运维损坏，fail-fast 要求人工修正。
+        let domains: BTreeSet<String> = self.instances.keys().map(|k| k.domain.clone()).collect();
+        for domain in domains {
+            if let Some(instance) = self.store.load_active(&domain)? {
+                let key = InstanceKey::new(&domain, &instance);
+                if !self.instances.contains_key(&key) {
+                    return Err(EngineError::Recovery(format!(
+                        "活动实例指针悬空：{domain}/active.json → {instance}（实例不存在）"
+                    )));
+                }
+            }
+        }
+
         // 可选的启动自动压缩（D25 子项 1，默认关闭）：以当前状态写真快照并截断已覆盖前缀。
         // 失败不阻断启动（压缩是空间优化而非正确性前提），仅告警。
         if self.config.compact_on_start {
@@ -483,6 +566,7 @@ impl EngineActor {
         let key = ri.key;
         let snap = self.store.load_snapshot(&key)?;
         let core = Session::recover(&ri.events, snap.as_ref(), ri.base_seq)?;
+        let frozen = self.store.is_sealed(&key);
         let (notify, _) = broadcast::channel(self.config.notify_capacity);
         self.instances.insert(
             key,
@@ -490,6 +574,7 @@ impl EngineActor {
                 core,
                 events_since_snapshot: 0,
                 notify,
+                frozen,
             },
         );
         Ok(())
@@ -573,7 +658,7 @@ impl EngineActor {
             Command::QueryReadAudit { key, limit, resp } => {
                 respond(resp, self.query_read_audit(&key, limit))
             }
-            Command::ListDomains { resp } => respond(resp, Ok(self.list_domains())),
+            Command::ListDomains { resp } => respond(resp, self.list_domains()),
             Command::UnloadDomain { key, resp } => respond(resp, self.unload_domain(&key)),
             Command::Subscribe { key, resp } => respond(resp, self.subscribe(&key)),
             Command::Analyze { text, resp } => respond(resp, self.analyze(&text)),
@@ -592,6 +677,42 @@ impl EngineActor {
                 keep_last,
                 resp,
             } => respond(resp, self.compact(&key, keep_last).await),
+            Command::Handoff {
+                domain,
+                source_instance,
+                target_instance,
+                declaration,
+                activate,
+                actor,
+                resp,
+            } => respond(
+                resp,
+                self.handoff(
+                    &domain,
+                    &source_instance,
+                    &target_instance,
+                    &declaration,
+                    activate,
+                    actor.as_deref(),
+                )
+                .await,
+            ),
+            Command::SetFrozen {
+                key,
+                frozen,
+                actor,
+                resp,
+            } => respond(resp, self.set_frozen(&key, frozen, actor.as_deref())),
+            Command::Activate {
+                domain,
+                instance,
+                actor,
+                resp,
+            } => respond(resp, self.activate(&domain, &instance, actor.as_deref())),
+            Command::ActiveInstance { domain, resp } => {
+                respond(resp, self.active_instance(&domain))
+            }
+            Command::ActivePointer { domain, resp } => respond(resp, self.active_pointer(&domain)),
             Command::Shutdown { resp } => {
                 respond(resp, self.snapshot_all());
                 return true;
@@ -604,7 +725,7 @@ impl EngineActor {
 
     /// 列出定义键及其实例（`GET /domains`）：以**运行中实例**为准，
     /// 并合并磁盘上存在但未加载的实例（避免遗漏）。
-    fn list_domains(&self) -> Vec<DomainListing> {
+    fn list_domains(&self) -> Result<Vec<DomainListing>, EngineError> {
         let mut listings: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for key in self.store.list_instances() {
             listings.entry(key.domain).or_default().push(key.instance);
@@ -615,14 +736,18 @@ impl EngineActor {
                 .or_default()
                 .push(key.instance.clone());
         }
-        listings
-            .into_iter()
-            .map(|(name, mut instances)| {
-                instances.sort();
-                instances.dedup();
-                DomainListing { name, instances }
-            })
-            .collect()
+        let mut out = Vec::with_capacity(listings.len());
+        for (name, mut instances) in listings {
+            instances.sort();
+            instances.dedup();
+            let active = self.store.load_active(&name)?;
+            out.push(DomainListing {
+                name,
+                instances,
+                active,
+            });
+        }
+        Ok(out)
     }
 
     /// 登记声明（定义键）：解析 + 落 `declaration.pact`（best-effort）+ 注册表覆盖。
@@ -659,6 +784,14 @@ impl EngineActor {
                 instance: instance.to_owned(),
             });
         }
+        // 冻结标记优先于“新建”：卸载后的冻结实例不能借实例化绕过冻结。
+        // 显式解冻（或带 force 的重载）清标记后才可重建。
+        if self.store.is_sealed(&key) {
+            return Err(EngineError::InstanceFrozen {
+                domain: name.to_owned(),
+                instance: instance.to_owned(),
+            });
+        }
         let entry = self
             .declarations
             .get(name)
@@ -677,6 +810,7 @@ impl EngineActor {
                 core: fresh.session,
                 events_since_snapshot: 0,
                 notify,
+                frozen: false,
             },
         );
         Ok(summary)
@@ -702,12 +836,19 @@ impl EngineActor {
                 domain: name.to_owned(),
                 instance: instance.to_owned(),
             }),
+            // 冻结实例的重载等同重置：须显式 force 才解除冻结。
+            Some(_) if self.store.is_sealed(&key) && !force => Err(EngineError::InstanceFrozen {
+                domain: name.to_owned(),
+                instance: instance.to_owned(),
+            }),
             // 已存在（空或已 force）：重置语义 —— 清快照、状态清零、seq 续接
             Some(s) => {
                 let next_seq = s.last_seq + 1;
                 let fresh = Session::fresh(name, declaration, &self.clock.now(), next_seq)?;
                 self.store.append(&key, &fresh.event).await?;
                 let _ = self.store.remove_snapshot(&key);
+                // 显式 force 重置即解除交接冻结。
+                let _ = self.store.clear_sealed(&key);
                 let summary = fresh.session.summary(name, instance);
                 let (notify, _) = broadcast::channel(self.config.notify_capacity);
                 self.instances.insert(
@@ -716,13 +857,228 @@ impl EngineActor {
                         core: fresh.session,
                         events_since_snapshot: 0,
                         notify,
+                        frozen: false,
                     },
                 );
                 Ok(summary)
             }
-            // 新实例
-            None => self.instantiate(name, instance).await,
+            // 新实例：冻结标记只能由显式 force 清除。
+            None => {
+                if self.store.is_sealed(&key) {
+                    if !force {
+                        return Err(EngineError::InstanceFrozen {
+                            domain: name.to_owned(),
+                            instance: instance.to_owned(),
+                        });
+                    }
+                    self.store.clear_sealed(&key)?;
+                }
+                self.instantiate(name, instance).await
+            }
         }
+    }
+
+    // —— 状态交接 + 活动实例别名 ——
+
+    /// 冻结源实例 → 以新声明创建目标实例并继承 Counter/Archive/幂等表 →
+    /// 可选切换活动实例指针。目标日志以自足的 `Imported` 事件为基线。
+    async fn handoff(
+        &mut self,
+        domain: &str,
+        source_instance: &str,
+        target_instance: &str,
+        declaration: &str,
+        activate: bool,
+        actor: Option<&str>,
+    ) -> Result<HandoffOutcome, EngineError> {
+        pact_store::validate_domain_name(domain)?;
+        pact_store::validate_instance_name(source_instance)?;
+        pact_store::validate_instance_name(target_instance)?;
+        if source_instance == target_instance {
+            return Err(EngineError::HandoffIncompatible {
+                detail: "源与目标实例不能相同".to_owned(),
+            });
+        }
+
+        let source_key = InstanceKey::new(domain, source_instance);
+        let target_key = InstanceKey::new(domain, target_instance);
+        let new_domain = load_domain(declaration).map_err(EngineError::Parse)?;
+        // 控制面审计时间：冻结标记、导入事件、活动指针共用同一时刻。
+        let ts = self.clock.now();
+
+        // 目标必须不存在（内存、日志或残留冻结标记），避免覆盖已有审计。
+        if self.instances.contains_key(&target_key)
+            || self.store.list_instances().iter().any(|k| k == &target_key)
+            || self.store.is_sealed(&target_key)
+        {
+            return Err(EngineError::InstanceExists {
+                domain: domain.to_owned(),
+                instance: target_instance.to_owned(),
+            });
+        }
+
+        let (source_seq, source_state, source_requests) = {
+            let session = self
+                .instances
+                .get(&source_key)
+                .ok_or_else(|| instance_not_found(&source_key))?;
+            if session.frozen {
+                return Err(EngineError::InstanceFrozen {
+                    domain: domain.to_owned(),
+                    instance: source_instance.to_owned(),
+                });
+            }
+            (
+                session.last_seq,
+                session.state.clone(),
+                session.consumed_requests.clone(),
+            )
+        };
+
+        // 兼容性下界：Counter 中所有在途 token 的类型必须仍被新声明声明。
+        // Archive 允许保留已删除类型（历史只读，不影响未来规则）。
+        let missing: std::collections::BTreeSet<&TypeName> = source_state
+            .counter
+            .values()
+            .map(|t| &t.ty)
+            .filter(|ty| !new_domain.types.contains(*ty))
+            .collect();
+        if !missing.is_empty() {
+            return Err(EngineError::HandoffIncompatible {
+                detail: format!(
+                    "源 Counter 中存在新声明未声明的类型：{}",
+                    missing
+                        .iter()
+                        .map(|t| t.0.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
+        }
+
+        // 先冻结源（持久化标记）；失败则不产生任何交接副作用。
+        {
+            let session = self
+                .instances
+                .get_mut(&source_key)
+                .ok_or_else(|| instance_not_found(&source_key))?;
+            self.store
+                .write_sealed(&source_key, "state handoff source", &ts, actor)?;
+            session.frozen = true;
+        }
+
+        let counter_len = source_state.counter.len();
+        let archive_len = source_state.archive.len();
+        let idem_len = source_requests.len();
+        let target_seq = self.store.last_seq(&target_key) + 1;
+        let imported = Event::Imported {
+            seq: target_seq,
+            ts: ts.clone(),
+            name: domain.to_owned(),
+            declaration: declaration.to_owned(),
+            source_domain: domain.to_owned(),
+            source_instance: source_instance.to_owned(),
+            source_seq,
+            state: source_state,
+            consumed_requests: source_requests,
+        };
+        if let Err(e) = self.store.append(&target_key, &imported).await {
+            // 提交点失败：回滚冻结，源实例恢复可写。
+            let _ = self.store.clear_sealed(&source_key);
+            if let Some(s) = self.instances.get_mut(&source_key) {
+                s.frozen = false;
+            }
+            return Err(e.into());
+        }
+
+        let core = Session::recover(std::slice::from_ref(&imported), None, target_seq)?;
+        let (notify, _) = broadcast::channel(self.config.notify_capacity);
+        self.instances.insert(
+            target_key,
+            InstanceSession {
+                core,
+                events_since_snapshot: 0,
+                notify,
+                frozen: false,
+            },
+        );
+
+        // 新声明登记为域定义，供后续新实例使用（目标实例已绑定自己的快照）。
+        self.declare(domain, declaration)?;
+
+        let mut activated = false;
+        if activate {
+            match self.store.write_active(domain, target_instance, &ts, actor) {
+                Ok(()) => activated = true,
+                Err(e) => eprintln!("pactd: 交接后写活动实例指针失败（域 {domain}）：{e}"),
+            }
+        }
+        let active_instance = self.active_instance(domain)?;
+
+        Ok(HandoffOutcome {
+            domain: domain.to_owned(),
+            source_instance: source_instance.to_owned(),
+            target_instance: target_instance.to_owned(),
+            source_seq,
+            target_seq,
+            counter: counter_len,
+            archive: archive_len,
+            consumed_requests: idem_len,
+            active_instance,
+            activated,
+        })
+    }
+
+    /// 设置/解除实例冻结（只读护栏）。
+    fn set_frozen(
+        &mut self,
+        key: &InstanceKey,
+        frozen: bool,
+        actor: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let session = self
+            .instances
+            .get_mut(key)
+            .ok_or_else(|| instance_not_found(key))?;
+        if frozen {
+            let ts = self.clock.now();
+            self.store.write_sealed(key, "manual freeze", &ts, actor)?;
+        } else {
+            self.store.clear_sealed(key)?;
+        }
+        session.frozen = frozen;
+        Ok(())
+    }
+
+    /// 切换域的活动实例指针（短路由别名）。
+    fn activate(
+        &mut self,
+        domain: &str,
+        instance: &str,
+        actor: Option<&str>,
+    ) -> Result<String, EngineError> {
+        pact_store::validate_domain_name(domain)?;
+        pact_store::validate_instance_name(instance)?;
+        let key = InstanceKey::new(domain, instance);
+        if !self.instances.contains_key(&key) {
+            return Err(instance_not_found(&key));
+        }
+        let ts = self.clock.now();
+        self.store.write_active(domain, instance, &ts, actor)?;
+        Ok(instance.to_owned())
+    }
+
+    /// 查询域的活动实例（无指针 → `default`）。
+    fn active_instance(&self, domain: &str) -> Result<String, EngineError> {
+        Ok(self
+            .store
+            .load_active(domain)?
+            .unwrap_or_else(|| DEFAULT_INSTANCE.to_owned()))
+    }
+
+    /// 查询域的活动实例指针（含审计字段；无指针 → `None`）。
+    fn active_pointer(&self, domain: &str) -> Result<Option<ActivePointer>, EngineError> {
+        Ok(self.store.load_active_pointer(domain)?)
     }
 
     async fn compose_and_load(
@@ -756,6 +1112,9 @@ impl EngineActor {
             .instances
             .get_mut(key)
             .ok_or_else(|| instance_not_found(key))?;
+        if session.frozen {
+            return Err(instance_frozen(key));
+        }
         let prepared = session
             .core
             .prepare_seed(participant, ty, thing_ref, id, &now)?;
@@ -797,6 +1156,9 @@ impl EngineActor {
             .instances
             .get_mut(key)
             .ok_or_else(|| instance_not_found(key))?;
+        if session.frozen {
+            return Err(instance_frozen(key));
+        }
         let prepared =
             session
                 .core
@@ -872,7 +1234,13 @@ impl EngineActor {
             &now,
         )? {
             ConsumePreparation::Replayed(entry) => return Ok(entry),
-            ConsumePreparation::Prepared(prepared) => *prepared,
+            ConsumePreparation::Prepared(prepared) => {
+                // 冻结只拦截新消费；幂等重放仍返回首次归档结果（无状态变更）。
+                if session.frozen {
+                    return Err(instance_frozen(key));
+                }
+                *prepared
+            }
         };
         let seq = prepared.event.seq();
         // 提交点 = 日志落盘（store.append 内部 fsync）。其后步骤均不可失败（见 post_commit）。
@@ -970,6 +1338,10 @@ impl EngineActor {
     fn unload_domain(&mut self, key: &InstanceKey) -> Result<(), EngineError> {
         if self.instances.remove(key).is_none() {
             return Err(instance_not_found(key));
+        }
+        // 卸载的活动实例不能留下悬空别名：清除指针，短路由回退 `default`。
+        if self.store.load_active(&key.domain)?.as_deref() == Some(key.instance.as_str()) {
+            self.store.clear_active(&key.domain)?;
         }
         Ok(())
     }
@@ -1111,10 +1483,10 @@ async fn post_commit(
 
 /// 实例最后一次 `DomainLoaded` 的声明原文（恢复回填用）。
 fn last_declaration(events: &[Event]) -> Option<String> {
-    events.iter().rev().find_map(|e| match e {
-        Event::DomainLoaded { declaration, .. } => Some(declaration.clone()),
-        _ => None,
-    })
+    events
+        .iter()
+        .rev()
+        .find_map(|e| e.baseline_declaration().map(|(_, d)| d.to_owned()))
 }
 
 fn respond<T>(resp: oneshot::Sender<Result<T, EngineError>>, result: Result<T, EngineError>) {
@@ -1123,6 +1495,13 @@ fn respond<T>(resp: oneshot::Sender<Result<T, EngineError>>, result: Result<T, E
 
 fn instance_not_found(key: &InstanceKey) -> EngineError {
     EngineError::InstanceNotFound {
+        domain: key.domain.clone(),
+        instance: key.instance.clone(),
+    }
+}
+
+fn instance_frozen(key: &InstanceKey) -> EngineError {
+    EngineError::InstanceFrozen {
         domain: key.domain.clone(),
         instance: key.instance.clone(),
     }
@@ -1205,6 +1584,118 @@ impl Engine {
         self.execute(Command::Instantiate {
             domain: domain.to_owned(),
             instance: instance.to_owned(),
+            resp,
+        })
+        .await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 状态交接：冻结源、以新声明创建目标并继承状态，可选切换活动实例。
+    pub async fn handoff(
+        &self,
+        domain: &str,
+        source_instance: &str,
+        target_instance: &str,
+        declaration: &str,
+        activate: bool,
+    ) -> Result<HandoffOutcome, EngineError> {
+        self.handoff_as(
+            domain,
+            source_instance,
+            target_instance,
+            declaration,
+            activate,
+            None,
+        )
+        .await
+    }
+
+    /// 状态交接（带控制面审计操作者）。
+    pub async fn handoff_as(
+        &self,
+        domain: &str,
+        source_instance: &str,
+        target_instance: &str,
+        declaration: &str,
+        activate: bool,
+        actor: Option<&str>,
+    ) -> Result<HandoffOutcome, EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::Handoff {
+            domain: domain.to_owned(),
+            source_instance: source_instance.to_owned(),
+            target_instance: target_instance.to_owned(),
+            declaration: declaration.to_owned(),
+            activate,
+            actor: actor.map(str::to_owned),
+            resp,
+        })
+        .await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 设置/解除实例冻结。
+    pub async fn set_frozen(&self, key: InstanceKey, frozen: bool) -> Result<(), EngineError> {
+        self.set_frozen_as(key, frozen, None).await
+    }
+
+    /// 设置/解除实例冻结（带控制面审计操作者）。
+    pub async fn set_frozen_as(
+        &self,
+        key: InstanceKey,
+        frozen: bool,
+        actor: Option<&str>,
+    ) -> Result<(), EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::SetFrozen {
+            key,
+            frozen,
+            actor: actor.map(str::to_owned),
+            resp,
+        })
+        .await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 切换域的活动实例指针，返回新的活动实例名。
+    pub async fn activate(&self, domain: &str, instance: &str) -> Result<String, EngineError> {
+        self.activate_as(domain, instance, None).await
+    }
+
+    /// 切换域的活动实例指针（带控制面审计操作者）。
+    pub async fn activate_as(
+        &self,
+        domain: &str,
+        instance: &str,
+        actor: Option<&str>,
+    ) -> Result<String, EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::Activate {
+            domain: domain.to_owned(),
+            instance: instance.to_owned(),
+            actor: actor.map(str::to_owned),
+            resp,
+        })
+        .await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 查询域的活动实例（无指针 → `default`）。
+    pub async fn active_instance(&self, domain: &str) -> Result<String, EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::ActiveInstance {
+            domain: domain.to_owned(),
+            resp,
+        })
+        .await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 查询域的活动实例指针（含 `ts`/`by` 审计字段；无指针 → `None`）。
+    pub async fn active_pointer(&self, domain: &str) -> Result<Option<ActivePointer>, EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::ActivePointer {
+            domain: domain.to_owned(),
             resp,
         })
         .await?;

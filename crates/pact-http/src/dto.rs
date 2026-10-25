@@ -39,6 +39,47 @@ pub struct CompactReq {
     pub keep_last: u64,
 }
 
+/// `POST /domains/{d}/handoff`：状态交接（冻结源 → 新声明目标 → 可选切别名）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HandoffReq {
+    pub source_instance: String,
+    pub target_instance: String,
+    /// 目标实例使用的完整声明原文。
+    pub declaration: String,
+    /// 交接成功后是否把域的活动实例指针切到目标（缺省 true）。
+    #[serde(default = "default_true")]
+    pub activate: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `PUT /domains/{d}/active`：切换活动实例指针。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivateReq {
+    pub instance: String,
+}
+
+/// `GET /domains/{d}/active`：当前活动实例。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveResp {
+    pub domain: String,
+    pub instance: String,
+    /// 控制面审计：指针写入时间（无指针 / 旧版文件为 `None`）。
+    #[serde(default)]
+    pub ts: Option<String>,
+    /// 控制面审计：指针写入者（信任声明模式或旧版文件为 `None`）。
+    #[serde(default)]
+    pub by: Option<String>,
+}
+
+/// `PUT /domains/{d}/instances/{i}/freeze`：设置/解除实例冻结。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FreezeReq {
+    pub frozen: bool,
+}
+
 /// `POST /domains/{d}:compose`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComposeReq {
