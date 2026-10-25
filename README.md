@@ -23,23 +23,30 @@ PACT (Precondition-governed Autonomous Counter-based Token) is a coordination pa
 - **Verifiable participants** — static bearer tokens or Ed25519 request signatures (replay protection, ±300 s window, 8 MiB cap), integrated with domain-level ACL.
 - **Enterprise identity for MCP** — the daemon acts as an OIDC resource server for `/mcp` only: discovery/JWKS, algorithm allow-list, `iss`/`aud`/`exp`/`nbf` validation, and claim-to-participant mapping. Tokens are never cached or forwarded to REST.
 
+## Where to start
+
+PACT has one onboarding ladder: authoring contract (L0) → [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) (L1) → browser workbench (L2) → sandbox (L3) → connection wizard (L4). The three browser steps are also online at **<https://onlookor.github.io/pact-collab/>**; every path ends at `pact analyze` and the [user manual](docs/manual.md).
+
+| If you want to… | Start here | Then |
+|---|---|---|
+| Decide whether PACT fits, or read the paradigm | [What is PACT?](#what-is-pact) and [`paper/pactv1_rev3.md`](paper/pactv1_rev3.md) | [`expressiveness-boundaries.md`](docs/expressiveness-boundaries.md) — what PACT deliberately does not model |
+| Write your first domain inside a coding agent | [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) | `pact analyze <file>` until it exits 0; [example domains](examples/README.md) |
+| Write your first domain with no toolchain installed | [Authoring workbench](https://onlookor.github.io/pact-collab/authoring/) ([offline file](web/authoring/index.html)) | [Sandbox](https://onlookor.github.io/pact-collab/sandbox/) to run it in memory |
+| Write a domain by hand, or follow the full protocol | [`docs/authoring-contract.md`](docs/authoring-contract.md) | [manual §3](docs/manual.md) for grammar, §5 for the six analyses |
+| Run a domain and drive agents | [manual §2](docs/manual.md) (daemon, `pact.toml`, identity) and §4 (CLI / REST / MCP) | [`examples/online/run.sh`](examples/online/run.sh), then the [connect wizard](https://onlookor.github.io/pact-collab/connect/) |
+| Deploy or operate it | [manual §2.2–§2.4](docs/manual.md) (TLS, tokens, signatures), §7 (audit/replay), §10 (troubleshooting) | [`architecture.md`](docs/architecture.md) §3–§4, [`design.md`](docs/design.md) §9 |
+| Decide when a shared token may be consumed | [`token-consumption-timing.md`](docs/token-consumption-timing.md) | [`authoring-contract.md`](docs/authoring-contract.md) §5 |
+| Change the engine or contribute | [`architecture.md`](docs/architecture.md) and [`design.md`](docs/design.md) | [`requirements.md`](docs/requirements.md), [Testing](#testing) |
+
+The same routes are summarized from the manual's side in [manual §12](docs/manual.md); [`examples/README.md`](examples/README.md) ships five runnable domains, two composition fragments and two reproducible demos with recorded traces, and maps each domain to the modelling problem it demonstrates.
+
 ## Quick start
 
 Requires a recent stable Rust toolchain.
 
 ```bash
 cargo build --release
-```
 
-The [`examples/`](examples/README.md) directory ships five ready-to-run domains, two composition fragments, and two reproducible demos with recorded traces:
-
-> New to the format? Start with the [authoring contract](docs/authoring-contract.md) (or the
-> [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) in a skill-capable agent).
-> No toolchain at hand? The same workflow runs in the browser:
-> [write a domain](web/authoring/index.html) · [run it in memory](web/sandbox/index.html) ·
-> [connect it to an agent](web/connect/index.html) — each a single offline file with no network access.
-
-```bash
 examples/offline/run.sh    # six analyses × 5 domains, well-formedness rejections,
                            # compose accept + C2 rejection, event replay — no daemon needed
 examples/online/run.sh     # daemon full lifecycle: load → seed → produce/read/consume

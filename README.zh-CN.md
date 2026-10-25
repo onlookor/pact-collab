@@ -20,35 +20,30 @@ PACT（Precondition-governed Autonomous Counter-based Token）是一种面向多
 - **片段组合**——领域并行组合，含四条件一致性检查（C1–C4）。
 - **三种接口**——REST daemon（unix socket / TCP、bearer 认证、SSE 通知）、MCP stdio 服务器（15 个 `pact_*` 工具）、单一 `pact` CLI。
 
+## 从哪里开始
+
+PACT 只有一条上手阶梯：域作者契约（L0）→ [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md)（L1）→ 浏览器工作台（L2）→ 运行沙盒（L3）→ 接入向导（L4）。三个浏览器步骤也可直接在线打开 **<https://onlookor.github.io/pact-collab/>**；每条路径都以 `pact analyze` 与[用户手册](docs/manual.md)收口。
+
+| 你的处境 | 先看 | 然后 |
+|---|---|---|
+| 判断 PACT 是否适用，或读范式本身 | [PACT 是什么？](#pact-是什么)与[论文母本](paper/pactv1_rev3.md) | [`expressiveness-boundaries.md`](docs/expressiveness-boundaries.md)——PACT 刻意不建模什么 |
+| 在 coding agent 里写第一份域声明 | [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) | 跑 `pact analyze <file>` 直到 exit 0；再看[示例域](examples/README.md) |
+| 没装工具，想写第一份域声明 | [作者工作台](https://onlookor.github.io/pact-collab/authoring/)（[离线文件](web/authoring/index.html)） | 用[运行沙盒](https://onlookor.github.io/pact-collab/sandbox/)在内存里跑一遍 |
+| 手写域声明，或需要完整生成协议 | [《PACT 域作者契约》](docs/authoring-contract.md) | [手册 §3](docs/manual.md)看语法、§5 看六项分析 |
+| 跑一个域，并让 agent 驱动它 | [手册 §2](docs/manual.md)（daemon、`pact.toml`、身份）与 §4（CLI / REST / MCP） | [`examples/online/run.sh`](examples/online/run.sh)，再用[接入向导](https://onlookor.github.io/pact-collab/connect/) |
+| 部署与运维 | [手册 §2.2–§2.4](docs/manual.md)（TLS、令牌、签名）、§7（审计与重放）、§10（故障排查） | [`architecture.md`](docs/architecture.md) §3–§4、[`design.md`](docs/design.md) §9 |
+| 裁决共享 token 何时可以消费 | [`token-consumption-timing.md`](docs/token-consumption-timing.md) | [契约 §5](docs/authoring-contract.md) |
+| 修改引擎或参与贡献 | [`architecture.md`](docs/architecture.md)与[`design.md`](docs/design.md) | [`requirements.md`](docs/requirements.md)、[测试](#测试) |
+
+同样的路径也从手册一侧汇总在 [manual §12](docs/manual.md)；[`examples/README.md`](examples/README.md) 内置五份可直接运行的域声明、两份组合片段与两个可复现演示（附真实录制轨迹），并把每个示例映射到它演示的建模问题。
+
 ## 快速开始
 
 需要较新的 stable Rust 工具链。
 
 ```bash
 cargo build --release
-```
 
-[`examples/`](examples/README.md) 目录内置五份可直接运行的域声明、两份组合片段与两个可复现演示（附真实录制轨迹）：
-
-> 想写自己的第一份域声明？先读[《PACT 域作者契约》](docs/authoring-contract.md)：适用性闸门、
-> 五个建模步骤、六个形状配方、逐类型消费裁决与无工具自检清单。它同时也是一份可以直接
-> 粘给任意 chat 模型的生成协议。
->
-> 在支持 Skill 的 agent 中，可直接加载 [`skills/pact-domain-authoring/`](skills/pact-domain-authoring/SKILL.md)：
-> 它会按契约引导提问，并强制跑 `pact analyze` 验收。
->
-> 不想装工具？直接双击 [`web/authoring/index.html`](web/authoring/index.html)：单文件、离线、
-> 内嵌分析器与六个配方，域声明不会离开本机。
->
-> 写好了想先跑一遍？双击 [`web/sandbox/index.html`](web/sandbox/index.html)：纯内存运行沙盒，
-> 以不同参与者身份 seed / produce / read / consume，实时看 Counter、Archive 与 Rule-T。
->
-> 要接到 agent？双击 [`web/connect/index.html`](web/connect/index.html)：按本机 stdio 或远程 HTTP
-> 生成 `pact.toml`、MCP 客户端配置与启动命令。
->
-> 也可以直接在线打开：<https://onlookor.github.io/pact-collab/>。
-
-```bash
 examples/offline/run.sh    # 六项分析 × 5 域、三类良构违例、
                            # compose 接受 + C2 拒绝、事件重放——无需 daemon
 examples/online/run.sh     # daemon 全生命周期：装载 → 播种 → 生产/读取/消费

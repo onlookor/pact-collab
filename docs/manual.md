@@ -1150,6 +1150,8 @@ PreconditionMismatch { ty: TypeName("deployment"),
 
 ## 12. 上手路径
 
+> 按用户类型与场景分流的入口见仓库根 `README.md` 的“Where to start / 从哪里开始”表格；本节是手册视角的同一条路径。
+
 1. 读 `examples/README.md` §1–§2，跑两条脚本：
 
    ```bash
