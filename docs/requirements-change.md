@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-27（第 37 轮，引用可发现性 lint）
+
+- **FR29 扩展**：`pact ref lint` 对 `required=true` 的绑定增加可发现性静态检查，共 5 个 warning code：`ref.discoverability.required_hidden`、`view_read_path_missing`、`no_reader`、`retention_missing`（非归档钉版的无 `lifecycle` 契约）、`deletion_without_tombstone`（`deletionPolicy=delete`）。`--strict` 将 warning 视为失败。
+- **FR27 同步**：检查项补充“`required=true` 类型的可发现性（读取路径、视图暴露、保留证据与删除可区分性）”；输入、输出与退出码不变。
+- **边界**：只证明静态路径存在，不保证运行期一定可读；不检查内容删除、tombstone 发布或解析可达。
+- 其余 FR1–FR29、NFR1–NFR7 不变。
+
 ## 2026-10-27（第 36 轮，引用保留与 tombstone）
 
 - **新增 FR29**：ContractCard `lifecycle` 的保留期与删除证据成为可静态验收的契约声明。`retention` 只接受 `permanent` 或正 ISO 8601 duration；`deletionPolicy` 只接受 `retain` / `delete` / `tombstone-then-delete`；`tombstone-then-delete` 必须有 URI 形式的 `tombstoneRef`，其余策略不得声明；归档钉版禁止 `delete`。

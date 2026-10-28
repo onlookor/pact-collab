@@ -1013,7 +1013,7 @@ pact --json ref lint --bindings refs.yaml --contracts cards/ --tombstones tombst
 
 - **输入**：`--bindings`、`--contracts`、`--tombstones` 均可重复，接受文件或目录；目录会展开 `.yaml`/`.yml`/`.json`。`--declaration` 可选；给定后校验绑定键引用的类型，并检查 `declarationDigest` 是否记录（不校验摘要内容，规范未定义算法）。`--name` 指定期望域名，缺省取声明文件 stem。
 - **报错**：绑定/契约/Tombstone 解析或规范校验失败；重复域、重复契约或重复 tombstone id；绑定类型不在声明中；契约引用没有对应卡片；绑定在契约不支持的 scheme 下使用该契约；被引用契约已 retired；Tombstone 引用的契约不存在、契约删除策略不是 `tombstone-then-delete`，或引用的 scheme/长度不被契约允许。
-- **告警**：`required` 但无契约；允许 Identifier；允许未注册 scheme；引用长度上限超过契约；pinning 弱于契约；契约支持的 scheme 被绑定收窄；契约 deprecated；契约未被引用；未记录 `declarationDigest`；归档钉版契约未声明 `lifecycle`；同一 `(contract, ref)` 出现多条 tombstone。
+- **告警**：`required` 但无契约；允许 Identifier；允许未注册 scheme；引用长度上限超过契约；pinning 弱于契约；契约支持的 scheme 被绑定收窄；契约 deprecated；契约未被引用；未记录 `declarationDigest`；归档钉版契约未声明 `lifecycle`；同一 `(contract, ref)` 出现多条 tombstone；`required=true` 但可发现性不足（见 §7.10 五项）。
 - **输出与退出码**：`--json` 输出 `{bindings, contracts, tombstones, errors, warnings, findings[]}`；人类模式逐条打印 `error|warning [code] path: message` 并给出摘要。存在 error 退出 `1`，否则 `0`；`--strict` 下 warning 也退出 `1`。检查结论写 **stdout**；I/O 与用法错误写 **stderr**（`--json` 时为 §6.3 错误体）。
 - **边界**：只做静态检查，不验证引用可达、不验证内容是否已删除、不访问网络、不读运行期状态；lint 通过不代表运行期引用一定可用。
 
@@ -1068,6 +1068,16 @@ lifecycle:
 - `retention` 接受 `permanent` 或 `P[nY][nM][nW][nD][T[nH][nM][nS]]`；分量按序、总时长 > 0，周不得与其它日期分量组合。
 - `deletionPolicy` 为 `retain` / `delete` / `tombstone-then-delete`。`tombstone-then-delete` 必须声明 URI 形式的 `tombstoneRef`；其余策略不得声明。归档钉版契约不得用 `delete`。
 - 保留期长度由域作者按下游最晚行动时间决定；规范只检查语法与策略组合，不猜测实际时长。
+
+对 `required: true` 的类型，`pact ref lint` 还会静态验收下游是否真的能拿到票面与保留证据（均为 warning，`--strict` 下失败）：
+
+- `ref.discoverability.required_hidden`：effective `visibility=hidden`，视图永不返回票面。
+- `ref.discoverability.view_read_path_missing`：默认 read-gate，但声明中没有对该类型的无条件 `reads`/`consumes`。
+- `ref.discoverability.no_reader`：声明中没有任何参与者能 `reads`/`consumes` 该类型，票面无法取回。
+- `ref.discoverability.retention_missing`：被要求的契约没有 `lifecycle.retention`（归档钉版由 `ref.contract.retention_missing` 负责）。
+- `ref.discoverability.deletion_without_tombstone`：被要求的契约使用 `deletionPolicy=delete`，到期后无法区分删除与故障。
+
+`visibility: domain` 的类型直接暴露票面，不产生读取路径告警。检查只证明静态路径存在，不保证运行期一定可读。
 
 Tombstone 是独立记录，由域作者以正常 `seed` / `produce` 产生，`ThingRef` 指向它：
 

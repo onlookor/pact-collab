@@ -2,6 +2,21 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-28（第 74 轮，引用可发现性 lint）
+
+- **触发**：保留阶段收尾——D44 已有 retention/tombstone，“下游到底能不能拿到票面与保留证据”仍缺静态验收。
+- **实现**：`pact ref lint` 对 `required=true` 的绑定新增 5 个 warning code（不新增命令与引擎能力）：
+  - `ref.discoverability.required_hidden`：effective `visibility=hidden`，视图永不返回票面；
+  - `ref.discoverability.view_read_path_missing`：effective read-gate，但声明中没有对该类型的**无条件** `reads`/`consumes`；
+  - `ref.discoverability.no_reader`：声明中完全没有该类型的 `reads`/`consumes`（条件子句静态视为“可能成立”）；
+  - `ref.discoverability.retention_missing`：被要求的契约无 `lifecycle` 且非归档钉版（归档钉版由 `ref.contract.retention_missing` 覆盖，避免重复告警）；
+  - `ref.discoverability.deletion_without_tombstone`：被要求的契约 `deletionPolicy=delete`，到期后下游无法区分删除与故障。
+- **判定细节**：scheme 样本取“绑定可见 scheme ∪ 契约声明 scheme ∪ 全局默认”，逐个用 `{scheme}://lint.invalid/ref` 合成票面走 `RefBindings::resolve`，任一 scheme 解析出 `required=true` 即视为要求引用；实例级只在实例显式声明该类型时检查，避免与类型级重复；`visibility=domain` 表示视图直接暴露票面，抑制读取路径类告警。
+- **代码结构**：`ref_lint.rs` 新增 `check_discoverability`、`has_view_read_path`、`has_any_reader`、`check_required_contracts`；循环内不变参数收敛为 `DiscoverabilityCtx`，避免触发 clippy `too_many_arguments`。`check_bindings` 改为保留解析出的 `Domain`，同时供类型存在性校验与读取路径判定。
+- **测试**：`pact-cli` 新增 2 项单元测试（可见性缺口、保留证据缺口）与 1 项 e2e（真实二进制 + JSON + `--strict` 退出码）；全 workspace **309 passed / 0 failed**，`cargo fmt`、`clippy -D warnings` 通过。
+- **文档**：`docs/requirements.md` FR27/FR29 同步；`docs/design.md` D44 结论、§9.11 与 §10 测试策略同步；`docs/manual.md` §7.8/§7.10 增补；`docs/thingref-governance.md` §9.2/§13.1/§13.3 标记保留阶段完成。
+- **边界（不变）**：只证明静态路径存在，不保证运行期一定可读；不校验内容是否已删除、tombstone 是否已发布；不做保留计时、自动删除或自动 tombstone。
+
 ## 2026-10-27（第 73 轮，pact CI 依赖安全审计）
 
 - **触发**：第 72 轮安全审视把“`pact` CI 尚无 cargo audit 作业”列为剩余项，用户要求补齐。

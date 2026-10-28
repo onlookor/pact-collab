@@ -495,6 +495,8 @@ Counter/Archive 可见性已实现（FR28/D42）：daemon `[ref_bindings]` 加�
 `domain`/`hidden` 显式覆盖，token 存在性不变。视图级读审计已实现（D43）：`read_audit = true` 时按视图/类型记录暴露计数。
 保留与 tombstone 已实现（FR29/D44）：`lifecycle.retention` 与 `deletionPolicy` 收紧校验，
 新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查；不做计时或自动删除。
+可发现性 lint 已实现（D44 收尾）：对 `required=true` 检查 hidden、视图读取路径、Rule-R/consume 路径、
+保留证据与删除可区分性，共 5 个 warning code。
 `pact-ref` 的 vendored 快照已同步至 D44 版本，`scripts/sync-spec.sh --check` 通过，其 workspace 44 项测试通过。
 推送前安全审视修复了 tombstone 时间戳的非 ASCII 边界 panic（已加回归测试）。
 落地提交：`pact` `c5a9cd2`（静态层、可见性、视图审计、保留证据），`pact-ref` `2dbf440`（快照同步）；
@@ -997,9 +999,9 @@ spec:
    默认 `read-gate`（无条件 `reads`/`consumes`），RefBindings 的 `domain`/`hidden` 显式覆盖；
    daemon `[ref_bindings].paths` 加载 profile，失败 fail-closed；令牌/签名模式下视图要求身份。
    **已完成**：视图级读审计（D43）——`read_audit = true` 时同一审计流记录 `kind=view`，按视图/类型聚合 `tokens/refs_visible/refs_filtered`，不记票面值；写失败 fail-closed。
-3. **保留阶段（tombstone 已完成，2026-10-27）**：ContractCard `lifecycle.retention` / `deletionPolicy` / `tombstoneRef`
+3. **保留阶段（已完成，2026-10-27）**：ContractCard `lifecycle.retention` / `deletionPolicy` / `tombstoneRef`
    已在规范层收紧校验（FR29/D44）；新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查。
-   **待做**：可发现性 lint（下游行动时是否真的能拿到票面与保留证据）。
+   **已完成**：可发现性 lint——对 `required=true` 检查 hidden、视图读取路径、Rule-R/consume 路径、保留证据与删除可区分性（5 个 warning code，`--strict` 视为失败）。
 4. **动态只读阶段**：`mcp-read` profile；resolve 适配器；物化结果。
 5. **动态写阶段**：`mcp-mutating` profile；审计边车；witness/compensation。
 6. **可选注册表**：只做发现，不做真相源。
@@ -1022,6 +1024,7 @@ spec:
 - 旧 Identifier 仍可工作；新引用默认 URI。
 - `thing_ref` 默认不向无读权限的视图暴露。
 - ContractCard/RefBindings/Tombstone 有机器可校验 schema；归档钉版契约的删除策略必须有 tombstone 路径。
+- 要求引用（`required=true`）的类型必须通过可发现性静态检查：存在视图或 Rule-R/consume 读取路径，且契约声明保留期；`delete` 策略需有 tombstone。
 - 动态 ref 不能作为 Archive 终态；必须有物化路径。
 - 治理平面不在 PACT daemon 进程中运行。
 

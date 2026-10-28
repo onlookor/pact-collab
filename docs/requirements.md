@@ -215,7 +215,7 @@
 
 - **定位**：提供离线命令 `pact ref lint`，在进入运行前检查 RefBindings、ContractCard 与 `.pact` 声明的静态一致性。不解析具体 `ThingRef` 的存在性、不访问网络、不读写引擎状态。
 - **输入**：`--bindings PATH`（可重复；文件或目录，目录展开 `.yaml`/`.yml`/`.json`）、`--contracts PATH`（可重复）、`--tombstones PATH`（可重复，D44）、`--declaration FILE`（可选 `.pact`）、`--name N`（期望域名；缺省取声明文件 stem）、`--strict`（警告视为失败）。
-- **检查项**：绑定/契约/Tombstone 解析与规范校验；重复域、重复契约与重复 tombstone；绑定类型键与声明类型一致；契约引用可解析；绑定接受的 scheme 与契约声明的 scheme 一致；`required` 但无契约；Identifier 放行；未注册 scheme 放行；`declarationDigest` 缺失；契约状态（retired / deprecated）；未被引用的契约；归档钉版契约的 retention 声明；tombstone 的契约存在性、删除策略一致性与引用 scheme/长度。
+- **检查项**：绑定/契约/Tombstone 解析与规范校验；重复域、重复契约与重复 tombstone；绑定类型键与声明类型一致；契约引用可解析；绑定接受的 scheme 与契约声明的 scheme 一致；`required` 但无契约；Identifier 放行；未注册 scheme 放行；`declarationDigest` 缺失；契约状态（retired / deprecated）；未被引用的契约；归档钉版契约的 retention 声明；tombstone 的契约存在性、删除策略一致性与引用 scheme/长度；`required=true` 类型的可发现性（读取路径、视图暴露、保留证据与删除可区分性）。
 - **输出与退出码**：`--json` 输出 `{bindings, contracts, tombstones, errors, warnings, findings[]}`，finding 含 `severity / code / path / message`；人类模式逐条打印并给出摘要。存在 error 退出 `1`，否则 `0`；`--strict` 下 warning 也退出 `1`。
 - **边界**：不替代运行期 resolve/invoke；不校验 `declarationDigest` 的内容（规范未定义摘要算法）；不检查实例的动态引用集合。静态检查通过不代表运行期引用可用。
 - **实现状态**：已实现（2026-10-27）。`pact-cli` 单元测试与端到端测试覆盖一致输入、未知类型、缺失/未使用契约、scheme 冲突、Identifier 放行、重复/退役契约、解析失败与退出码。
@@ -237,8 +237,9 @@
 - **tombstone 联动**：`tombstone-then-delete` 必须声明 `tombstoneRef`（URI），其余策略不得声明；归档钉版（`pinning.requiredForArchive`）的契约禁止使用 `delete`。保留期长度本身由域作者按下游最晚行动时间决定，PACT 不猜测。
 - **Tombstone 记录**：`apiVersion: pact.ref/v1`、`kind: Tombstone`；`metadata.id` 为全局唯一 URI，`spec` 含 `contract`（`id@version`）、`ref`、`reason`（expired/replaced/revoked/compromised/legal/manual）、`deletedAt`（RFC3339 UTC `Z`）、可选 `retainUntil`（必须晚于 `deletedAt`）、可选 `replacedBy`（`reason=replaced` 时必填）与 `note`（≤2048 字节、无控制字符）。规范见 `spec/ref/v1/tombstone.schema.json`。
 - **静态检查**：`pact ref lint --tombstones` 校验 Tombstone 解析/规范、重复 id、重复 (contract, ref)、契约存在性、删除策略一致性与引用 scheme/长度；归档钉版但未声明 `lifecycle` 的契约给出警告。
-- **边界**：不校验内容是否真的已删除、tombstone 是否已发布或解析可达；不做运行期保留计时与自动删除；不改变引擎/存储/Archive 的既有语义。
-- **实现状态**：已实现（2026-10-27）。`pact-ref-spec` 规范校验、`pact-cli` 单元与端到端测试覆盖 retention 语法、策略组合、Tombstone 字段与交叉检查。
+- **可发现性检查**：对 `required=true` 的绑定，静态验收下游是否真的能拿到票面与保留证据：`ref.discoverability.required_hidden`（effective `visibility=hidden`）、`view_read_path_missing`（read-gate 但声明中无无条件 `reads`/`consumes`）、`no_reader`（声明中无任何 `reads`/`consumes` 路径）、`retention_missing`（被要求的契约未声明 `lifecycle` 且非归档钉版）、`deletion_without_tombstone`（被要求的契约使用 `deletionPolicy=delete`）。全部为 warning，`--strict` 视为失败。
+- **边界**：不校验内容是否真的已删除、tombstone 是否已发布或解析可达；不做运行期保留计时与自动删除；不改变引擎/存储/Archive 的既有语义。可发现性检查只证明静态路径存在，不保证运行期一定可读。
+- **实现状态**：已实现（2026-10-27）。`pact-ref-spec` 规范校验、`pact-cli` 单元与端到端测试覆盖 retention 语法、策略组合、Tombstone 字段、交叉检查与可发现性五项检查。
 
 ## 5. 非功能需求
 

@@ -224,3 +224,93 @@ fn ref_lint_static_checks() {
     let value = report(&out);
     assert_eq!(value["error"]["code"], "Io");
 }
+
+const DECL_WITHOUT_DESIGN_READER: &str = r#"
+types { requirement; design; implementation }
+preconditions { requirement → design; design → implementation }
+gates {
+    architect: reads requirement, consumes requirement, produces design;
+    developer: produces implementation;
+    user: consumes implementation
+}
+seed_authority { external: seeds requirement }
+"#;
+
+const CARD_WITHOUT_LIFECYCLE: &str = r#"
+apiVersion: pact.ref/v1
+kind: ContractCard
+metadata:
+  id: se/design-review
+  version: "2"
+  owner: architecture-guild
+  status: active
+spec:
+  artifact:
+    kind: document
+    mediaType: text/markdown
+    digestPolicy: optional
+  reference:
+    schemes: [https]
+"#;
+
+/// 可发现性检查走真实二进制：读取路径缺失、保留证据缺失都要出现在 JSON 报告中。
+#[test]
+fn ref_lint_reports_discoverability_gaps() {
+    let dir = tempfile::tempdir().unwrap();
+    let declaration = write(dir.path(), "se_lifecycle.pact", DECL_WITHOUT_DESIGN_READER);
+    let bindings = write(dir.path(), "se_lifecycle.refs.yaml", BINDINGS);
+    let card = write(dir.path(), "design.yaml", CARD_WITHOUT_LIFECYCLE);
+
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &bindings,
+        "--contracts",
+        &card,
+        "--declaration",
+        &declaration,
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value = report(&out);
+    assert_eq!(value["errors"], 0, "report: {value}");
+    let codes: Vec<&str> = value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|finding| finding["code"].as_str())
+        .collect();
+    assert!(
+        codes.contains(&"ref.discoverability.view_read_path_missing"),
+        "findings: {codes:?}"
+    );
+    assert!(
+        codes.contains(&"ref.discoverability.no_reader"),
+        "findings: {codes:?}"
+    );
+    assert!(
+        codes.contains(&"ref.discoverability.retention_missing"),
+        "findings: {codes:?}"
+    );
+
+    let out = pact(&[
+        "ref",
+        "lint",
+        "--bindings",
+        &bindings,
+        "--contracts",
+        &card,
+        "--declaration",
+        &declaration,
+        "--strict",
+    ]);
+    assert!(
+        !out.status.success(),
+        "--strict 应把可发现性 warning 视为失败"
+    );
+}

@@ -49,7 +49,7 @@
 | D41 | 物引静态检查命令（FR27，2026-10-27，用户要求实现 `pact ref lint`） | `pact-cli` 新增离线子命令 `ref lint`（`crates/pact-cli/src/ref_lint.rs`）：读取 `--bindings` / `--contracts`（文件或目录，展开 `.yaml/.yml/.json`）与可选 `--declaration`，用 `pact-ref-spec` 做解析与规范校验，并按规则交叉检查：重复域/契约、绑定类型键与声明类型、契约引用可解析、绑定接受面与契约 scheme 一致（收窄仅告警）、`required` 无契约、Identifier 放行、未注册 scheme 放行、`declarationDigest` 缺失、契约 retired/deprecated、未使用契约。输出 `{bindings,contracts,errors,warnings,findings[]}`；有 error 退出 1，`--strict` 下 warning 也退出 1。声明内容摘要不做内容校验（规范未定义算法），仅检查格式与存在性。 | 把物引治理的静态阶段做成可进 CI 的离线命令，复用已抽取的规范 crate，避免 CLI 再写一套解析/校验；分层保持在纯函数层，不经 daemon、不读运行期状态。scheme 收窄可能是刻意策略，因此只告警；scheme 越界会让绑定接受契约不覆盖的引用，因此报错。未使用契约在传入整库卡片时可能偏噪声，故只告警。 |
 | D42 | 物引可见性过滤（FR28，2026-10-27，继续推进物引治理路线） | `pact-http` 新增 `visibility` 模块：daemon `[ref_bindings].paths` 指向的 RefBindings 在启动时读取、规范校验并按域索引；`GET /counter` 与 `GET /archive` 逐 token 计算 `RefExposure`，默认 `read-gate`，`domain` 直接可见，`hidden` 永不返回，仅清空 `thing_ref`（保留 token 存在性）。`read-gate` 判定使用 `engine.my_gates` 的无条件 `reads`/`consumes` 子句，`produces` 不授予可见性。视图调用者身份走 `authenticated_principal`：令牌/签名模式下匿名 `401`，信任模式为 `None`（read-gate 隐藏）。profile 解析按 RefBindings 继承链，URI 匹配失败时回退 `defaults → type → instance/type`（忽略 scheme 覆盖）。加载失败/重复域拒绝启动（fail-closed）。 | 票面可能含私有 URI、版本库位置与访问令牌，视图默认暴露会形成旁路；`read-gate` 复用声明中的读取意图，不引入新权限模型。`domain`/`hidden` 用已有 RefBindings 字段表达，避免 daemon 配置与治理文档两套真源。`produces` 只证明写入权，不应推导读取权。条件子句不做逐 token 求值，保守不可见，避免静态存在性高估。视图级读审计由 D43 补齐。 |
 | D43 | 视图级读审计（FR17/FR28，2026-10-27，继续推进物引治理路线） | `read_audit = true` 同时覆盖 Counter/Archive 视图读取：同一 `.read-audit.jsonl` 新增 `kind=view` 记录，字段含 `view`（`counter`/`archive`）、`type_filter` 与按类型聚合的 `types[{type,tokens,refs_visible,refs_filtered}]`；只记暴露计数，**不记 `thing_ref` 值**。`ReadAuditRecord` 的 `participant`/`token_id` 改为可选（匿名视图）；`kind` 缺省 `read`，旧审计流无 `kind` 仍按 `read` 解析。视图审计由引擎 actor 单写者落盘（`Engine::record_view_audit`），写失败上抛 → 接口层 `500` 拒绝视图（fail-closed）。 | 可见性过滤若无审计只形成「表面安全」，无法回答谁在何时看到了哪类票面；复用既有独立审计流与 `read_audit` 开关，避免第二套真源。只记计数不记票面值，守住 ThingRef「无秘密」约束；旧记录兼容避免审计流迁移。审计仍不进入事件日志 / `seq` / 重放 / Rule-T，也不改变可见性判定本身。 |
-| D44 | 引用保留与 tombstone（FR29，2026-10-27，保留阶段） | ContractCard `lifecycle` 收紧：`retention` 只接受 `permanent` 或正 ISO 8601 duration；`deletionPolicy` 枚举 `retain`/`delete`/`tombstone-then-delete`；`tombstone-then-delete` 强制 URI `tombstoneRef`，其余策略禁止声明；归档钉版（`pinning.requiredForArchive`）禁止 `delete`。新增 `pact-ref-spec::Tombstone` 与 `spec/ref/v1/tombstone.schema.json`：`metadata.id` 为 URI，`spec` 含 `contract`/`ref`/`reason`/`deletedAt`、可选 `retainUntil`（须晚于 `deletedAt`）、`replacedBy`（`reason=replaced` 必填）与 `note`。`pact ref lint --tombstones` 增加契约存在性、策略一致、引用 scheme/长度、重复 id 与重复 (contract, ref) 检查；归档钉版但无 `lifecycle` 的契约给出警告。 | 保留期与删除证据必须能在进入运行前验收，否则 Archive 中的 token 可能指向已消失且无迹可查的制品。复用既有 `lifecycle` 字段并收紧语义，不新增引擎能力；tombstone 作为普通域制品/token 产生，保持引擎不 fetch/delete。只做静态一致性，不做计时与自动删除，避免把治理平面塞进引擎；周与日期分量互斥、时间戳必须可比，减少「看起来合法」的保留声明。 |
+| D44 | 引用保留、tombstone 与可发现性（FR29，2026-10-27，保留阶段） | ContractCard `lifecycle` 收紧：`retention` 只接受 `permanent` 或正 ISO 8601 duration；`deletionPolicy` 枚举 `retain`/`delete`/`tombstone-then-delete`；`tombstone-then-delete` 强制 URI `tombstoneRef`，其余策略禁止声明；归档钉版（`pinning.requiredForArchive`）禁止 `delete`。新增 `pact-ref-spec::Tombstone` 与 `spec/ref/v1/tombstone.schema.json`：`metadata.id` 为 URI，`spec` 含 `contract`/`ref`/`reason`/`deletedAt`、可选 `retainUntil`（须晚于 `deletedAt`）、`replacedBy`（`reason=replaced` 必填）与 `note`。`pact ref lint --tombstones` 增加契约存在性、策略一致、引用 scheme/长度、重复 id 与重复 (contract, ref) 检查；归档钉版但无 `lifecycle` 的契约给出警告。`pact ref lint` 另对 `required=true` 做可发现性检查：`required_hidden`、`view_read_path_missing`、`no_reader`、`retention_missing`、`deletion_without_tombstone`。 | 保留期与删除证据必须能在进入运行前验收，否则 Archive 中的 token 可能指向已消失且无迹可查的制品；可发现性检查回答“下游行动时是否真的能拿到票面与保留证据”。复用既有 `lifecycle` 字段并收紧语义，不新增引擎能力；tombstone 作为普通域制品/token 产生，保持引擎不 fetch/delete。只做静态一致性，不做计时与自动删除，避免把治理平面塞进引擎；周与日期分量互斥、时间戳必须可比，减少「看起来合法」的保留声明。 |
 
 ## 1. 总体结构
 
@@ -957,16 +957,26 @@ spec:
 
 **静态检查**（`pact ref lint --tombstones`）：Tombstone 解析/规范；重复 `metadata.id`（error）与重复 `(contract, ref)`（warning）；契约存在性（无契约文件时 warning，有契约但查不到 error）；删除策略必须为 `tombstone-then-delete`；`ref`/`replacedBy` 的 scheme 必须在契约允许集合内、长度不超过契约上限；归档钉版契约未声明 `lifecycle` → warning `ref.contract.retention_missing`。
 
+**可发现性检查**（FR29 收尾，同一命令，只对 `required=true`；实例级只在实例显式声明该类型时检查，避免与类型级重复）：
+
+- `ref.discoverability.required_hidden`：effective `visibility=hidden` → Counter/Archive 永不返回票面，下游只能依赖 Rule-R/consume。
+- `ref.discoverability.view_read_path_missing`：effective `visibility=read-gate`，但 `.pact` 声明中没有任何参与者对该类型有无条件 `reads`/`consumes` → 视图无法解锁票面。
+- `ref.discoverability.no_reader`：声明中没有任何参与者对该类型具备 `reads`/`consumes`（条件子句静态视为“可能成立”）→ 即使视图可见，票面也无法取回。
+- `ref.discoverability.retention_missing`：被要求的契约没有 `lifecycle` 且非归档钉版（归档钉版已由 `ref.contract.retention_missing` 覆盖）→ 下游无法判断保留期。
+- `ref.discoverability.deletion_without_tombstone`：被要求的契约 `deletionPolicy=delete` → 到期后下游无法区分删除与故障。
+
+`visibility=domain` 时视图直接暴露票面，抑制上述读取路径告警。全部为 warning，`--strict` 视为失败；检查只证明静态路径存在，不保证运行期一定可读。
+
 **边界**：不校验内容是否已删除、tombstone 是否已发布或解析可达；不做保留计时、自动删除、自动 tombstone；不改变引擎、存储或 Archive 语义。这些仍是治理平面/制品域的职责。
 
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
 | 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）** | crates/tests |
-| 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）** | 阶段 4/5 的 e2e 测试 |
+| 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码** | 阶段 4/5 的 e2e 测试 |
 | v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
 | WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试 | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |
 | 依赖安全审计 | `cargo audit --file Cargo.lock`：RustSec 漏洞（vulnerability）即失败；unmaintained/unsound 仅告警，保持可见不阻断；`cargo-audit` 版本固定并缓存 | `.github/workflows/ci.yml` 的 `audit` job |

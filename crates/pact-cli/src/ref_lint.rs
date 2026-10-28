@@ -6,10 +6,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use pact_core::{Action, Domain};
 use pact_http::dto::ErrorDetail;
 use pact_ref_spec::{
     CardStatus, ContractCard, DeletionPolicy, PinningRequirement, RefBindings, ReferenceForm,
-    SpecError, Tombstone, UnknownSchemePolicy, DEFAULT_MAX_REFERENCE_LENGTH,
+    SpecError, Tombstone, UnknownSchemePolicy, Visibility, DEFAULT_MAX_REFERENCE_LENGTH,
 };
 use serde::Serialize;
 
@@ -257,14 +258,10 @@ pub fn lint_texts_with_tombstones(
         check_tombstone(&mut sink, path, tombstone, &cards);
     }
 
-    let mut has_declaration = false;
-    let mut known_types: Option<BTreeSet<String>> = None;
+    let mut declaration_domain: Option<Domain> = None;
     if let Some(input) = declaration {
         match pact_parser::load_domain(&input.text) {
-            Ok(domain) => {
-                has_declaration = true;
-                known_types = Some(domain.types.iter().map(|ty| ty.0.clone()).collect());
-            }
+            Ok(domain) => declaration_domain = Some(domain),
             Err(problem) => sink.error(
                 "ref.declaration.invalid",
                 &input.path,
@@ -272,6 +269,7 @@ pub fn lint_texts_with_tombstones(
             ),
         }
     }
+    let has_declaration = declaration_domain.is_some();
 
     let mut referenced: BTreeSet<String> = BTreeSet::new();
     for (path, parsed) in &parsed_bindings {
@@ -280,7 +278,7 @@ pub fn lint_texts_with_tombstones(
             &mut sink,
             path,
             parsed,
-            known_types.as_ref(),
+            declaration_domain.as_ref(),
             &cards,
             expected_domain.as_deref(),
             has_declaration,
@@ -370,11 +368,14 @@ fn check_bindings(
     sink: &mut Sink,
     path: &str,
     bindings: &RefBindings,
-    known_types: Option<&BTreeSet<String>>,
+    declaration: Option<&Domain>,
     cards: &BTreeMap<String, (String, ContractCard)>,
     expected_domain: Option<&str>,
     has_declaration: bool,
 ) {
+    let known_types: Option<BTreeSet<String>> =
+        declaration.map(|domain| domain.types.iter().map(|ty| ty.0.clone()).collect());
+
     if let Some(expected) = expected_domain {
         if bindings.metadata.domain != expected {
             sink.warning(
@@ -395,7 +396,7 @@ fn check_bindings(
         );
     }
 
-    if let Some(types) = known_types {
+    if let Some(types) = known_types.as_ref() {
         for ty in bindings.spec.types.keys() {
             if !types.contains(ty) {
                 sink.error(
@@ -440,7 +441,7 @@ fn check_bindings(
     for instance_bindings in bindings.spec.instances.values() {
         types.extend(instance_bindings.types.keys().cloned());
     }
-    if let Some(known) = known_types {
+    if let Some(known) = known_types.as_ref() {
         types.extend(known.iter().cloned());
     }
 
@@ -457,11 +458,26 @@ fn check_bindings(
         schemes.insert("https".to_owned());
     }
 
+    let mut required_contracts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let discoverability = DiscoverabilityCtx {
+        path,
+        bindings,
+        schemes: &schemes,
+        declaration,
+    };
     for instance in &instances {
         for ty in &types {
             check_effective(sink, path, bindings, *instance, ty, &schemes, cards);
+            check_discoverability(
+                sink,
+                &discoverability,
+                *instance,
+                ty,
+                &mut required_contracts,
+            );
         }
     }
+    check_required_contracts(sink, cards, &required_contracts);
 }
 
 fn check_effective(
@@ -623,6 +639,179 @@ fn check_effective(
                 }
             }
             Err(_) => {}
+        }
+    }
+}
+
+/// 可发现性检查的公共输入：一次 lint 运行内不变的部分。
+struct DiscoverabilityCtx<'a> {
+    path: &'a str,
+    bindings: &'a RefBindings,
+    schemes: &'a BTreeSet<String>,
+    declaration: Option<&'a Domain>,
+}
+
+/// 可发现性检查（FR29 延伸）：要求引用的类型，下游是否能拿到票面与保留证据。
+///
+/// 只对 `required=true` 生效；实例级只在实例显式声明该类型时检查，避免与类型级重复。
+fn check_discoverability(
+    sink: &mut Sink,
+    ctx: &DiscoverabilityCtx<'_>,
+    instance: Option<&str>,
+    ty: &str,
+    required_contracts: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    let DiscoverabilityCtx {
+        path,
+        bindings,
+        schemes,
+        declaration,
+    } = *ctx;
+    if let Some(instance) = instance {
+        let explicit = bindings
+            .spec
+            .instances
+            .get(instance)
+            .is_some_and(|instance_bindings| instance_bindings.types.contains_key(ty));
+        if !explicit {
+            return;
+        }
+    }
+    let scope = match instance {
+        Some(instance) => format!("{instance}/{ty}"),
+        None => ty.to_owned(),
+    };
+
+    let mut required = false;
+    let mut hidden = false;
+    let mut domain_visible = false;
+    let mut read_gate = false;
+
+    for scheme in schemes {
+        let sample = format!("{scheme}://lint.invalid/ref");
+        let Ok(reference) = ReferenceForm::classify(Some(&sample)) else {
+            continue;
+        };
+        let Ok(matched) = bindings.resolve(instance, ty, &reference) else {
+            continue;
+        };
+        if matched.rule.required != Some(true) {
+            continue;
+        }
+        required = true;
+        if let Some(contract) = matched.rule.contract.as_ref() {
+            required_contracts
+                .entry(contract.clone())
+                .or_default()
+                .insert(scope.clone());
+        }
+        match matched.rule.visibility {
+            Some(Visibility::Hidden) => hidden = true,
+            Some(Visibility::Domain) => domain_visible = true,
+            Some(Visibility::ReadGate) | None => read_gate = true,
+        }
+    }
+
+    if !required {
+        return;
+    }
+
+    if hidden {
+        sink.warning(
+            "ref.discoverability.required_hidden",
+            path,
+            format!(
+                "`{scope}` 要求引用但 effective visibility=hidden，Counter/Archive 永不返回票面；下游只能依赖 Rule-R/consume"
+            ),
+        );
+    }
+    if domain_visible {
+        return;
+    }
+    let Some(domain) = declaration else {
+        return;
+    };
+    if read_gate && !has_view_read_path(domain, ty) {
+        sink.warning(
+            "ref.discoverability.view_read_path_missing",
+            path,
+            format!(
+                "`{scope}` 默认 read-gate，但 .pact 声明中没有对 `{ty}` 的无条件 reads/consumes，下游无法从视图获得票面"
+            ),
+        );
+    }
+    if !has_any_reader(domain, ty) {
+        sink.warning(
+            "ref.discoverability.no_reader",
+            path,
+            format!(
+                "`{scope}` 要求引用，但 .pact 声明中没有参与者具备 `{ty}` 的 reads/consumes，票面无法被下游取回"
+            ),
+        );
+    }
+}
+
+/// 视图暴露 read-gate 票面的条件：某个参与者对类型有无条件 `reads` 或 `consumes`。
+fn has_view_read_path(domain: &Domain, ty: &str) -> bool {
+    domain
+        .gates
+        .iter()
+        .any(|((_, action, gate_ty), condition)| {
+            gate_ty.0 == ty
+                && condition.is_none()
+                && matches!(action, Action::Read | Action::Consume)
+        })
+}
+
+/// 是否存在任何 Rule-R / Rule-E 读取路径（条件子句静态视为“可能成立”）。
+fn has_any_reader(domain: &Domain, ty: &str) -> bool {
+    domain.gates.keys().any(|(_, action, gate_ty)| {
+        gate_ty.0 == ty && matches!(action, Action::Read | Action::Consume)
+    })
+}
+
+/// 被 `required=true` 引用到的契约：保留证据与删除可区分性。
+fn check_required_contracts(
+    sink: &mut Sink,
+    cards: &BTreeMap<String, (String, ContractCard)>,
+    required_contracts: &BTreeMap<String, BTreeSet<String>>,
+) {
+    for (contract, scopes) in required_contracts {
+        let Some((card_path, card)) = cards.get(contract) else {
+            continue;
+        };
+        let archive_pinned = card
+            .spec
+            .reference
+            .pinning
+            .as_ref()
+            .map(|pinning| pinning.required_for_archive)
+            .unwrap_or(false);
+        let scope_list = scopes.iter().cloned().collect::<Vec<_>>().join(", ");
+        match &card.spec.lifecycle {
+            None => {
+                // 归档钉版的缺失已由 `ref.contract.retention_missing` 覆盖。
+                if !archive_pinned {
+                    sink.warning(
+                        "ref.discoverability.retention_missing",
+                        card_path,
+                        format!(
+                            "契约 `{contract}` 被要求引用（{scope_list}）使用，但未声明 lifecycle.retention，下游无法判断保留期"
+                        ),
+                    );
+                }
+            }
+            Some(lifecycle) => {
+                if lifecycle.deletion_policy == DeletionPolicy::Delete {
+                    sink.warning(
+                        "ref.discoverability.deletion_without_tombstone",
+                        card_path,
+                        format!(
+                            "契约 `{contract}` 被要求引用（{scope_list}）使用，但 deletionPolicy=delete 且无 tombstone，下游无法区分删除与故障"
+                        ),
+                    );
+                }
+            }
         }
     }
 }
@@ -1188,5 +1377,120 @@ spec:
             .findings
             .iter()
             .any(|finding| finding.code == "ref.tombstone.invalid"));
+    }
+
+    fn lint_with_declaration(
+        bindings: &str,
+        cards: &[&str],
+        declaration: &str,
+    ) -> super::LintReport {
+        lint_texts_with_tombstones(
+            vec![input("refs.yaml", bindings)],
+            cards.iter().map(|card| input("card.yaml", card)).collect(),
+            vec![],
+            Some(input("se_lifecycle.pact", declaration)),
+            Some("se_lifecycle".to_owned()),
+        )
+    }
+
+    const DECL_WITHOUT_READERS: &str = r#"
+types { requirement; design; implementation }
+preconditions { requirement → design; design → implementation }
+gates {
+    architect: produces design;
+    developer: produces implementation;
+    user: consumes implementation
+}
+seed_authority { external: seeds requirement }
+"#;
+
+    #[test]
+    fn reports_discoverability_visibility_gaps() {
+        let hidden = BINDINGS.replace(
+            "                schemes: [https]\n",
+            "                schemes: [https]\n                visibility: hidden\n",
+        );
+        let report = lint(&hidden, &[CARD]);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ref.discoverability.required_hidden"),
+            "findings: {:?}",
+            report.findings
+        );
+
+        let no_read_path = lint_with_declaration(BINDINGS, &[CARD], DECL_WITHOUT_READERS);
+        let codes: Vec<_> = no_read_path
+            .findings
+            .iter()
+            .map(|finding| finding.code.as_str())
+            .collect();
+        assert!(
+            codes.contains(&"ref.discoverability.view_read_path_missing"),
+            "codes: {codes:?}"
+        );
+        assert!(
+            codes.contains(&"ref.discoverability.no_reader"),
+            "codes: {codes:?}"
+        );
+
+        // visibility=domain 时视图直接暴露票面，不应产生读取路径告警。
+        let domain = hidden.replace("visibility: hidden", "visibility: domain");
+        let report = lint_with_declaration(&domain, &[CARD], DECL_WITHOUT_READERS);
+        let codes: Vec<_> = report
+            .findings
+            .iter()
+            .map(|finding| finding.code.as_str())
+            .collect();
+        assert!(
+            !codes.contains(&"ref.discoverability.view_read_path_missing"),
+            "codes: {codes:?}"
+        );
+        assert!(
+            !codes.contains(&"ref.discoverability.no_reader"),
+            "codes: {codes:?}"
+        );
+    }
+
+    #[test]
+    fn reports_discoverability_retention_gaps() {
+        let no_lifecycle = CARD
+            .replace(
+                "        pinning:\n            requiredForArchive: true\n",
+                "",
+            )
+            .replace(
+                "    lifecycle:\n        retention: P365D\n        deletionPolicy: tombstone-then-delete\n        tombstoneRef: urn:pact:tombstone:se/design-review\n",
+                "",
+            );
+        let report = lint(BINDINGS, &[&no_lifecycle]);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ref.discoverability.retention_missing"),
+            "findings: {:?}",
+            report.findings
+        );
+
+        let deleted = CARD
+            .replace(
+                "        pinning:\n            requiredForArchive: true\n",
+                "",
+            )
+            .replace(
+                "        deletionPolicy: tombstone-then-delete\n        tombstoneRef: urn:pact:tombstone:se/design-review",
+                "        deletionPolicy: delete",
+            );
+        let report = lint(BINDINGS, &[&deleted]);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ref.discoverability.deletion_without_tombstone"),
+            "findings: {:?}",
+            report.findings
+        );
     }
 }
