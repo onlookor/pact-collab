@@ -9,7 +9,7 @@
 - **复核结论**：无凭据/密钥入库；视图审计只写类型计数与类型过滤器，不写 `thing_ref` 值；可见性加载失败与审计写失败均 fail-closed；新增代码无 `unsafe`；规范 crate 无 IO/网络；四份 schema 均 `additionalProperties: false`。
 - **接受的低风险项**：RefBindings/tombstone 文件只在启动或离线 lint 阶段读取、路径由运维配置控制，未设文件大小上限；`serde_yaml` 已停止维护（信息性告警，非已知漏洞），后续可评估替代；`pact-ref` CI 的 action 按主版本标签固定，建议后续改为提交 SHA。
 - **验证**：`pact` 306 passed / 0 failed，`pact-ref` 44 passed / 0 failed；两仓库 fmt 与 clippy `-D warnings` 通过。
-- **推送状态**：`pact` 推送到 `origin/main`；`pact-ref` 尚无 GitHub 远端，待确认仓库地址后推送。
+- **推送**：`pact` 推送 `origin/main`（`6342063`）；`pact-ref` 新建公开仓库 `https://github.com/onlookor/pact-ref` 并推送 `main`（`a4de714`）。
 
 ## 2026-10-27（第 71 轮，引用保留与 tombstone）
 
