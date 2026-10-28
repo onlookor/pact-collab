@@ -496,6 +496,7 @@ Counter/Archive 可见性已实现（FR28/D42）：daemon `[ref_bindings]` 加�
 保留与 tombstone 已实现（FR29/D44）：`lifecycle.retention` 与 `deletionPolicy` 收紧校验，
 新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查；不做计时或自动删除。
 `pact-ref` 的 vendored 快照已同步至 D44 版本，`scripts/sync-spec.sh --check` 通过，其 workspace 43 项测试通过。
+落地提交：`pact` `c5a9cd2`（静态层、可见性、视图审计、保留证据），`pact-ref` `2dbf440`（快照同步）。
 下一步是 `refd` 的 resolve/describe 端点。
 
 ### 9.3 `pact-ref` 仓库结构
