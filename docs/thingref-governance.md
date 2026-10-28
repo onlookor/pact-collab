@@ -495,8 +495,10 @@ Counter/Archive 可见性已实现（FR28/D42）：daemon `[ref_bindings]` 加�
 `domain`/`hidden` 显式覆盖，token 存在性不变。视图级读审计已实现（D43）：`read_audit = true` 时按视图/类型记录暴露计数。
 保留与 tombstone 已实现（FR29/D44）：`lifecycle.retention` 与 `deletionPolicy` 收紧校验，
 新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查；不做计时或自动删除。
-`pact-ref` 的 vendored 快照已同步至 D44 版本，`scripts/sync-spec.sh --check` 通过，其 workspace 43 项测试通过。
-落地提交：`pact` `c5a9cd2`（静态层、可见性、视图审计、保留证据），`pact-ref` `2dbf440`（快照同步）。
+`pact-ref` 的 vendored 快照已同步至 D44 版本，`scripts/sync-spec.sh --check` 通过，其 workspace 44 项测试通过。
+推送前安全审视修复了 tombstone 时间戳的非 ASCII 边界 panic（已加回归测试）。
+落地提交：`pact` `c5a9cd2`（静态层、可见性、视图审计、保留证据），`pact-ref` `2dbf440`（快照同步）；
+修复与审视记录见 `docs/design-change.md` 第 72 轮。
 下一步是 `refd` 的 resolve/describe 端点。
 
 ### 9.3 `pact-ref` 仓库结构
@@ -987,7 +989,7 @@ spec:
    workspace、7 个纯骨架 crate、5 个 adapter 占位、`refd` 引导二进制、docs/examples/deploy、
    GitHub CI/security/release 均已就绪；`cargo fmt/clippy/test` 全绿。
 1. **静态阶段（已完成，2026-10-27）**：`pact-ref-spec` 纯 crate + `spec/ref/v1/`（URI profile、两份 schema、OpenAPI）已落地，
-   18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 43 项测试通过）；`pact ref lint` 已实现（FR27/D41），
+   18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 44 项测试通过）；`pact ref lint` 已实现（FR27/D41），
    覆盖绑定/契约/声明一致性与退出码。
    **待做**：`refd` 的 resolve/describe 端点。
 2. **可见性阶段（已完成，2026-10-27）**：Counter/Archive 返回前过滤 `thing_ref`（FR28/D42）；

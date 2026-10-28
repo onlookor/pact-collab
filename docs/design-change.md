@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-27（第 72 轮，推送前安全审视）
+
+- **范围**：审查第 67–71 轮与任务即制品专题的待推送改动，覆盖 `pact-ref-spec`、`pact ref lint`、可见性过滤、视图审计、保留/tombstone、daemon 配置与 CI。
+- **修复**：`Tombstone` 时间戳解析原用固定字节下标切片，含多字节字符的非法输入（如 `2026-10-27T00:00:0éZ`）会触发 char-boundary panic。改用 `str::get`，越界或非字符边界一律返回校验错误；新增回归测试 `rejects_non_ascii_timestamp_without_panicking`。
+- **复核结论**：无凭据/密钥入库；视图审计只写类型计数与类型过滤器，不写 `thing_ref` 值；可见性加载失败与审计写失败均 fail-closed；新增代码无 `unsafe`；规范 crate 无 IO/网络；四份 schema 均 `additionalProperties: false`。
+- **接受的低风险项**：RefBindings/tombstone 文件只在启动或离线 lint 阶段读取、路径由运维配置控制，未设文件大小上限；`serde_yaml` 已停止维护（信息性告警，非已知漏洞），后续可评估替代；`pact-ref` CI 的 action 按主版本标签固定，建议后续改为提交 SHA。
+- **验证**：`pact` 306 passed / 0 failed，`pact-ref` 44 passed / 0 failed；两仓库 fmt 与 clippy `-D warnings` 通过。
+- **推送状态**：`pact` 推送到 `origin/main`；`pact-ref` 尚无 GitHub 远端，待确认仓库地址后推送。
+
 ## 2026-10-27（第 71 轮，引用保留与 tombstone）
 
 - **触发**：推进物引治理路线的保留阶段。
