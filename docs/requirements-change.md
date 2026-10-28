@@ -2,6 +2,41 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-27（第 36 轮，引用保留与 tombstone）
+
+- **新增 FR29**：ContractCard `lifecycle` 的保留期与删除证据成为可静态验收的契约声明。`retention` 只接受 `permanent` 或正 ISO 8601 duration；`deletionPolicy` 只接受 `retain` / `delete` / `tombstone-then-delete`；`tombstone-then-delete` 必须有 URI 形式的 `tombstoneRef`，其余策略不得声明；归档钉版禁止 `delete`。
+- **Tombstone 记录**：新增 `pact.ref/v1` 的 `Tombstone` 规范对象（`metadata.id`、`spec.contract/ref/reason/deletedAt/retainUntil/replacedBy/note`），规范时间戳、替换关系与说明字段；tombstone 由域作者以正常 seed/produce 产生。
+- **FR27 扩展**：`pact ref lint` 新增 `--tombstones`、`tombstones` 计数与 tombstone 交叉检查；归档钉版契约缺少 `lifecycle` 时告警。
+- 其余 FR1–FR28、NFR1–NFR7 不变。
+
+## 2026-10-27（第 35 轮，视图级读审计）
+
+- **触发**：继续推进物引治理路线，补齐可见性阶段的遗留项——视图级读审计。
+- **FR17 扩展**：`read_audit = true` 同时覆盖 Counter/Archive 视图读取。同一审计流新增 `kind=view` 记录：`view`（counter/archive）、`type_filter`、按类型聚合的 `types[{type,tokens,refs_visible,refs_filtered}]`；只记暴露计数，不记录 `thing_ref` 值。`participant`/`token_id` 改为可选以承载匿名视图；旧记录无 `kind` 按 `read` 解析。写审计失败时视图以 `500` 拒绝（fail-closed）。
+- **FR28 边界更新**：视图级审计不再列为待做；明确其与可见性过滤、Rule-R 的边界。
+- 其余 FR1–FR27、NFR1–NFR7 不变。
+
+## 2026-10-27（第 34 轮，物引可见性过滤）
+
+- **触发**：继续推进物引治理路线，进入可见性阶段；用户要求继续推进。
+- **新增 FR28**：Counter/Archive 的 `thing_ref` 默认 `read-gate`；`domain` 显式公开、`hidden` 永不返回；显式 profile 来自 daemon `[ref_bindings].paths` 指向的 RefBindings；令牌/签名模式下视图要求身份，匿名 `401`；加载失败 fail-closed。
+- **边界**：只过滤视图票面，不改变 token 存在性；`GET /tokens/{id}` 仍由 read gate 授权；视图级审计未在本次实现。
+- 其余 FR1–FR27、NFR1–NFR7 不变。
+
+## 2026-10-27（第 33 轮，物引静态检查命令）
+
+- **触发**：用户要求实现 `pact ref lint` 静态检查命令。
+- **新增 FR27**：离线检查 RefBindings、ContractCard 与 `.pact` 声明的静态一致性；支持绑定/契约目录展开、声明类型对照、契约引用与 scheme 一致性、策略告警、契约状态与未使用检查；`--json` 报告与 `--strict` 退出码。
+- **边界**：不解析具体 `ThingRef` 存在性、不访问网络、不进入引擎；不校验 `declarationDigest` 内容。
+- 其余 FR1–FR26、NFR1–NFR7 不变。
+
+## 2026-10-26（第 32 轮，用户向文档定位表述）
+
+- **触发**：用户指出当前 README / 手册以内部实现细节（如“不重写 loop”“治理插件”）描述 PACT，外部读者无法判断它是什么、归入哪一类、与常见工具相比有何异同。
+- **FR14 增补（定位表述）**：所有面向用户的 README 与手册开篇必须给出定位（声明式协同层，不是 agent 框架或工作流执行器）、归类、与常见工具的异同及不适用边界；对比只陈述可核对的能力差异，不贬低他者；某个宿主的装配细节不得当作产品定位。
+- **范围**：只改用户向文档的表述与组织（`README.md` / `README.zh-CN.md` / `docs/manual.md` / `examples/README*.md` / `docs/authoring-contract.md` 引言）；不改范式语义、不改 FR / NFR 编号、不改引擎代码。
+- 其余 FR1–FR26、NFR1–NFR7 不变。
+
 ## 2026-10-25（第 31 轮，文档编号清理）
 
 - **触发**：用户要求清理“对话中自创、文档中无解释使用”的简写与编号（此前 `h3c`、`L0–L4` 等）。

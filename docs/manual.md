@@ -3,14 +3,18 @@
 本手册面向 **PACT 范式系统的使用者**：要用它建模自己的协作流程、跑起来、看分析结果、做审计的人。
 内容与任何具体技能、行业、方法论无关——需求工程、软件工程、agent 循环、跨工具编排都只是它的实例。
 
+本手册第 1 章先回答「PACT 是什么、归入哪一类、和常见工具怎么比、什么时候不该用」，第 2 章起才是安装、建模、运行与运维细节。
+
 引用约定：
 
 | 记号 | 指向 |
 |------|------|
 | `§x.y` | 范式规范 `paper/pactv1_rev3.md`（论文母本，本手册不复述其推导） |
+| `手册 §x.y` | 本手册章节；跨文件引用时必须带 `手册` 前缀 |
 | `设计 §x.y` | `docs/design.md`（实现决策与线上格式） |
 | `架构 §x.y` | `docs/architecture.md`（进程与数据流视图） |
 | `示例 §x` | `examples/README.md`（五份通用域 + 两条可复现轨迹） |
+| `专题 §x.y` | `docs/task-as-artifact.md`（任务即制品：任务记录与任务状态） |
 | `pact` | CLI 二进制，下文假定 `alias pact=./target/debug/pact` |
 
 ---
@@ -19,14 +23,66 @@
 
 ### 1.1 一句话
 
-PACT 把你的协作流程写成一份 **域声明**（`.pact` 文件），然后由一个 **daemon** 持有唯一权威的
-`Counter`（在制品集合），按六条规则裁决每一步动作：**谁**（Participant）**在什么前提下**
-（Precondition）**能对什么**（Token 的 Type）**做什么**（Gate：read / consume / produce），
-被消费的东西进 `Archive` 且不可逆。
+PACT 让你把一条协作流程写成一份 **域声明**（`.pact` 文件），再由一个**单权威引擎**在每一步判断：
+**谁**（Participant）**在什么状态下可以对哪类产物**（Token 的 Type）**做什么**
+（Gate：read / consume / produce）。合法动作才被接受；被消费的产物进入 `Archive` 且不可逆；
+每个被接受的动作进入只追加事件日志。
 
-它不替你干活，也不调度你。它只做三件事：**拒绝非法动作**、**记录每一步**、**告诉你现在能做什么**。
+它做三件事：
 
-### 1.2 六原语与六规则
+1. **定义流程**——流程不是画在代码或图里的控制流，而是「产物类型 + 前置关系 + 谁能动什么 + 谁能点火」的声明；
+2. **执行准入**——引擎不跑你的任务，只拒绝非法动作、告诉你现在能做什么；
+3. **留下证据**——状态可重放，审计可追溯，声明可静态分析。
+
+所以它确实在**编排流程**，只是方式不是写执行代码，而是写域声明；它又不是**工作流执行器**，
+因为任务仍由参与者（人、agent、应用）完成。PACT 刻意把「流程定义」与「任务执行」分开。
+
+### 1.2 归入哪一类：和常见工具怎么比
+
+**类别**：面向离散产物型协作的、**声明式、状态驱动的协同层**（coordination layer）。
+如果需要一个熟悉的标签，可以叫它协同引擎或工作流引擎；但要注意，它不执行任务本身。
+
+更准确地说，PACT 是一种**声明式流程编排**：流程定义在域声明里，而不是画成图或写成命令式代码；
+图是可导出的视图（CPN），具体任务仍由参与者执行。
+
+它同时横跨三个类别：工作流/流程编排（定义“什么之后能做什么”）、多智能体协调（多个 agent / harness
+如何通过共享产物协作）、授权与审计（按参与者、状态与溯源判定准入并留下可重放记录）。
+它与三者都重叠，但不能直接替代其中任何一个。
+
+| 你可能熟悉的工具/类别 | 它主要决定什么 | PACT 的不同 | 关系 |
+|---|---|---|---|
+| **图式 agent 编排**——LangGraph | agent 流程如何沿节点和边移动；图和状态由代码定义。 | PACT 声明的是产物类型与当前状态上的规则，下一步合法动作由 `Counter` 计算。图是可导出的第二表示（CPN），不是运行时对象；声明可在运行前静态分析。 | 互补：图里的节点或 agent 可以作为参与者调用 PACT。 |
+| **持久化执行 / workflow-as-code**——Temporal、Step Functions | 如何持久、可靠地运行业务代码，含重试、定时器、信号与副作用。 | PACT 不执行业务代码，没有时钟、重试或定时器，也不落地外部副作用；每次迁移都是参与者的显式动作。它治理准入与状态，不治理执行。 | 互补：Temporal 可以在参与者内部执行实际工作。 |
+| **BPMN 流程引擎**——Camunda / Zeebe | 完整的业务流程控制流：网关、事件、定时器、人工任务、补偿。 | PACT 的核心小得多：只支持 AND 前置，没有 OR 网关与定时器；读与消费分离，gate 作用于动作级，并内置静态分析。 | 需要丰富控制流选 BPMN；需要小而可分析的协同内核选 PACT。两者可以在参与者边界汇合。 |
+| **DAG 调度 / 自动化**——Airflow、n8n | 何时运行哪个任务：按时间表或触发器调度，含重试与集成。 | PACT 没有调度器、时钟或自动触发。只有参与者动作且规则允许时，任务才发生；协调由产物状态驱动，而不是时间表驱动。 | 互补：调度器负责唤醒参与者，PACT 判断动作是否合法。 |
+| **Agent 框架**——CrewAI、AutoGen、OpenAI Agents SDK | agent 如何推理、对话、调用工具与交接任务。 | PACT 没有模型调用、消息、角色、任务派发或 agent 循环。它是跨 agent / 跨 harness 的共享规则书；决策仍由 agent 自己作出。 | 互补：任何 agent 框架都可以运行在参与者内部。 |
+| **策略引擎**——OPA、Cedar | 依据请求上下文判断某个请求是否被策略授权。 | PACT 的 gate 绑定在流程状态与产物溯源上，还治理生产与消费并保留归档；它不是通用策略语言。 | 互补：OPA/Cedar 可以为参与者或网关提供属性级判定。 |
+| **Petri 网 / CPN**——CPN Tools | 并发系统的形式建模与状态空间分析。 | PACT 是可执行的、基于声明的模型，内置参与者 gate、token 身份、溯源与归档。它与 P/T 网的原始表达力**互不包含**（母本 §4.2–§4.3）；可以编码为着色 Petri 网（CPN）用于分析与可视化。 | 互补：`pact cpn` 导出 CPN 模型；CPN Tools 提供形式化探索。 |
+| **Harness 内团队 / 任务板**——如 DSH Agent Teams | 队长建队员、派任务、共享看板与消息，协调发生在宿主内部。 | PACT 不建队、不派活、不传消息；它跨 harness 共享产物与准入规则，引擎独立于宿主运行。 | 互补：团队插件负责队内分工，PACT 负责跨团队 / 跨 harness 的产物准入。 |
+
+一句话差异：多数工具回答**“下一步该跑什么？”**或**“谁可以调这个 API？”**；PACT 回答
+**“当前存在什么、它从哪来、谁在什么条件下可以对哪枚产物做什么？”**，并让这个答案可重放。
+
+如果你的问题是“**任务本身能不能当制品**”，PACT 的答案分两层：任务记录可以放进 `ThingRef`，
+任务在流程中的状态/位置必须放进 `TypeName`。它得到的是**受治理的任务板**，不是任务图执行器；
+与图式编排、DAG 调度、agent 框架的逐项对比和能力缺口见
+[`docs/task-as-artifact.md`](task-as-artifact.md)（下称“专题”）的 §2–§6，
+可运行示例见 [`examples/task-as-artifact/`](../examples/task-as-artifact/README.md)。
+
+经典协同模型（Linda 元组空间、黑板系统）也与此重叠；母本 Related Work 对 Petri 网、CPN、Linda、
+BPMN/YAWL 与黑板系统有逐一比较。PACT 与它们的表达力并不互相包含，详见 §2.3 与
+[`docs/expressiveness-boundaries.md`](expressiveness-boundaries.md)。
+
+### 1.3 它不是什么
+
+- **不是 agent 框架。** 不做模型调用、提示词、对话、工具执行或 agent 生命周期管理。agent 用什么框架、如何决策，是参与者自己的事。
+- **不是工作流执行器或调度器。** 核心引擎没有时钟、定时器、自动推进或重试；副作用由参与者或可选 runtime 的显式执行器承担；每次状态迁移都是参与者的显式动作。
+- **不是图编辑器。** 流程由规则定义，图是可导出的第二表示（`pact cpn` 生成 CPN），不是真相源。
+- **不是通用策略引擎。** gate 是绑定在类型化产物上的领域准入规则，不是属性级授权语言。
+- **不是分布式系统。** 每个 Counter 实例只有一个权威；无共识、复制或跨实例协同。
+- **不是只能旁路审计的 hook。** `observe` 只是适配器的缺省档；`govern` 档位下，准入决策外移到 PACT（§13）。
+
+### 1.4 六原语与六规则
 
 | 原语 | 是什么 | 在 `.pact` 里怎么写 |
 |------|--------|---------------------|
@@ -54,7 +110,7 @@ PACT 把你的协作流程写成一份 **域声明**（`.pact` 文件），然�
 3. **Rule-T 是信息，不是闸门**。域终止后不禁止动作，只是 Counter 空了让 Rule-P 拿不到前驱；
    再 `seed` 一次，`terminated` 就翻回 `false`（示例 §3 第 11 步实测）。
 
-### 1.3 四个接入形态，一个权威
+### 1.5 四个接入形态，一个权威
 
 ```
 agent ── MCP (stdio) ─────────┐
@@ -67,7 +123,7 @@ agent ── MCP (Streamable HTTP)─┤
 stdio 与 REST 可用静态 Bearer 或 Ed25519 签名；`/mcp` 可用 OIDC JWT 或静态 Bearer；
 `/health` `/ready` `/metrics` 免身份。唯一语义例外是 `compose`，见 §6.3。
 
-### 1.4 什么时候该用（§2.1 五条判据）
+### 1.6 什么时候该用（§2.1 五条判据）
 
 五条**全部**满足才划算：
 
@@ -84,7 +140,7 @@ stdio 与 REST 可用静态 Bearer 或 Ed25519 签名；`/mcp` 可用 OIDC JWT �
 `seed_authority { user: seeds observation }` 点火——**SeedAuthority 不只服务于源类型，
 它也是给纯循环域提供启动推力的手段**（seed 豁免前置条件，§1.4.3）。
 
-### 1.5 什么时候别用（§2.3 九条边界）
+### 1.7 什么时候别用（§2.3 九条边界）
 
 | 你的需求 | 为什么不适用 | 绕法 |
 |----------|--------------|------|
@@ -132,7 +188,11 @@ listen_unix = "./pact.sock"       # 默认监听；单机安全
 # pid_file    = "./pactd.pid"     # 可选；启动写入、退出删除（含陈旧检测）
 # compact_on_start = false        # 可选；启动恢复后自动压缩全部实例日志（D25）
 # compact_keep_last = 0           # 可选；自动压缩保留的尾部事件条数
-# read_audit = false              # 可选；持久化 Rule-R 读审计（每次成功读追加一行记录，默认关闭）
+# read_audit = false              # 可选；持久化读审计（Rule-R + Counter/Archive 视图，默认关闭）
+
+# D42：票面可见性 profile（可选；不配 = 所有 thing_ref 走默认 read-gate）
+# [ref_bindings]
+# paths = ["/etc/pact/refs/", "se_lifecycle.refs.yaml"]  # 文件或目录；目录展开 .yaml/.yml/.json
 
 # NFR6 v2：TLS / mTLS（可选；仅对 listen_tcp 生效）
 # [tls]
@@ -171,12 +231,14 @@ architect = "sekret"              # 参与者 → 令牌，请求头 Authorizati
 
 缺省语义（文件不存在或字段缺省时）：`data_dir = "./data"`、`listen_unix = "./pact.sock"`、
 无 TCP、无 TLS、无签名公钥表、无令牌表、无 ACL、无 PID 文件、不自动压缩（`compact_on_start = false`、`compact_keep_last = 0`）、
-不写读审计（`read_audit = false`）、`[mcp].enabled = false`、无 OIDC。三个易踩点：
+不写读审计（`read_audit = false`）、`[mcp].enabled = false`、无 OIDC、无 RefBindings（所有票面走默认
+`read-gate`）。三个易踩点：
 
 - 配置用 `deny_unknown_fields`，**写错键名会直接报错**，不会静默忽略。
 - `listen_unix = ""`（空串）= 禁用 unix socket；只写 `listen_tcp` 而不写 `listen_unix`，
   unix socket 也一并禁用。
 - `[tls]` 必须同时给 `certificate` 与 `private_key`，且必须配置 `listen_tcp`；只配其中一个会拒绝启动。
+- `[ref_bindings]` 一旦出现，`paths` 不能为空；任一 RefBindings 读取/解析/校验失败或同域重复声明，daemon 拒绝启动（fail-closed）。
 
 ### 2.3 启动与停止 daemon
 
@@ -197,7 +259,7 @@ pact daemon start --config pact.toml      # 前台运行；Ctrl-C 或 SIGTERM �
 
 ### 2.3.1 运维端点（免身份）
 
-daemon 提供三个仅供本地/内网使用的运维端点（**不校验身份**）。认证边界：配置 `[auth.acl]` 后，域生命周期、四类动作、查询、`/compact` 与读审计视图全部按 `(domain, instance)` 授权（§2.4、§7.6）；**未配置 ACL** 时不做域级授权（静态 Bearer 仍用于四类动作端点的参与者一致性；启用签名时验签覆盖全部非豁免 REST 端点，生命周期、查询与 `/compact` 也需签名）。控制面端点（`handoff` / `freeze` / `active`）在配置了任一身份（令牌或签名）后要求认证。`/health` `/ready` `/metrics` 与 OIDC 元数据始终免身份；`POST /validate` 在**未启用签名**时免身份，启用 `[auth.keys]` 后需签名。daemon 默认应只监听 unix socket 或回环；需要暴露 TCP 时启用 TLS/mTLS（设计 §9.5），**不得把明文端口暴露给不可信网络**。
+daemon 提供三个仅供本地/内网使用的运维端点（**不校验身份**）。认证边界：配置 `[auth.acl]` 后，域生命周期、四类动作、查询、`/compact` 与读审计视图全部按 `(domain, instance)` 授权（§2.4、§7.6）；**未配置 ACL** 时不做域级授权（静态 Bearer 仍用于四类动作端点的参与者一致性，以及 Counter/Archive 的视图身份识别；启用签名时验签覆盖全部非豁免 REST 端点，生命周期、查询与 `/compact` 也需签名）。因此配置令牌或签名后，匿名读取 Counter/Archive 会返回 `401`；票面还按 §7.9 的可见性策略过滤。控制面端点（`handoff` / `freeze` / `active`）在配置了任一身份（令牌或签名）后要求认证。`/health` `/ready` `/metrics` 与 OIDC 元数据始终免身份；`POST /validate` 在**未启用签名**时免身份，启用 `[auth.keys]` 后需签名。daemon 默认应只监听 unix socket 或回环；需要暴露 TCP 时启用 TLS/mTLS（设计 §9.5），**不得把明文端口暴露给不可信网络**。
 
 ```bash
 curl --unix-socket ./pact.sock http://localhost/health   # {"status":"ok"}（存活）
@@ -874,9 +936,12 @@ pact compact --domain D --instance I --keep-last 100   # 保留最近 100 条，
 - REST 等价入口：`POST /domains/{d}[/instances/{i}]/compact {"keep_last": 0}`，
   返回 `{domain, instance, snapshot_seq, base_seq, retained_events, discarded_events}`；MCP 为 `pact_compact`.
 
-### 7.5 读审计视图（D25）
+### 7.5 读审计视图（D25 / D43）
 
-`read_audit = true` 开启后，每次 Rule-R 读取成功时会在独立审计流追加一条记录（`version/ts/domain/instance/participant/token_id`），审计流与主事件日志分离，不影响 seq / 重放 / Rule-T。
+`read_audit = true` 开启后，每次 Rule-R 读取与 Counter/Archive 视图读取成功都会在独立审计流追加一条记录，审计流与主事件日志分离，不影响 seq / 重放 / Rule-T。
+
+- Rule-R：`{"version":1,"kind":"read","ts":"…","domain":"proj","instance":"default","participant":"architect","token_id":"…"}`
+- 视图：`{"version":1,"kind":"view","ts":"…","domain":"proj","instance":"default","participant":"architect","view":"counter","type_filter":"design","types":[{"type":"design","tokens":1,"refs_visible":1,"refs_filtered":0}]}`。`participant` 在信任声明模式的匿名读取中省略；`types` 只记计数，不记 `thing_ref` 值。
 
 查看最近 `limit` 条（默认 100，上限 1000）：
 
@@ -885,9 +950,9 @@ curl --unix-socket ./pact.sock http://localhost/domains/proj/read-audit?limit=20
 curl --unix-socket ./pact.sock http://localhost/domains/proj/instances/foo/read-audit?limit=100
 ```
 
-响应格式：`{"records": [{"version":1,"ts":"...",...}, ...]}`。
+响应格式：`{"records": [{"version":1,"kind":"read","ts":"...",...}, ...]}`；旧记录无 `kind` 时按 `read` 解析。
 
-- **fail-closed**：开启审计后，如果审计写入失败，本次读取以 500 拒绝，不返回 token。
+- **fail-closed**：开启审计后，如果审计写入失败，本次读取或视图以 500 拒绝，不返回 token / 视图结果。
 - **ACL**：读审计视图和其它实例端点一样受 `[auth.acl]` 约束。
 - **持久化**：审计流不参与快照与压缩，运维可按需轮转归档。
 
@@ -935,6 +1000,97 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 - **不支持**：`not via T`（见证是依赖关系而非计数，无法用互补库所表达）会显式报错；请改写条件或人工建模。
 - **恒假条件**：仍保留迁移并置 `guard=false`，便于和声明条目逐一对账。
 - **验证**：输出为 CPN Tools XML（format 6），已通过 CPN DTD 校验与结构化测试。CPN Tools GUI 的加载与状态空间实验需人工验收；沙箱内只做 XML/DTD 校验。
+
+### 7.8 物引静态检查（离线，D41 / D44）
+
+在 seed/produce 之前检查 RefBindings、ContractCard、Tombstone 与 `.pact` 声明是否自洽：
+
+```bash
+pact ref lint --bindings refs.yaml --contracts cards/ --tombstones tombstones/ --declaration se_lifecycle.pact
+pact ref lint --bindings refs/ --contracts cards/ --tombstones tombstones/ --declaration se_lifecycle.pact --strict
+pact --json ref lint --bindings refs.yaml --contracts cards/ --tombstones tombstones/
+```
+
+- **输入**：`--bindings`、`--contracts`、`--tombstones` 均可重复，接受文件或目录；目录会展开 `.yaml`/`.yml`/`.json`。`--declaration` 可选；给定后校验绑定键引用的类型，并检查 `declarationDigest` 是否记录（不校验摘要内容，规范未定义算法）。`--name` 指定期望域名，缺省取声明文件 stem。
+- **报错**：绑定/契约/Tombstone 解析或规范校验失败；重复域、重复契约或重复 tombstone id；绑定类型不在声明中；契约引用没有对应卡片；绑定在契约不支持的 scheme 下使用该契约；被引用契约已 retired；Tombstone 引用的契约不存在、契约删除策略不是 `tombstone-then-delete`，或引用的 scheme/长度不被契约允许。
+- **告警**：`required` 但无契约；允许 Identifier；允许未注册 scheme；引用长度上限超过契约；pinning 弱于契约；契约支持的 scheme 被绑定收窄；契约 deprecated；契约未被引用；未记录 `declarationDigest`；归档钉版契约未声明 `lifecycle`；同一 `(contract, ref)` 出现多条 tombstone。
+- **输出与退出码**：`--json` 输出 `{bindings, contracts, tombstones, errors, warnings, findings[]}`；人类模式逐条打印 `error|warning [code] path: message` 并给出摘要。存在 error 退出 `1`，否则 `0`；`--strict` 下 warning 也退出 `1`。检查结论写 **stdout**；I/O 与用法错误写 **stderr**（`--json` 时为 §6.3 错误体）。
+- **边界**：只做静态检查，不验证引用可达、不验证内容是否已删除、不访问网络、不读运行期状态；lint 通过不代表运行期引用一定可用。
+
+### 7.9 票面可见性（D42）
+
+`GET /counter` 与 `GET /archive` 返回的 token 中，`thing_ref` 默认被过滤，token 的存在性、类型、状态与计数不变：
+
+- **read-gate（默认）**：只有调用者对该类型有**无条件** `reads` 或 `consumes` 子句时才返回票面；`produces` 不授予可见性。配置了令牌或签名时，匿名读取视图返回 `401`；信任声明模式没有主体，因此票面默认隐藏。
+- **domain**：在 RefBindings 中显式声明 `visibility: domain` 的类型，任何通过视图认证的调用者都能看到票面，不再要求 reads/consumes。
+- **hidden**：`visibility: hidden` 的类型在任何视图中都不返回票面。
+- **profile 来源**：daemon 配置 `[ref_bindings].paths` 指向 RefBindings 文件或目录；匹配按 `defaults → scheme → type → instance/type` 继承。URI 解析失败或绑定拒绝该 scheme 时，回退到类型/实例层（不看 scheme 覆盖），再回退默认 `read-gate`。
+- **失败模式**：RefBindings 读取/解析/规范校验失败或同域重复声明 → daemon 拒绝启动（fail-closed）。
+
+```toml
+[ref_bindings]
+paths = ["/etc/pact/refs/"]
+```
+
+```yaml
+# /etc/pact/refs/proj.refs.yaml
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  defaults:
+    ref:
+      visibility: read-gate
+  types:
+    design:
+      ref:
+        visibility: domain
+    implementation:
+      ref:
+        visibility: hidden
+```
+
+- **边界**：只过滤 Counter/Archive 的票面；`GET /tokens/{id}` 仍由 Rule-R 的 read gate 授权。开启 `read_audit = true` 后，视图读取按类型记录暴露计数（`kind=view`，见 §7.5 与设计 D43），审计只记计数、不记票面值；审计写失败时视图以 `500` 拒绝。
+- **建议**：先用 `pact ref lint --bindings … --declaration …` 校验 profile 与声明类型一致，再让 daemon 加载同一份文件。
+
+### 7.10 保留与 tombstone（D44）
+
+保留期和删除证据写在 ContractCard 的 `lifecycle` 中，由 `pact ref lint` 静态验收；PACT 引擎不执行删除、不发布 tombstone。
+
+```yaml
+lifecycle:
+  retention: P365D                  # permanent 或正 ISO 8601 duration
+  deletionPolicy: tombstone-then-delete
+  tombstoneRef: urn:pact:tombstone:se/design-review
+```
+
+- `retention` 接受 `permanent` 或 `P[nY][nM][nW][nD][T[nH][nM][nS]]`；分量按序、总时长 > 0，周不得与其它日期分量组合。
+- `deletionPolicy` 为 `retain` / `delete` / `tombstone-then-delete`。`tombstone-then-delete` 必须声明 URI 形式的 `tombstoneRef`；其余策略不得声明。归档钉版契约不得用 `delete`。
+- 保留期长度由域作者按下游最晚行动时间决定；规范只检查语法与策略组合，不猜测实际时长。
+
+Tombstone 是独立记录，由域作者以正常 `seed` / `produce` 产生，`ThingRef` 指向它：
+
+```yaml
+apiVersion: pact.ref/v1
+kind: Tombstone
+metadata:
+  id: urn:pact:tombstone:se/design-review:req-001
+spec:
+  contract: se/design-review@2
+  ref: https://artifacts.example.com/design/req-001
+  reason: expired                    # expired/replaced/revoked/compromised/legal/manual
+  deletedAt: 2026-10-27T00:00:00Z
+  retainUntil: 2027-10-27T00:00:00Z  # 可选，必须晚于 deletedAt
+  replacedBy: https://artifacts.example.com/design/req-002  # reason=replaced 必填
+  note: 保留期结束，按契约删除
+```
+
+- `metadata.id` 必须是全局唯一 URI；`spec.ref` 可以是 URI 或 legacy Identifier。时间戳只接受 RFC3339 UTC（大写 `Z`）。
+- `note` ≤ 2048 字节、不得含控制字符；不得把凭据或个人敏感信息写进 tombstone。
+- `pact ref lint --tombstones` 检查契约存在性、删除策略一致性、scheme/长度、重复 id 与重复引用。
+
+完整规范见 `spec/ref/v1/contract-card.schema.json` 与 `spec/ref/v1/tombstone.schema.json`；契约卡示例见设计 §9.11。
 
 ---
 
@@ -988,6 +1144,7 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 | `compose <FILES…>` | **离线** | 片段组合（≥2 个），打印合并文本 |
 | `replay <FILE>` | **离线** | 重放 `<instance>.events.jsonl`（校验事件 schema `version`） |
 | `cpn <FILE> --out PATH [--instance I] [--bound T=N]…` | **离线** | 生成单实例 CPN Tools 模型（论文 §4.5/§B；负条件需上界） |
+| `ref lint --bindings PATH… [--contracts PATH…] [--tombstones PATH…] [--declaration FILE] [--name N] [--strict]` | **离线** | 物引静态检查（FR27/D41/D44）：绑定、契约卡、Tombstone 与声明的一致性 |
 
 **实例 flag（D27/D39）**：所有域操作命令的 `--instance I` 可选，**缺省 = 活动实例**（`active.json`；无指针回退 `default`）——既有不带该 flag 的调用与脚本语义不变；显式给 `--instance` 即直连该实例（不受活动指针影响）。`--force` 仅用于对**非空实例**（含 `Imported` 接手状态）的再加载：默认拒绝（`DomainBusy`），加 `--force` 才重置其 Counter 并清除冻结标记。
 
@@ -1030,7 +1187,9 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 
 **签名错误语义（D34）**：缺头/未知参与者/时间戳越界/签名错误 → `401`；请求体 > 8 MiB → `413`；nonce 重放 → `429`。`/mcp` 的 OIDC 令牌非法 → `401`，IdP/JWKS 不可达 → `503`。
 
-**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。**未配置 ACL** 时不做域级授权：既有生命周期/查询/压缩端点保持信任声明行为（Bearer 令牌仅约束四类动作端点；启用签名时这些端点仍需签名）；**新增控制面端点**（`handoff` / `freeze` / `active`）在配置了任何身份后仍要求认证（见上）。交接还额外要求域通配键 `{d}/*`——它会改写域级 `declaration.pact`。详见 §7.6。
+**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。**未配置 ACL** 时不做域级授权：既有生命周期/查询/压缩端点保持信任声明行为（Bearer 令牌约束四类动作端点与视图身份；启用签名时这些端点仍需签名）；**新增控制面端点**（`handoff` / `freeze` / `active`）在配置了任何身份后仍要求认证（见上）。交接还额外要求域通配键 `{d}/*`——它会改写域级 `declaration.pact`。详见 §7.6。
+
+**票面可见性（D42）**：`GET /counter` 与 `GET /archive` 的 `thing_ref` 默认 `read-gate`，按调用者的无条件 `reads`/`consumes` 子句返回；`[ref_bindings]` 可显式声明 `domain`/`hidden`。token 存在性、类型与计数不变；`GET /tokens/{id}` 仍由 Rule-R 授权。详见 §7.9。
 
 **运维端点（D25，免身份）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验身份**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不做域级授权（但启用签名时仍需签名；破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
 
@@ -1209,7 +1368,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
    停机靠 SIGINT/SIGTERM 优雅退出（§2.3）。
 8. **传输与身份范围**：NFR6 v2 已实现 TLS/mTLS、Ed25519 签名、MCP Streamable HTTP 与 MCP OIDC 资源服务器（D34–D36）。仍有边界：daemon 不内置授权服务器/授权码 + PKCE；OIDC 仅 `/mcp`；内置 CLI/MCP/runtime 不出示客户端证书；`pact-runtime` 的 stdio MCP 子进程不透传签名参数；OIDC 令牌不缓存、不转发 REST（§2.6，架构 §4）。
 9. **旧日志不自动迁移**（D27）：双键布局只识别 `<data_dir>/<domain>/<instance>.events.jsonl`；顶层遗留单层文件启动即 `LegacyLayoutDetected` fail-fast，须人工迁移（§7.1），不静默丢数据。
-10. **跨实例不协同**（D27）：同一域声明的多个 Counter 实例彼此隔离（各自 Counter/Archive/订阅）；跨实例协同不在范式保障范围内（论文 rev3 §1.3 实现自由条款，见 §1.3）。
+10. **跨实例不协同**（D27）：同一域声明的多个 Counter 实例彼此隔离（各自 Counter/Archive/订阅）；跨实例协同不在范式保障范围内（论文 rev3 §1.3 实现自由条款，见 §4.7）。
 11. **压缩会牺牲前缀审计**（D25）：被丢弃前缀不再可查，审计视图 = 自足快照 + 保留尾部事件；不做自动周期性轮转，压缩为运维显式动作或启动开关（§7.4）。
 12. **CPN 编码的边界**（D28，§7.7）：负条件依赖调用方给出的 `--bound` 真实并发上界（不可从声明推导）；`not via` 不支持；CPN Tools GUI 内的实际加载/状态空间实验需人工验收，CI 只保证 XML/DTD 与结构断言；TokenId 生成器使用 CPN ML `ref` 副作用，状态空间工具可能将其视为非纯表达式。
 13. **MCP `/mcp` 请求体上限**：rmcp 的 Streamable HTTP 默认请求体上限独立于签名 8 MiB 限制；超限由 MCP 层拒绝（非签名错误）。
@@ -1232,7 +1391,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 2. 挑一份与你场景最像的通用域改起：
    `se_lifecycle`（SE 生命周期）、`re_pipeline`（RE 流水线 + 变更回路）、
    `react_loop`（agent 循环）、`cross_harness`（跨工具编排）。
-3. 用 §1.4/§1.5 的判据与边界复核选型，用 §5 的六项分析自检。
+3. 用 §1.6/§1.7 的判据与边界复核选型，用 §5 的六项分析自检。
 4. 需要行业/方法论特定的映射（如某个技能体系的产物清单与验收清单）时，
    看 `docs/skill-adaptation.md`——那是本手册之外的**领域适配层**，不属于范式本身。
 
@@ -1250,7 +1409,27 @@ PreconditionMismatch { ty: TypeName("deployment"),
 
 ## 13. DSH 插件（阶段 11，D37）
 
-`dsh-plugin-pact`（独立仓库 `onlookor/pact-dsh`）是 DeepSeek Harness（DSH）的 PACT 治理插件。它**替换 agent loop 的工厂注册者**，但机械的 turn/step/工具执行仍由 DSH 官方 `ReactLoopAgent` 完成；PACT 只决定“这一步能不能开始、这个工具能不能执行”。
+`dsh-plugin-pact`（独立仓库 `onlookor/pact-dsh`）是 **PACT 引擎在 DeepSeek Harness（DSH）中的适配器**：它把 DSH 的准入点接到 PACT，不是 PACT 本身，也不是只做旁路审计的观察器。PACT 引擎独立于任何 harness 运行；DSH 只是它当前支持的一个宿主。
+
+一句话：**`govern` 档位下，agent 这一步能不能开始、这个工具能不能执行，由 PACT 域声明裁定；agent 的行为空间由声明预先界定，而不只由对话历史动态决定。DSH 仍负责模型调用、对话、工具执行与 agent 循环。** `observe` 档位只记录，不阻断。
+
+具体接入方式是：插件替换 DSH 的 agent-loop 工厂注册者，把循环包成 `PactAgentLoop`；机械的 turn/step/工具执行仍委托官方 `ReactLoopAgent`。因此它不重写 agent loop 的执行骨架，而是把每一步的**准入决策**外移到 PACT。域声明（`types` / `preconditions` / `gates` / `seed_authority`）就是流程定义；插件配置只决定连哪个后端、哪个域、哪个参与者，以及失败时是否放行。
+
+这带来两个与普通 DSH 插件不同的性质：
+
+- 流程规则可被静态分析，并导出 CPN；
+- 同一个 PACT 引擎可以同时服务 DSH agent 与其他 harness（MCP / REST 客户端），协调发生在引擎侧，不在某个宿主进程内。
+
+与 loop / graph / team 的关系：
+
+| 层 | 回答的问题 | 与 PACT 的关系 |
+|---|---|---|
+| **Loop**——DSH 官方 `ReactLoopAgent` | 单个 agent 内部一轮怎么跑：模型 → 工具 → 回传 | 不被替换；PACT 只在准入点被查询。 |
+| **Graph**——图编排类插件 | 执行单元之间怎么连：节点与边 | PACT 用规则声明流程；图是可导出的第二表示（CPN），不是运行时第一性对象。 |
+| **Team**——DSH Agent Teams / 任务板 | 谁负责哪个任务、队员怎么建、消息怎么传 | PACT 不建队、不派活、不聊天；它裁定共享产物的动作准入，可跨 harness。 |
+| **PACT** | 当前状态下谁可以对哪枚产物做什么 | 协调层；不是 loop / graph / team 的超集，而是不同抽象层。 |
+
+所以，“PACT 不重写 loop”描述的是适配器的装配方式，不是 PACT 的定位；同样，把 PACT 说成“只做治理闸门”也窄化了它——`govern` 档位下它确实承担准入闸门，但依据是可静态分析的域声明，而不是插件里临时写的规则。
 
 ### 13.1 能力与档位
 

@@ -1128,14 +1128,13 @@ mod tests {
     // ── 读审计流（D25 子项 3）────────────────────────────────────────────
 
     fn audit_rec(ts: &str, participant: &str, token_id: &str) -> ReadAuditRecord {
-        ReadAuditRecord {
-            version: crate::EVENT_SCHEMA_VERSION,
-            ts: ts.into(),
-            domain: "d".into(),
-            instance: "default".into(),
-            participant: participant.into(),
-            token_id: token_id.into(),
-        }
+        ReadAuditRecord::rule_r(
+            ts.into(),
+            "d".into(),
+            "default".into(),
+            participant.into(),
+            token_id.into(),
+        )
     }
 
     #[tokio::test]
@@ -1205,5 +1204,37 @@ mod tests {
         );
         assert_eq!(store.read_audit_tail(&key(), 1000).unwrap().len(), 1000);
         assert_eq!(store.read_audit_tail(&key(), 0).unwrap().len(), 0);
+    }
+
+    /// D43：同一审计流混合旧 `read` 记录与 `view` 记录，均可按时间顺序读回。
+    #[tokio::test]
+    async fn read_audit_tail_reads_legacy_and_view_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).await.unwrap();
+        let path = log::read_audit_path(dir.path(), "d", "default");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let legacy = serde_json::to_string(&audit_rec("T0", "architect", "t1")).unwrap();
+        let view = serde_json::to_string(&ReadAuditRecord::view(
+            "T1".to_owned(),
+            "d".to_owned(),
+            "default".to_owned(),
+            None,
+            crate::ViewName::Counter,
+            None,
+            vec![crate::ViewAuditType {
+                ty: "design".to_owned(),
+                tokens: 1,
+                refs_visible: 1,
+                refs_filtered: 0,
+            }],
+        ))
+        .unwrap();
+        std::fs::write(&path, format!("{legacy}\n{view}\n")).unwrap();
+
+        let recs = store.read_audit_tail(&key(), 10).unwrap();
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0].kind, crate::ReadAuditKind::Read);
+        assert_eq!(recs[1].kind, crate::ReadAuditKind::View);
+        assert!(recs[1].participant.is_none());
     }
 }

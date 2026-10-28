@@ -15,7 +15,7 @@
  │  普通应用程序 ─────────────────────────────────► ├── REST ──► pact-http │
  │                                                │  (unix / TCP+TLS;    │  daemon
  │  人类 (终端) ──► pact-cli（在线命令）───────────┘   Bearer/签名/OIDC)  │ (REST/JSON
- │     （离线命令 analyze/compose/replay：本地执行，不经 daemon）           │  + SSE)
+ │     （离线命令 analyze/compose/replay/ref lint：本地执行，不经 daemon）           │  + SSE)
  └───────────────────────────────────────────────────────────────────────┘
                                   │
                                   ▼（engine 仅嵌于 pact-http daemon 进程）
@@ -54,12 +54,15 @@
 核心约束：
 
 - **依赖单向**：接口层 → 引擎 → （core/store）；core 不依赖 IO 与 async。
-- **单一状态变更通道**：pact-http daemon 的 REST API 是通往引擎的唯一路径——pact-mcp（stdio）、内建 `/mcp` 与 pact-cli（在线命令）都是其客户端（不内嵌引擎），接口能力等价由构造保证；pact-cli 的离线命令（analyze/compose/replay/cpn）只依赖纯函数层，不触状态。
+- **单一状态变更通道**：pact-http daemon 的 REST API 是通往引擎的唯一路径——pact-mcp（stdio）、内建 `/mcp` 与 pact-cli（在线命令）都是其客户端（不内嵌引擎），接口能力等价由构造保证；pact-cli 的离线命令（analyze/compose/replay/cpn/ref lint）只依赖纯函数层与规范 crate，不触状态。
 - **身份止于接口层**：Bearer、Ed25519 签名与 MCP OIDC 均在 pact-http 中间件解析为参与者名，之后与信任模式共用同一 ACL/参与者字段；核心、引擎与存储不感知认证方式。OIDC 仅作用于 `/mcp`，REST 不接受 OIDC 令牌。
 - **语义集中在纯函数层**：pact-core 的规则函数是范式的唯一权威实现；引擎只做编排（查域、调用、应用效果、持久化、通知），不含任何语义判断。
 - **零隐式动作的编译期保障**：规则函数签名以 `&CounterState` 为入参、效果为返回值——接口层无法绕过规则直接改状态（Rust 所有权强制，见 design.md D1）。
 - **宿主集成层（非 Cargo，阶段 11）**：独立仓库 `pact-dsh`（包名 `dsh-plugin-pact`）是 DSH 侧的控制流适配器，只经 `PactBackend` 契约访问 PACT（WASM 或假实现），不嵌入引擎、不写事件日志、不持有语义状态；不反向进入任何 Rust crate。
 - **纯模型可移植**：`pact-store-model`（事件/快照/实例键）、`pact-views`（查询/分析视图）与 `pact-engine-kernel`（实例会话语义）只依赖纯 crate（`pact-core`/`pact-parser`/`pact-analysis`/`serde`），可编译到 `wasm32-unknown-unknown`；`pact-store`/`pact-engine` 通过 re-export 保持既有 API（D29）。原生 `pact-engine` 与 `pact-wasm` 的实例会话均通过 `Deref` 嵌入同一个 `pact_engine_kernel::Session`，仅在持久化、通知、审计与错误映射等外围不同（D32）。`pact-wasm` 在其上提供 **WASM 本地分发形态（受支持，D31/D33）**：内存实例会话 + 两阶段提交 + 日志/快照导出恢复；Node 宿主适配层（`crates/pact-wasm/js/`）负责 JSONL+fsync、快照 tmp/rename 与 lockfile 单写者，磁盘布局与原生共用。**权威仍是原生 daemon**——WASM 为进程内单用户嵌入形态，不提供 MCP/HTTP 服务、不承担 ACL/审计与多用户边界，不进入 `dist/` 产物集。稳定化验收（Q7 CI、金标扩面、kernel 抽取、宿主边界安全审视）已全部完成（2026-10-21），故按 D33 去除“实验性”标记；浏览器持久化（OPFS/SharedWorker）与 DSH/v2 集成仍未接入（FR21）。
+
+- **物引规范层（非引擎依赖）**：`pact-ref-spec` 是纯 crate，定义 URI/Identifier/`∅` 票面校验、RefBindings 匹配、ContractCard 校验与 Tombstone 校验；不依赖 `pact-core`/`pact-engine`/`pact-store`，可编译到 wasm32。治理平面 `pact-ref` 通过 re-export 消费它；引导阶段用 vendored 只读快照（D40），发布后改为纯版本依赖。`pact-cli` 的离线 `ref lint` 直接消费该 crate（D41），校验绑定、契约卡、Tombstone 与 `.pact` 声明的一致性，不经 daemon。ContractCard `lifecycle` 的 retention/deletionPolicy 与 `Tombstone` 记录在规范层做静态校验；保留计时、内容删除与 tombstone 发布属于治理平面/制品域，PACT 引擎仍不解析 ThingRef，也不进入 Rule-P/GateExpr。
+- **票面可见性在接口层过滤**：`pact-http` 在 `GET /counter` 与 `GET /archive` 返回前，按 daemon `[ref_bindings]` 加载的 profile 与调用者 gate 决定是否保留 `thing_ref`（D42）。默认 `read-gate`，`domain` 公开、`hidden` 隐藏；token 存在性、事件日志与 Rule-P/GateExpr 不受影响。视图身份在令牌/签名模式下要求认证，匿名请求返回 `401`。
 
 ## 2. 关键数据流
 
@@ -117,13 +120,16 @@ daemon 启动（pact daemon start / pactd）→ 先取 data_dir 独占 flock（<
 
 压缩谓词 = 「已入快照的前缀」；被丢弃前缀不再可查（审计视图 = 快照 + 保留尾部事件），`tokens` 投影行保留。水位先于日志重写落盘，故崩溃于任一中间点均落到两个一致态之一：未截断超集态（重放全量）或已截断 + 水位 + 快照（快照锚恢复）。
 
-### 2.5 读审计与域级授权（D25 子项 3）
+### 2.5 读审计与域级授权（D25 子项 3 / D43）
 
 ```
-Rule-R 成功 → engine actor（单写者）
+Rule-R 成功  → engine actor（单写者）
+视图读取成功 → 接口层计算暴露计数 → engine actor（单写者）
    ├─ read_audit 关（默认）：无持久化副作用
    └─ read_audit 开：append <domain>/<instance>.read-audit.jsonl（单行 JSON + fsync）
-                      │ 失败 ⇒ 本次读取 500（fail-closed，绝不「读成功但无审计」）
+                      │ Rule-R 记录 kind=read（token_id）
+                      │ 视图记录 kind=view（view / type_filter / types[] 计数，不含 thing_ref 值）
+                      │ 失败 ⇒ 本次读取或视图 500（fail-closed，绝不「读成功但无审计」）
                       └─ 独立审计流：不产生事件 / 不推进 seq / 不参与重放·Rule-T·快照·压缩
 
 REST 入口（除 /health|/ready|/metrics|/mcp|RFC 9728 元数据外）
@@ -273,7 +279,7 @@ v2 不在本仓库引入新进程或新内部组件，只把接口层的传输�
 | 可测试性 | Clock/IdGen 注入；core 纯环境属性测试；四层测试组织（单元/属性/集成/端到端+回归） |
 | 安全边界 | 默认 unix socket 本地单用户；可选 daemon 内 TLS/mTLS（`[tls]`，D34）与静态 Bearer / Ed25519 签名（`[auth.keys]`，D34）。**启用 `[auth.acl]` 后**（D25 子项 3）全部域作用域端点按 `(domain, instance)` 授权（支持 `domain/*` 通配），无身份 `401`、越权 `403`，`GET /domains` 按授权过滤；ACL 非空而令牌表与密钥表均为空 ⇒ 拒绝启动。未配置 ACL 时保持既有信任声明行为。`/health` `/ready` `/metrics` 免身份，由部署网络边界兜底；`/validate` 在签名启用时仍需签名。核心不感知认证 |
 | 联网身份与传输（NFR6 v2，D34–D36） | TLS 终止在 pactd（可选 mTLS；内置客户端只验证服务端，不出示客户端证书）；REST 支持 Ed25519 签名（±300s、nonce 防重放、8 MiB；启用后非豁免请求必须签名，Bearer 不能替代）+ 静态 Bearer；`/mcp` 支持 OIDC 资源服务器（alg 白名单、iss/aud/exp/nbf、JWKS 有界缓存、claim 映射）或静态 Bearer，信任模式仅限无身份配置的单机/回环；OIDC 令牌不缓存、不转发 REST，IdP 故障只影响 `/mcp`（503） |
-| 可运维性（NFR7，D25，**子项 1+2+3 已实现**） | **子项 2（2026-10-20）**：daemon 暴露**免身份** `/health`（存活）、`/ready`（就绪：引擎可应答）、`/metrics`（Prometheus 文本格式），可选 `pid_file`（启动写入/退出删除/陈旧检测），SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → `engine.shutdown()` 终态快照）。**子项 1（2026-10-20）**：事件日志前缀压缩（REST `/compact`、CLI `pact compact`、MCP `pact_compact`、可选启动自动压缩）+ schema 版本化（`WireEvent.version`，更高版本 fail-fast），详见 §2.3/§2.4。**子项 3（2026-10-20）**：域级 ACL 阻止任意客户端装卸域/触发压缩（`(domain, instance)` 授权，见 §2.5）；可选读审计流（`read_audit = true`，append+fsync，fail-closed）与只读视图 `GET .../read-audit` |
+| 可运维性（NFR7，D25，**子项 1+2+3 已实现**） | **子项 2（2026-10-20）**：daemon 暴露**免身份** `/health`（存活）、`/ready`（就绪：引擎可应答）、`/metrics`（Prometheus 文本格式），可选 `pid_file`（启动写入/退出删除/陈旧检测），SIGINT/SIGTERM 优雅停机（停止接受新连接 → 有界 10s 等待在途 → `engine.shutdown()` 终态快照）。**子项 1（2026-10-20）**：事件日志前缀压缩（REST `/compact`、CLI `pact compact`、MCP `pact_compact`、可选启动自动压缩）+ schema 版本化（`WireEvent.version`，更高版本 fail-fast），详见 §2.3/§2.4。**子项 3（2026-10-20，视图审计扩展 2026-10-27）**：域级 ACL 阻止任意客户端装卸域/触发压缩（`(domain, instance)` 授权，见 §2.5）；可选读审计流（`read_audit = true`，append+fsync，fail-closed）与只读视图 `GET .../read-audit`，记录 Rule-R 与 Counter/Archive 视图读取（D43，视图只记按类型暴露计数、不记票面值） |
 | 多实例承载（FR19，D27，**已实现**） | 同一域声明可并发承载多个 **Counter 实例**（实例键 `instance`）；实例为接口层一等键，各实例独立持有 Counter / Archive / 事件日志 / 快照 / 审计流 / 订阅通道 / 幂等表。**存储布局（已定案 + 已实现）**：域子目录 `<data_dir>/<domain>/<instance>.events.jsonl`（快照 `‹instance›.snapshot.json`、审计流 `‹instance›.read-audit.jsonl`、声明原文 `declaration.pact` 同目录）；索引 `(domain, instance)` 双列（`events`/`tokens` 复合主键）。顶层遗留单层文件（`‹domain›.events.jsonl`）**不识别、fail-fast**（`LegacyLayoutDetected`）。同一 `data_dir` 上多实例以 flock（`‹data_dir›/pactd.lock`）保证单写者，禁止交错写同一日志；非空实例再加载默认拒绝（`DomainBusy`，须 `force`）。实例键以路径段承载（`/domains/{d}/instances/{i}/…`，`/domains/{d}` 解析活动实例，无指针回退 `default`），键名谓词 `[A-Za-z0-9_-]{1,128}` 防路径穿越 |
 | 声明换版可用性（FR26，D39，**已实现**） | 显式状态交接：在引擎临界区内冻结源（`.sealed`）→ 追加 `Imported` 自足基线（完整 Counter/Archive/幂等表/声明原文，schema v2）→ 建目标实例 → best-effort 切换域级 `active.json` 别名。源实例保留全部状态且只读（幂等重放仍可返回），目标可独立恢复；失败路径（类型闭包/目标冲突/源已冻结）无副作用；活动指针悬空在启动期 fail-fast。不提供原位保留状态的声明换版、双活或自动回滚；`.sealed`/`active.json` 为控制面文件，不进入事件日志、`seq`、快照与压缩 |
 | 表达力边界（B1–B25） | 母本 §1.3/§1.4/§1.4.4/§2.3 声明范式不能直接表达什么；实现侧在 `docs/expressiveness-boundaries.md` 集中登记可编码模式、仅可近似项、范式外项与工具层边界，并以 `B<编号>` 在文档与代码注释中引用。摘要落点见 `docs/design.md` §18 |

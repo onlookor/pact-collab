@@ -16,7 +16,7 @@ mod log;
 mod snapshot;
 mod store;
 
-pub use audit::ReadAuditRecord;
+pub use audit::{ReadAuditKind, ReadAuditRecord, ViewAuditType, ViewName};
 pub use error::{validate_domain_name, validate_instance_name, StoreError};
 pub use index::{IndexStore, TokenStatus, TursoIndexStore};
 pub use log::EventLog;

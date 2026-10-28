@@ -2,6 +2,64 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-27（第 71 轮，引用保留与 tombstone）
+
+- **触发**：推进物引治理路线的保留阶段。
+- **生命周期收紧**：`Lifecycle.deletion_policy` 由自由字符串改为 `DeletionPolicy` 枚举；`retention` 只接受 `permanent` 或正 ISO 8601 duration（自研纯函数校验，周与日期分量互斥、分量按序、总时长 > 0）；`tombstoneRef` 仅在 `tombstone-then-delete` 允许且必须是 URI；归档钉版契约禁止 `delete`。
+- **Tombstone**：新增 `pact-ref-spec` 的 `Tombstone` / `TombstoneMetadata` / `TombstoneSpec` / `TombstoneReason`，校验 `metadata.id` URI、契约 id、引用形态、RFC3339 UTC 时间戳与 `retainUntil > deletedAt`、`reason=replaced` 必填 `replacedBy`、`replacedBy != ref`、`note` 长度与控制字符；新增 `spec/ref/v1/tombstone.schema.json` 与 `SpecError::InvalidTombstone`。
+- **Schema**：`contract-card.schema.json` 的 `deletionPolicy` 改为枚举，`retention` 增加 ISO duration 结构约束，`tombstoneRef` 用 `if/then` 与删除策略联动。
+- **Lint**：新增 `--tombstones` 与 `LintReport.tombstones`；交叉校验契约存在性、删除策略一致性、tombstone 引用 scheme/长度、重复 id 与重复 (contract, ref)；归档钉版契约无 `lifecycle` 时警告 `ref.contract.retention_missing`。人类摘要与 JSON 输出同步。
+- **边界**：不做保留计时、自动删除、tombstone 发布或解析可达性验证；引擎/存储语义不变。
+- **验证**：`pact-ref-spec` 新增 9 项（retention/lifecycle/tombstone），`pact-cli` 新增 6 项单元与 e2e 覆盖；全 workspace fmt/clippy/test 通过。
+
+## 2026-10-27（第 70 轮，视图级读审计）
+
+- **触发**：继续推进物引治理路线，补齐 D42 遗留的视图级读审计。
+- **审计 schema**：`pact-store::ReadAuditRecord` 新增 `kind`（`read` 缺省 / `view`）、可选 `view`、`type_filter` 与 `types[{type,tokens,refs_visible,refs_filtered}]`；`participant`/`token_id` 改为 `Option`，旧记录无 `kind` 按 `read` 解析。
+- **写路径**：新增 `Engine::record_view_audit` 与 `Command::RecordViewAudit`。视图审计仍由引擎 actor 单写者落盘；`read_audit = false` 时无操作，开启时写失败上抛 `EngineError::Store`。
+- **接口层**：Counter/Archive 过滤票面时同步按类型累计 `tokens/refs_visible/refs_filtered`，随后调用 `record_view_audit`；失败映射 `500`，视图不返回（fail-closed）。审计只记计数，不记 `thing_ref` 值。
+- **边界**：审计仍不进入事件日志 / `seq` / 重放 / Rule-T / 快照 / 压缩；不改变 D42 的可见性判定。
+- **验证**：`pact-store` 4 项 schema/审计流测试、`pact-engine` 2 项视图审计测试（字段/可选/fail-closed）、`pact-http` 2 项端到端（按类型计数、匿名与 fail-closed）通过；既有 daemon/engine 审计断言更新为可选字段。
+
+## 2026-10-27（第 69 轮，物引可见性过滤）
+
+- **触发**：继续推进物引治理路线，进入可见性阶段（FR28）。
+- **新增模块**：`crates/pact-http/src/visibility.rs`：`VisibilityProfiles::load` 读取 RefBindings（文件/目录），`exposure` 按 `defaults → scheme → type → instance` 计算 `Visible / ReadGate / Hidden`。
+- **接口层**：Counter/Archive 逐 token 过滤 `thing_ref`，token 存在性不变；`read-gate` 用 `engine.my_gates` 的无条件 `reads`/`consumes`，`produces` 不授予可见性。
+- **身份**：令牌/签名模式下视图读取要求身份，匿名 `401`；信任模式无主体，read-gate 默认隐藏。
+- **配置**：新增 `[ref_bindings].paths`；空 paths 拒绝启动；RefBindings 读取/解析/校验/重复域失败拒绝启动。
+- **边界**：`GET /tokens/{id}` 仍由 Rule-R 授权；视图级读审计未实现（需要扩展审计 schema），列为后续。
+- **验证**：`pact-http` 7 项 visibility 单测 + 3 项 visibility 端到端（read-gate/domain/hidden、匿名 401、Archive、信任模式）+ 1 项 daemon fail-closed 启动测试通过。
+
+## 2026-10-27（第 68 轮，物引静态检查命令）
+
+- **触发**：用户要求实现 `pact ref lint` 静态检查命令（FR27）。
+- **新增模块**：`crates/pact-cli/src/ref_lint.rs`，纯函数入口 `lint_texts` + 路径入口 `lint_paths`；CLI 子命令 `pact ref lint`。
+- **检查规则**：解析/规范校验、重复域与重复契约、绑定类型与 `.pact` 声明对照、契约引用可解析、绑定接受 scheme 与契约 scheme 一致（越界报错、收窄告警）、`required` 无契约、Identifier 放行、未注册 scheme 放行、`declarationDigest` 缺失、契约 retired/deprecated、未使用契约。
+- **输出**：JSON 报告 `{bindings,contracts,errors,warnings,findings[]}`；人类模式逐条 + 摘要；有 error 退出 1，`--strict` 下 warning 也退出 1。
+- **边界**：不解析具体 `ThingRef` 存在性、不访问网络、不进入引擎；不校验 `declarationDigest` 内容。
+- **依赖**：`pact-cli` 新增 `pact-ref-spec` 与 `serde_yaml`；不新增 crate。
+- **验证**：`pact-cli` 8 项单元测试 + 端到端测试（一致输入、未知类型、缺失/未使用契约、scheme 冲突、Identifier 放行、重复/退役契约、坏 YAML、缺失文件、`--strict`）通过；对 `pact-ref/examples` 实跑得到合理结论。
+
+## 2026-10-26（第 67 轮，物引规范层抽取与消费）
+
+- **触发**：用户要求先抽取 `pact-ref-spec` 并让治理项目切换消费版本。
+- **新增 crate**：`crates/pact-ref-spec`（纯、无 IO、可 wasm32），定义 `ReferenceForm`（URI/Identifier/`∅`）、URI profile 校验、`RefBindings` 的 `defaults → scheme → type → instance/type` 继承匹配、`ContractCard` 静态/动态校验；不依赖 engine/store。
+- **新增规范文件**：`spec/ref/v1/uri-profile.md`、`ref-bindings.schema.json`、`contract-card.schema.json`、`reference-plane.openapi.yaml`。
+- **消费方式**：`pact-ref` 的 `ref-core` 改为 re-export 规范类型；`Cargo.toml` 使用 `version = "0.1.0"` + `vendor/pact-ref-spec` 只读快照。`scripts/sync-spec.sh --source <dir>` 同步，`--check` 检查漂移。选择快照而非跨仓库 path，避免 CI/容器构建检出另一仓库；注册表发布后删除快照、只留 version。
+- **示例对齐**：`pact-ref/examples` 的截断摘要替换为合法 64 位十六进制；新增集成测试把真实示例解析为规范类型并校验。
+- **未做**：`pact ref lint` 尚未实现；规范 crate 尚未发布到包注册表；真实适配器与 `refd` 端点仍未实现。
+- **验证**：`pact-ref-spec` 18 项单测、clippy、`wasm32-unknown-unknown` 构建通过；`pact-ref` workspace 35 项测试、clippy、`refd` 引导输出通过；两份 JSON schema 与 OpenAPI YAML 解析通过。
+
+## 2026-10-26（第 66 轮，用户向文档定位重写）
+
+- **触发**：外部对话显示，README / 手册以内部术语（“不重写 loop”“治理闸门”）开场，读者无法判断 PACT 属于哪类工具，以及它与 LangGraph / Temporal / BPMN / agent 框架等的关系。
+- **README**：开头改为“声明式协同层”一句话 + 它做什么 / 不做什么；新增 “Where it fits / 归入哪一类” 与八类常见工具的对比表（图式 agent 编排、持久化执行、BPMN、DAG 调度、agent 框架、Harness 内团队 / 任务板、策略引擎、Petri 网 / CPN）；功能列表按“建模与检查 / 运行与治理 / 接入与运维”重组；新增 DSH 适配器段落，明确 PACT 独立于 harness。
+- **手册**：§1 重排为 1.1 一句话定位 → 1.2 归类与对比（含 Harness 内团队 / 任务板）→ 1.3 它不是什么 → 1.4 六原语 → 1.5 接入形态 → 1.6 适用 → 1.7 边界；§13 重写 DSH 插件定位，明确 `govern` 是准入决策外移、域声明即流程定义，并给出 loop / graph / team / PACT 的分层关系。
+- **examples / 契约**：两份 `examples/README` 增加定位段落，`cross_harness` 说明改为“无中心*任务*编排器，PACT 引擎是共享准入权威”；`authoring-contract.md` 引言增加定位句。
+- **交叉引用**：`docs/expressiveness-boundaries.md` 与 `docs/token-consumption-timing.md` 的手册 §1.5 引用改为 §1.7；手册跨实例限制的 §1.3 引用改为 §4.7；手册引用约定新增 `手册 §x.y` 前缀。
+- **验证**：保留 `#what-is-pact` / `#pact-是什么` / `#testing` / `#测试` 锚点，新增 `#where-it-fits` / `#归入哪一类` 并在 examples 中引用；相对链接、锚点与表格列数已脚本检查；代码与行为零改动，未重跑测试（既有全量记录为 245 项）。
+
 ## 2026-10-25（第 65 轮，文档编号清理）
 
 - **触发**：用户要求集中清理对话中自创、文档中无解释使用的编号（`L0–L4`、`P1–P9` 等）。

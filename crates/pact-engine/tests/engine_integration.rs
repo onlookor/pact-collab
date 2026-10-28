@@ -14,7 +14,7 @@ use pact_engine::{
     Engine, EngineConfig, EngineError, InstanceKey, LogicalClock, NotificationKind,
     SequentialIdGen, DEFAULT_INSTANCE,
 };
-use pact_store::Store;
+use pact_store::{Store, ViewAuditType, ViewName};
 use std::sync::Arc;
 
 /// 三段生命周期域：requirement --architect--> design --developer--> implementation。
@@ -1289,8 +1289,9 @@ async fn read_audit_records_rule_r_without_touching_event_log() {
 
     let recs = engine.read_audit(key("proj"), 10).await.unwrap();
     assert_eq!(recs.len(), 2);
-    assert_eq!(recs[0].participant, "architect");
-    assert_eq!(recs[0].token_id, req.id.0);
+    assert_eq!(recs[0].participant.as_deref(), Some("architect"));
+    assert_eq!(recs[0].token_id.as_deref(), Some(req.id.0.as_str()));
+    assert_eq!(recs[0].kind, pact_store::ReadAuditKind::Read);
     assert_eq!(recs[0].domain, "proj");
     assert_eq!(recs[0].instance, DEFAULT_INSTANCE);
     assert_eq!(recs[0].version, pact_store::EVENT_SCHEMA_VERSION);
@@ -1369,6 +1370,105 @@ async fn read_audit_failure_blocks_read_fail_closed() {
         .await
         .unwrap();
     off.shutdown().await.unwrap();
+}
+
+// ============ 14. 视图级读审计（D43） ============
+
+/// 视图审计仅在 `read_audit = true` 时落盘，字段自足且与 Rule-R 记录共用审计流。
+#[tokio::test]
+async fn view_audit_records_type_exposure_counts() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = setup_with(
+        dir.path(),
+        EngineConfig {
+            read_audit: true,
+            ..EngineConfig::default()
+        },
+    )
+    .await;
+    engine
+        .load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+
+    let types = vec![
+        ViewAuditType {
+            ty: "requirement".to_owned(),
+            tokens: 1,
+            refs_visible: 0,
+            refs_filtered: 1,
+        },
+        ViewAuditType {
+            ty: "design".to_owned(),
+            tokens: 2,
+            refs_visible: 1,
+            refs_filtered: 1,
+        },
+    ];
+    engine
+        .record_view_audit(
+            key("proj"),
+            Some("architect".to_owned()),
+            ViewName::Counter,
+            Some("design".to_owned()),
+            types.clone(),
+        )
+        .await
+        .unwrap();
+
+    let recs = engine.read_audit(key("proj"), 10).await.unwrap();
+    assert_eq!(recs.len(), 1);
+    assert_eq!(recs[0].kind, pact_store::ReadAuditKind::View);
+    assert_eq!(recs[0].view, Some(ViewName::Counter));
+    assert_eq!(recs[0].participant.as_deref(), Some("architect"));
+    assert!(recs[0].token_id.is_none());
+    assert_eq!(recs[0].type_filter.as_deref(), Some("design"));
+    assert_eq!(recs[0].types.as_ref().unwrap(), &types);
+    assert_eq!(recs[0].domain, "proj");
+    assert_eq!(recs[0].instance, DEFAULT_INSTANCE);
+
+    // 审计不进入事件日志（仍为 DomainLoaded 一条）。
+    assert_eq!(log_lines(dir.path(), "proj").len(), 1);
+    engine.shutdown().await.unwrap();
+}
+
+/// `read_audit = false` 时视图审计为空操作；开启时写失败上抛（fail-closed）。
+#[tokio::test]
+async fn view_audit_is_optional_and_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let off = setup(dir.path()).await;
+    off.load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    off.record_view_audit(key("proj"), None, ViewName::Counter, None, Vec::new())
+        .await
+        .unwrap();
+    assert!(off.read_audit(key("proj"), 10).await.unwrap().is_empty());
+    off.shutdown().await.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let on = setup_with(
+        dir.path(),
+        EngineConfig {
+            read_audit: true,
+            ..EngineConfig::default()
+        },
+    )
+    .await;
+    on.load_domain("proj", DECL, DEFAULT_INSTANCE, false)
+        .await
+        .unwrap();
+    // 以目录占位审计文件路径 → 追加失败。
+    std::fs::create_dir_all(audit_path(dir.path(), "proj")).unwrap();
+    let err = on
+        .record_view_audit(key("proj"), None, ViewName::Archive, None, Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, EngineError::Store(_)),
+        "视图审计失败须上抛，实际 {err:?}"
+    );
+    on.shutdown().await.unwrap();
 }
 
 // ============ 15. ack 屏障：多下游完成后消费共享 token（TC4/TC13） ============

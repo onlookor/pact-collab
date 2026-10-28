@@ -5,6 +5,7 @@ members = [
     "crates/pact-parser",
     "crates/pact-analysis",
     "crates/pact-compose",
+    "crates/pact-ref-spec",
     "crates/pact-store-model",
     "crates/pact-store",
     "crates/pact-views",
@@ -26,6 +27,8 @@ license = "MIT"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
+pact-ref-spec = { path = "crates/pact-ref-spec" }
 logos = "0.15"
 proptest = "1"
 petgraph = "0.8"

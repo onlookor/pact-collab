@@ -20,8 +20,10 @@ pact-analysis = { path = "../pact-analysis" }
 pact-compose = { path = "../pact-compose" }
 pact-store = { path = "../pact-store" }
 pact-engine = { path = "../pact-engine" }
+pact-ref-spec = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 axum = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

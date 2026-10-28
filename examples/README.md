@@ -4,6 +4,8 @@
 
 This examples directory is tied to no specific skill or methodology — it demonstrates the PACT paradigm itself: what kinds of collaboration it can describe, how to write a scenario as a `.pact` domain declaration, what each of the six static analyses tells you, how the daemon's Gate and precondition graph intercept actions, and how the event log rebuilds state offline.
 
+PACT is a **declarative coordination layer**, not an agent framework or a task runner. Each `.pact` file here is a complete process definition; the engine enforces it and records every action, while the participants do the work. If you are new to PACT and want the category, familiar comparisons, and boundaries, read [“Where it fits”](../README.md#where-it-fits) in the root README and [manual §1.2](../docs/manual.md) before working through the examples.
+
 Artifacts adapted specifically to the two skills (requirements-engineering / software-engineering) live in another repository; see [`docs/skill-adaptation.md`](../docs/skill-adaptation.md). This directory is the **generic** set.
 
 Conventions: every `pact ...` below means `./target/debug/pact` (or the same-named binary installed on your system); `§x.y` refers to the paradigm specification [`paper/pactv1_rev3.md`](../paper/pactv1_rev3.md) (the normative paper manuscript, checked into this repository).
@@ -21,7 +23,7 @@ Counts were measured with `pact domain validate` (an online command — needs th
 | [`domains/se_lifecycle.pact`](domains/se_lifecycle.pact) | Generic software-engineering pipeline (medium granularity: development mainline + read-only review + a `via`-guarded deployment gate) | 5 | 8 | 17 | 1 | 0 |
 | [`domains/re_pipeline.pact`](domains/re_pipeline.pact) | Generic requirements-engineering pipeline (conjunctive preconditions + a change-control loop) | 7 | 7 | 19 | 2 | 0 |
 | [`domains/react_loop.pact`](domains/react_loop.pact) | Single-agent ReAct loop (cyclic precondition graph that still terminates naturally) | 4 | 2 | 12 | 1 | 0 |
-| [`domains/cross_harness.pact`](domains/cross_harness.pact) | Multi-agent collaboration with no central orchestrator | 5 | 4 | 13 | 1 | 0 |
+| [`domains/cross_harness.pact`](domains/cross_harness.pact) | Multi-agent collaboration with no central task orchestrator (the PACT engine is a shared admission authority, not a task dispatcher) | 5 | 4 | 13 | 1 | 0 |
 | [`domains/external_materialization.pact`](domains/external_materialization.pact) | External materialization confirmation via a witness token (`readiness` token gates the consume) | 3 | 4 | 4 | 2 | 0 |
 
 Measured results of the six analyses for the five domains (verbatim from `examples/offline/trace.txt`):
@@ -56,6 +58,10 @@ Analyzing a fragment on its own yields large unreachable sets (2 for security_re
 | [`offline/fixtures/se_lifecycle.events.jsonl`](offline/fixtures/se_lifecycle.events.jsonl) | A 12-line event log so the offline demo is self-sufficient on a fresh clone (no need to run the online script first) |
 
 `trace.txt` files are **real recorded output**, not hand-written samples: token ids (ULIDs), timestamps, daemon pids, and absolute paths differ per run and have been sanitized to `<REPO>`; step structure, error codes, analysis numbers, and exit codes should match your runs exactly.
+
+### 1.4 Task-as-artifact example (`task-as-artifact/`)
+
+A standalone example (not part of the five-domain trace table above) showing the two expressible ways to treat a task as an artifact: the task record as `ThingRef`, and the task state/position as a `TypeName`. It contrasts the result with graph-based workflow orchestration and agent coordination. See [`task-as-artifact/README.md`](task-as-artifact/README.md) and the topic note [`docs/task-as-artifact.md`](../docs/task-as-artifact.md).
 
 ---
 

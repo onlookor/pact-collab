@@ -7,6 +7,11 @@
 各自在说什么、daemon 跑起来之后四类动作如何被 Gate 与前置图拦截、以及事件
 日志如何离线重建状态。
 
+PACT 是**声明式协同层**，不是 agent 框架，也不是任务执行器。这里的每份 `.pact`
+文件都是完整的流程定义；引擎负责执行准入并记录每个动作，任务由参与者完成。
+如果你刚接触 PACT，想先弄清它归入哪一类、和常见工具怎么比、边界在哪，请先读
+根 README 的[“归入哪一类”](../README.zh-CN.md#归入哪一类)与[手册 §1.2](../docs/manual.md)，再开始看示例。
+
 与两个技能（requirements-engineering / software-engineering）强绑定的适配产物
 在另一个仓库，说明见 [`docs/skill-adaptation.md`](../docs/skill-adaptation.md)；
 本目录是**通用**的那一套。
@@ -27,7 +32,7 @@
 | [`domains/se_lifecycle.pact`](domains/se_lifecycle.pact) | 软件工程通用流水线（中等粒度：开发主链 + 只读评审 + 带 `via` 的部署把关） | 5 | 8 | 17 | 1 | 0 |
 | [`domains/re_pipeline.pact`](domains/re_pipeline.pact) | 需求工程通用流水线（含合取前置与变更控制回环） | 7 | 7 | 19 | 2 | 0 |
 | [`domains/react_loop.pact`](domains/react_loop.pact) | 单智能体 ReAct 循环（前置图带环，仍自然终止） | 4 | 2 | 12 | 1 | 0 |
-| [`domains/cross_harness.pact`](domains/cross_harness.pact) | 多智能体协作，无中心编排器 | 5 | 4 | 13 | 1 | 0 |
+| [`domains/cross_harness.pact`](domains/cross_harness.pact) | 多智能体协作，无中心*任务*编排器（PACT 引擎是共享准入权威，不是任务派发器） | 5 | 4 | 13 | 1 | 0 |
 | [`domains/external_materialization.pact`](domains/external_materialization.pact) | 外部物化确认：以见证 token 把关消费（`readiness` token 门控 coordinator 的消费） | 3 | 4 | 4 | 2 | 0 |
 
 五份域的六项分析实测结果（逐字来自 `examples/offline/trace.txt`）：
@@ -67,6 +72,13 @@
 `trace.txt` 是**真实录制的输出**，不是手写样例：token id（ULID）、时间戳、
 daemon pid、绝对路径每次运行都不同，路径已脱敏为 `<REPO>`；步骤结构、错误码、
 分析数字与退出码应当与你的运行完全一致。
+
+### 1.4 任务即制品示例（`task-as-artifact/`）
+
+独立示例，不计入上面五份域的轨迹表：演示“把任务当制品”的两种可写用法——
+任务记录作为 `ThingRef`、任务状态/位置作为 `TypeName`，并与基于图的流程编排和
+agent 协调作对比。说明见 [`task-as-artifact/README.md`](task-as-artifact/README.md)，
+专题见 [`docs/task-as-artifact.md`](../docs/task-as-artifact.md)。
 
 ---
 

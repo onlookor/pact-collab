@@ -10,7 +10,11 @@ listen_tcp = "0.0.0.0:8787"
 
 # compact_on_start = false
 # compact_keep_last = 0
-# read_audit = false
+# read_audit = false               # D25/D43：Rule-R + Counter/Archive 视图读审计（fail-closed）
+
+# D42：票面可见性 profile（可选；不配 = 所有 thing_ref 走默认 read-gate）
+# [ref_bindings]
+# paths = ["/etc/pact/refs/"]      # 文件或目录；目录展开 .yaml/.yml/.json
 
 # [auth]
 # [auth.tokens]

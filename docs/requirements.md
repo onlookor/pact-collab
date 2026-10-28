@@ -90,6 +90,7 @@
   - `examples/README.md`：场景导航与逐例讲解，自足可读，指向手册对应章节。
 - 交付权威用户手册 `docs/manual.md`：适用判据（论文 §2.1 五条判据、§2.3 九条边界）、三接口完整命令面、六项静态分析、组合冲突、审计与事件重放、错误码全集、故障排查、已知偏差与限制。
 - 二者分工：`examples/` 是**可运行的教学路径**（读得懂、跑得起），`docs/manual.md` 是**参考权威**（查得到全貌）；两者交叉引用，不重复维护同一事实。
+- **定位表述**：所有面向用户的 README 与手册开篇必须说明 PACT 的定位（声明式协同层，不是 agent 框架或工作流执行器）、归类、与常见工具的异同及不适用边界；对比只陈述可核对的能力差异，不贬低他者；不得把某个宿主的装配细节（如 DSH 插件“不重写 loop”）当作产品定位。
 
 ### FR15 消耗原子性、幂等与物化边界
 - 提交契约：Rule-E 的提交点 = 事件日志 fsync；其后步骤（索引投影、快照、Terminated、通知）失败不回滚、不失败本次调用（决策 D23）。
@@ -116,12 +117,12 @@
   - **触发方式**：运维显式接口（REST `POST .../compact`、CLI `pact compact`、MCP `pact_compact`）+ 可选启动自动压缩（`pact.toml` 的 `compact_on_start` / `compact_keep_last`；缺省关闭）。
   - **固有取舍（须文档化）**：压缩后被丢弃前缀不再可查——审计视图退化为「快照 + 保留尾部事件」，`events` 索引行被裁剪（`tokens` 投影行保留）；NFR2 的「日志即完整审计」在压缩后由「快照 + 保留尾部」共同承担。v1 不做自动周期性轮转。
 - **运维接口**：daemon 提供 `GET /health`（存活）、`GET /ready`（就绪：引擎可应答）、`GET /metrics`（Prometheus 文本格式运行指标，含 uptime 与域实例计数）；可选 `pid_file`（缺省不写，含陈旧检测）；信号化优雅停机（SIGINT/SIGTERM → 停止接受新连接 → 有界等待在途 → 终态快照 → 清理）。运维端点**不校验令牌**（仅供本地/内网探活与抓取）。
-- **域级授权与审计读视图**：接口层按域 ACL（阻止任意客户端 `load` / `unload` 任意域）；读审计（Rule-R 记录）为**可选开启**扩展，默认关闭（修订决策 D9 的默认值表述，见 D25）。
+- **域级授权与审计读视图**：接口层按域 ACL（阻止任意客户端 `load` / `unload` 任意域）；读审计（Rule-R 与视图记录）为**可选开启**扩展，默认关闭（修订决策 D9 的默认值表述，见 D25/D43）。
   - **ACL 粒度**：条目为 `domain/instance`，支持 `domain/*` 通配（实例键，FR19）；配置形如 `[auth.acl] principal = ["proj/*", "other/default"]`。
   - **ACL 范围**：启用后覆盖全部域作用域端点——生命周期（load / instantiate / unload / compact / `:analyze` / `:compose`）、四类动作（seed / produce / read / consume）、查询（counter / archive / gates / enabled / status / events）与读审计视图；`GET /domains` 按授权过滤（空域剔除）。无令牌 → `401`，越权 → `403`。**未配置 ACL 时保持既有行为**（生命周期与查询不绑定身份，向后兼容）。
   - **配置合法性**：ACL 非空而令牌表为空 ⇒ daemon 启动失败（身份不可判定）；每条目须为合法 `domain/instance` 或 `domain/*`。
-  - **读审计**：开启 `read_audit = true` 后，每次成功的 Rule-R 读取在 `<data_dir>/<domain>/<instance>.read-audit.jsonl` 追加一条自足记录（`version/ts/domain/instance/participant/token_id`）并 fsync。**fail-closed**：审计写失败则本次读取以 `500` 拒绝，不允许「读成功但无审计」。审计流**不进入**事件日志 / `seq` / 重放 / Rule-T，不参与快照与压缩。
-  - **只读视图**：REST `GET /domains/{d}[/instances/{i}]/read-audit?limit=N`（缺省 100，上限 1000，时间正序）返回 `{records:[...]}`。
+  - **读审计**：开启 `read_audit = true` 后，每次成功的 Rule-R 读取在 `<data_dir>/<domain>/<instance>.read-audit.jsonl` 追加一条自足记录（`version/kind/ts/domain/instance/participant/token_id`），每次成功的 Counter/Archive 视图读取追加一条 `kind=view` 记录（`view`、`type_filter`、按类型聚合的 `types[{type,tokens,refs_visible,refs_filtered}]`）。视图记录只记暴露计数，**不记录 `thing_ref` 值**。**fail-closed**：审计写失败则本次读取或视图以 `500` 拒绝，不允许「读成功但无审计」。审计流**不进入**事件日志 / `seq` / 重放 / Rule-T，不参与快照与压缩。
+  - **只读视图**：REST `GET /domains/{d}[/instances/{i}]/read-audit?limit=N`（缺省 100，上限 1000，时间正序）返回 `{records:[...]}`；旧记录无 `kind` 字段时按 `read` 解析。
 
 ### FR18 部署与分发产物
 
@@ -209,6 +210,35 @@
 - **恢复与卸载**：恢复以最后基线解释状态；活动指针悬空 ⇒ 启动 fail-fast；卸载活动实例时清除指针。
 - **接口面**：REST `POST /domains/{d}/handoff`、`GET/PUT /domains/{d}/active`、`PUT /domains/{d}/instances/{i}/freeze`；CLI `pact domain handoff|activate|active|freeze`；MCP `pact_domain_handoff|activate|active|freeze`（工具总数 21）。
 - **实现状态**：已实现（2026-10-25）。模型/内核/存储/引擎/HTTP/CLI/MCP/WASM 视图贯通；测试覆盖交接迁移、冻结只读与幂等重放、别名切换与回退、重启恢复、类型闭包失败无副作用、目标冲突与 ACL。
+
+### FR27 物引静态检查命令（D41）
+
+- **定位**：提供离线命令 `pact ref lint`，在进入运行前检查 RefBindings、ContractCard 与 `.pact` 声明的静态一致性。不解析具体 `ThingRef` 的存在性、不访问网络、不读写引擎状态。
+- **输入**：`--bindings PATH`（可重复；文件或目录，目录展开 `.yaml`/`.yml`/`.json`）、`--contracts PATH`（可重复）、`--tombstones PATH`（可重复，D44）、`--declaration FILE`（可选 `.pact`）、`--name N`（期望域名；缺省取声明文件 stem）、`--strict`（警告视为失败）。
+- **检查项**：绑定/契约/Tombstone 解析与规范校验；重复域、重复契约与重复 tombstone；绑定类型键与声明类型一致；契约引用可解析；绑定接受的 scheme 与契约声明的 scheme 一致；`required` 但无契约；Identifier 放行；未注册 scheme 放行；`declarationDigest` 缺失；契约状态（retired / deprecated）；未被引用的契约；归档钉版契约的 retention 声明；tombstone 的契约存在性、删除策略一致性与引用 scheme/长度。
+- **输出与退出码**：`--json` 输出 `{bindings, contracts, tombstones, errors, warnings, findings[]}`，finding 含 `severity / code / path / message`；人类模式逐条打印并给出摘要。存在 error 退出 `1`，否则 `0`；`--strict` 下 warning 也退出 `1`。
+- **边界**：不替代运行期 resolve/invoke；不校验 `declarationDigest` 的内容（规范未定义摘要算法）；不检查实例的动态引用集合。静态检查通过不代表运行期引用可用。
+- **实现状态**：已实现（2026-10-27）。`pact-cli` 单元测试与端到端测试覆盖一致输入、未知类型、缺失/未使用契约、scheme 冲突、Identifier 放行、重复/退役契约、解析失败与退出码。
+
+### FR28 物引可见性过滤（D42）
+
+- **定位**：`GET /counter` 与 `GET /archive` 返回的 token 中，`thing_ref` 默认按 `read-gate` 过滤；token 的存在性、类型、状态与计数不被过滤。
+- **主体**：调用者身份来自 Bearer / OIDC / Ed25519 签名 / 本地已验证主体。配置了令牌或签名时，匿名读取视图返回 `401`；信任声明模式无主体。
+- **默认策略**：无显式 RefBindings 时全部走 `read-gate`；只有调用者对该类型有**无条件** `reads` 或 `consumes` 子句时才返回票面，`produces` 不授予可见性。条件子句暂不逐 token 求值，按不可见处理（保守）。
+- **显式覆盖**：daemon `[ref_bindings].paths` 指向 RefBindings 文件或目录；`spec.*.ref.visibility` 按 `defaults → scheme → type → instance/type` 匹配决定 `domain`（直接可见）、`hidden`（永不返回）或 `read-gate`。
+- **失败模式**：RefBindings 读取/解析/规范校验失败或同一域重复声明 → daemon 拒绝启动（fail-closed）。
+- **边界**：只过滤 Counter/Archive 的 `thing_ref`；`GET /tokens/{id}` 仍由 Rule-R 的 read gate 授权。视图级读审计（D43）在 `read_audit = true` 时按视图/类型记录暴露计数，不记录票面值。
+- **实现状态**：已实现（2026-10-27）。`pact-http` 单元测试与端到端测试覆盖 read-gate、domain、hidden、匿名 401、信任模式、Archive 与视图级审计（含 fail-closed）。
+
+### FR29 引用保留与 tombstone（D44）
+
+- **定位**：把「内容保留多久、删除时是否留下可发现证据」变成可静态校验的契约声明，覆盖 `docs/thingref-governance.md` 的保留阶段。PACT 引擎仍不 fetch / delete / 解析引用；tombstone 由域作者以正常 `seed` / `produce` 产生。
+- **保留声明**：ContractCard `spec.lifecycle.retention` 只接受 `permanent` 或正的 ISO 8601 duration（`P[nY][nM][nW][nD][T[nH][nM][nS]]`，周不得与其他日期分量组合）；`deletionPolicy` 只接受 `retain` / `delete` / `tombstone-then-delete`。
+- **tombstone 联动**：`tombstone-then-delete` 必须声明 `tombstoneRef`（URI），其余策略不得声明；归档钉版（`pinning.requiredForArchive`）的契约禁止使用 `delete`。保留期长度本身由域作者按下游最晚行动时间决定，PACT 不猜测。
+- **Tombstone 记录**：`apiVersion: pact.ref/v1`、`kind: Tombstone`；`metadata.id` 为全局唯一 URI，`spec` 含 `contract`（`id@version`）、`ref`、`reason`（expired/replaced/revoked/compromised/legal/manual）、`deletedAt`（RFC3339 UTC `Z`）、可选 `retainUntil`（必须晚于 `deletedAt`）、可选 `replacedBy`（`reason=replaced` 时必填）与 `note`（≤2048 字节、无控制字符）。规范见 `spec/ref/v1/tombstone.schema.json`。
+- **静态检查**：`pact ref lint --tombstones` 校验 Tombstone 解析/规范、重复 id、重复 (contract, ref)、契约存在性、删除策略一致性与引用 scheme/长度；归档钉版但未声明 `lifecycle` 的契约给出警告。
+- **边界**：不校验内容是否真的已删除、tombstone 是否已发布或解析可达；不做运行期保留计时与自动删除；不改变引擎/存储/Archive 的既有语义。
+- **实现状态**：已实现（2026-10-27）。`pact-ref-spec` 规范校验、`pact-cli` 单元与端到端测试覆盖 retention 语法、策略组合、Tombstone 字段与交叉检查。
 
 ## 5. 非功能需求
 

@@ -1,8 +1,10 @@
 //! pact-cli（§9.3 人类接口）：`pact` 命令。
 //!
 //! - 在线命令经 unix socket（默认）或 TCP 调 REST API（复用 pact-http client）；
-//! - 离线命令（`analyze` / `compose` / `replay`）不经 daemon；
+//! - 离线命令（`analyze` / `compose` / `replay` / `ref lint`）不经 daemon；
 //! - `--json` 输出与 §6 线上格式一致。
+
+mod ref_lint;
 
 use clap::{Parser, Subcommand};
 use pact_core::CounterState;
@@ -135,6 +137,11 @@ enum Command {
     Gates {
         #[command(subcommand)]
         cmd: GatesCmd,
+    },
+    /// 物引治理：离线检查 RefBindings / ContractCard 与 .pact 声明
+    Ref {
+        #[command(subcommand)]
+        cmd: RefCmd,
     },
     /// 当前可执行生产（Rule-W 自驱）
     Enabled {
@@ -337,6 +344,31 @@ enum GatesCmd {
         instance: Option<String>,
         #[arg(long)]
         participant: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RefCmd {
+    /// 静态检查 RefBindings、ContractCard、Tombstone 与 .pact 声明的一致性（离线）
+    Lint {
+        /// RefBindings 文件（可重复；目录会展开 .yaml/.yml/.json）
+        #[arg(long = "bindings", value_name = "PATH", required = true)]
+        bindings: Vec<PathBuf>,
+        /// ContractCard 文件或目录（可重复）
+        #[arg(long = "contracts", value_name = "PATH")]
+        contracts: Vec<PathBuf>,
+        /// Tombstone 文件或目录（可重复）
+        #[arg(long = "tombstones", value_name = "PATH")]
+        tombstones: Vec<PathBuf>,
+        /// .pact 声明文件，用于校验绑定键引用的类型
+        #[arg(long)]
+        declaration: Option<PathBuf>,
+        /// 期望域名（缺省取声明文件 stem）
+        #[arg(long)]
+        name: Option<String>,
+        /// 警告也视为失败（退出码 1）
+        #[arg(long)]
+        strict: bool,
     },
 }
 
@@ -844,6 +876,25 @@ async fn run(cli: Cli) -> ExitCode {
             instance,
             bounds,
         } => offline_cpn(json, &file, &out, &instance, &bounds),
+        Command::Ref {
+            cmd:
+                RefCmd::Lint {
+                    bindings,
+                    contracts,
+                    tombstones,
+                    declaration,
+                    name,
+                    strict,
+                },
+        } => offline_ref_lint(
+            json,
+            &bindings,
+            &contracts,
+            &tombstones,
+            declaration.as_deref(),
+            name,
+            strict,
+        ),
     }
 }
 
@@ -988,6 +1039,51 @@ fn client_error_detail(e: ClientError) -> ErrorDetail {
 }
 
 // ============ 离线命令 ============
+
+fn offline_ref_lint(
+    json: bool,
+    bindings: &[PathBuf],
+    contracts: &[PathBuf],
+    tombstones: &[PathBuf],
+    declaration: Option<&Path>,
+    name: Option<String>,
+    strict: bool,
+) -> ExitCode {
+    let options = ref_lint::LintOptions {
+        bindings: bindings.to_vec(),
+        contracts: contracts.to_vec(),
+        tombstones: tombstones.to_vec(),
+        declaration: declaration.map(Path::to_path_buf),
+        expected_domain: name,
+    };
+    let report = match ref_lint::lint_paths(&options) {
+        Ok(report) => report,
+        Err(detail) => return fail(json, detail),
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        for finding in &report.findings {
+            let level = match finding.severity {
+                ref_lint::Severity::Error => "error",
+                ref_lint::Severity::Warning => "warning",
+            };
+            println!(
+                "{level} [{}] {}: {}",
+                finding.code, finding.path, finding.message
+            );
+        }
+        println!(
+            "bindings={} contracts={} tombstones={} errors={} warnings={}",
+            report.bindings, report.contracts, report.tombstones, report.errors, report.warnings
+        );
+    }
+    if report.failed() || (strict && report.warnings > 0) {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
 
 fn offline_analyze(json: bool, file: &PathBuf) -> ExitCode {
     let text = match read_file(file, json) {

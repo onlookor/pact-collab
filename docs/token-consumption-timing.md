@@ -258,7 +258,7 @@ coordinator: consumes shared when count ack_a >= 1 and count ack_b >= 1
 | `paper/pactv1_rev3.md` §1.4 Rule-P/R/E/T、§1.4.0、§1.6、§1.7.3、A.6 | 规范源；§1.6/§1.7.3 已于 2026-10-24 补写消费时机与 ack 屏障 |
 | `docs/design.md` §18 | 索引行与实现映射 |
 | `docs/architecture.md` §5 | 质量属性引用 |
-| `docs/manual.md` §1.5、§4.5 | 用户视角“何时别消费” |
+| `docs/manual.md` §1.7、§4.5 | 用户视角“何时别消费” |
 | `docs/skill-adaptation.md` §4.4 E6 | 只读不消费的适配实例 |
 | `examples/README.md` §7.3 | 示例边界引用 |
 | `crates/pact-core/src/rules.rs` | Rule-E 注释引用 TC2/TC7/TC13 |

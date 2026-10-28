@@ -21,7 +21,7 @@ use futures::StreamExt;
 use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
 use pact_engine::views::StatusView;
 use pact_engine::{Engine, EngineError, InstanceKey, DEFAULT_INSTANCE};
-use pact_store::StoreError;
+use pact_store::{StoreError, ViewName};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
@@ -45,6 +45,8 @@ pub struct ServerState {
     oidc: Option<Arc<crate::oidc::OidcValidator>>,
     /// D36：对外基址（RFC 9728 元数据）。
     public_url: Option<String>,
+    /// D42：Counter/Archive 的票面可见性 profile（RefBindings）。
+    visibility: crate::visibility::VisibilityProfiles,
     /// D35：进程内能力令牌（MCP → 本地 REST）。
     internal_token: [u8; 32],
     /// D34：nonce 防重放缓存。
@@ -75,6 +77,27 @@ impl ServerState {
         oidc: Option<Arc<crate::oidc::OidcValidator>>,
         public_url: Option<String>,
     ) -> Arc<Self> {
+        Self::with_identity_and_visibility(
+            engine,
+            auth_tokens,
+            auth_keys,
+            acl,
+            oidc,
+            public_url,
+            crate::visibility::VisibilityProfiles::empty(),
+        )
+    }
+
+    /// D42：带票面可见性 profile 的构造；其余参数同 `with_identity`。
+    pub fn with_identity_and_visibility(
+        engine: Engine,
+        auth_tokens: BTreeMap<String, String>,
+        auth_keys: BTreeMap<String, [u8; 32]>,
+        acl: AclMap,
+        oidc: Option<Arc<crate::oidc::OidcValidator>>,
+        public_url: Option<String>,
+        visibility: crate::visibility::VisibilityProfiles,
+    ) -> Arc<Self> {
         Arc::new(Self {
             engine,
             auth_tokens,
@@ -82,6 +105,7 @@ impl ServerState {
             acl,
             oidc,
             public_url,
+            visibility,
             internal_token: random_internal_token(),
             nonces: tokio::sync::Mutex::new(crate::sign::NonceCache::default()),
             started_at: std::time::Instant::now(),
@@ -195,6 +219,53 @@ impl ServerState {
                 "ACL 已启用但令牌表为空（配置非法）".to_owned(),
             )),
         }
+    }
+
+    /// D42：视图调用者身份。令牌模式要求 Bearer（匿名 401）；信任模式为 None。
+    fn view_principal(&self, headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+        self.authenticated_principal(headers)
+    }
+
+    /// D42：调用者在该实例上可无条件读取的类型集合（reads/consumes）。
+    async fn readable_types(
+        &self,
+        key: &InstanceKey,
+        principal: Option<&str>,
+    ) -> Result<BTreeSet<TypeName>, ApiError> {
+        let Some(principal) = principal else {
+            return Ok(BTreeSet::new());
+        };
+        let clauses = self
+            .engine
+            .my_gates(key.clone(), ParticipantName(principal.to_owned()))
+            .await?;
+        Ok(clauses
+            .into_iter()
+            .filter(|clause| {
+                clause.condition.is_none()
+                    && matches!(
+                        clause.action,
+                        pact_core::Action::Read | pact_core::Action::Consume
+                    )
+            })
+            .map(|clause| clause.ty)
+            .collect())
+    }
+
+    /// D43：视图级读审计。开启 `read_audit` 时由引擎 actor 落盘；写失败上抛，
+    /// 调用方据此拒绝本次视图响应（fail-closed）。
+    async fn record_view_audit(
+        &self,
+        key: &InstanceKey,
+        participant: Option<String>,
+        view: ViewName,
+        type_filter: Option<String>,
+        types: Vec<pact_store::ViewAuditType>,
+    ) -> Result<(), ApiError> {
+        self.engine
+            .record_view_audit(key.clone(), participant, view, type_filter, types)
+            .await?;
+        Ok(())
     }
 
     fn forbidden(domain: &str, instance: &str) -> ApiError {
@@ -1291,7 +1362,18 @@ async fn counter_inner(
     q: TypeQuery,
 ) -> Result<Json<pact_engine::views::CounterView>, ApiError> {
     st.authorize_key(&headers, &key)?;
-    Ok(Json(st.engine.counter(key, q.ty.map(TypeName)).await?))
+    let principal = st.view_principal(&headers)?;
+    let type_filter = q.ty.clone();
+    let mut view = st.engine.counter(key.clone(), q.ty.map(TypeName)).await?;
+    let readable = if view.tokens.iter().any(|token| token.thing_ref.0.is_some()) {
+        st.readable_types(&key, principal.as_deref()).await?
+    } else {
+        BTreeSet::new()
+    };
+    let audit_types = apply_visibility(&st.visibility, &key, view.tokens.iter_mut(), &readable);
+    st.record_view_audit(&key, principal, ViewName::Counter, type_filter, audit_types)
+        .await?;
+    Ok(Json(view))
 }
 
 async fn archive(
@@ -1319,7 +1401,90 @@ async fn archive_inner(
     q: TypeQuery,
 ) -> Result<Json<pact_engine::views::ArchiveView>, ApiError> {
     st.authorize_key(&headers, &key)?;
-    Ok(Json(st.engine.archive(key, q.ty.map(TypeName)).await?))
+    let principal = st.view_principal(&headers)?;
+    let type_filter = q.ty.clone();
+    let mut view = st.engine.archive(key.clone(), q.ty.map(TypeName)).await?;
+    let readable = if view
+        .entries
+        .iter()
+        .any(|entry| entry.token.thing_ref.0.is_some())
+    {
+        st.readable_types(&key, principal.as_deref()).await?
+    } else {
+        BTreeSet::new()
+    };
+    let audit_types = apply_visibility(
+        &st.visibility,
+        &key,
+        view.entries.iter_mut().map(|entry| &mut entry.token),
+        &readable,
+    );
+    st.record_view_audit(&key, principal, ViewName::Archive, type_filter, audit_types)
+        .await?;
+    Ok(Json(view))
+}
+
+/// D42/D43：按 profile 与调用者 gate 过滤票面，并返回按类型聚合的审计计数。
+/// token 存在性保持不变；审计只记计数，不记 `thing_ref` 值。
+fn apply_visibility<'a, I>(
+    profiles: &crate::visibility::VisibilityProfiles,
+    key: &InstanceKey,
+    tokens: I,
+    readable: &BTreeSet<TypeName>,
+) -> Vec<pact_store::ViewAuditType>
+where
+    I: IntoIterator<Item = &'a mut pact_core::Token>,
+{
+    #[derive(Default)]
+    struct Tally {
+        tokens: usize,
+        refs_visible: usize,
+        refs_filtered: usize,
+    }
+
+    let mut stats: BTreeMap<String, Tally> = BTreeMap::new();
+    for token in tokens {
+        let tally = stats.entry(token.ty.0.clone()).or_default();
+        tally.tokens += 1;
+        if token.thing_ref.0.is_none() {
+            continue;
+        }
+        if ref_is_visible(profiles, key, &token.ty, &token.thing_ref, readable) {
+            tally.refs_visible += 1;
+        } else {
+            tally.refs_filtered += 1;
+            token.thing_ref = ThingRef::none();
+        }
+    }
+    stats
+        .into_iter()
+        .map(|(ty, tally)| pact_store::ViewAuditType {
+            ty,
+            tokens: tally.tokens,
+            refs_visible: tally.refs_visible,
+            refs_filtered: tally.refs_filtered,
+        })
+        .collect()
+}
+
+fn ref_is_visible(
+    profiles: &crate::visibility::VisibilityProfiles,
+    key: &InstanceKey,
+    ty: &TypeName,
+    thing_ref: &ThingRef,
+    readable: &BTreeSet<TypeName>,
+) -> bool {
+    use crate::visibility::RefExposure;
+    match profiles.exposure(
+        &key.domain,
+        &key.instance,
+        ty.0.as_str(),
+        thing_ref.0.as_deref(),
+    ) {
+        RefExposure::Visible => true,
+        RefExposure::ReadGate => readable.contains(ty),
+        RefExposure::Hidden => false,
+    }
 }
 
 async fn read_token(

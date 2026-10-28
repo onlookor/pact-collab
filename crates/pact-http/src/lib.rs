@@ -12,3 +12,4 @@ pub mod oidc;
 pub mod server;
 pub mod sign;
 pub mod tls;
+pub mod visibility;

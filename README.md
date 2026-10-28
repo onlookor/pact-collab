@@ -1,27 +1,102 @@
-# PACT Reference Implementation
+# PACT
+
+**A declarative coordination layer for multi-agent and human–agent workflows.**
 
 [![CI](https://github.com/onlookor/pact-collab/actions/workflows/ci.yml/badge.svg)](https://github.com/onlookor/pact-collab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **English** | [简体中文](README.zh-CN.md)
 
-A Rust implementation of the **PACT** coordination paradigm — domain declaration, execution semantics, static analysis, and a multi-agent runtime — exposed through REST, MCP (stdio and Streamable HTTP), and CLI.
+PACT is a small coordination engine for multi-agent and human–agent workflows. It decides **which collaboration actions are legal right now**, enforces that decision, and records every one of them. It is not an agent framework and not a workflow executor: the participants still do the work.
+
+This repository is the reference implementation: a Rust engine with CLI, REST and MCP interfaces, static analyses, CPN export, and an optional participant runtime.
+
+You describe a workflow as a **domain declaration** (`.pact`): which artifacts can exist, what must already exist before another artifact can be created, who may create / read / consume each artifact, and who may inject the first one. A single-authority daemon holds the current artifact set (the *Counter*), applies those rules to every call from a human, an agent harness, or an application, and appends each accepted action to an immutable event log. Consumed artifacts move to an *Archive*.
+
+The process is therefore **data, not code**: it can be reviewed, statically analyzed, versioned and handed off, replayed, and shared by agents running in different harnesses. Participants still do the work; PACT governs admission and keeps the record.
 
 ## What is PACT?
 
-PACT (Precondition-governed Autonomous Counter-based Token) is a coordination paradigm for multi-agent systems: work items are typed tokens on a per-domain *Counter*, every state change is an explicit rule application (produce / read / consume / seed), and who may do what is governed by typed preconditions plus per-participant gate conditions. Coordination becomes fully explicit, auditable, and amenable to static analysis — no hidden transitions, no implicit side effects.
+PACT (Precondition-governed Autonomous Counter-based Token) is the formal paradigm behind that layer. Four ideas carry most of it:
 
-## Features
+- **Token** — an immutable, typed instance of an artifact. Its type, producer, predecessors and external reference are part of the record.
+- **Precondition** — a type-level rule: producing a `B` requires one live `A` (or a conjunction such as `{A + C}`). Predecessors are witnesses; production never consumes them.
+- **Gate** — who may `read`, `consume`, or `produce` which type. Read and consume gates may carry a state condition such as `via T` (the exact predecessor instance must still be present) or `count T >= n`; production gates are unconditional and rely on the precondition graph.
+- **Counter + Archive** — the current artifact set and the append-only record of consumed artifacts. Reading is non-destructive; consumption is explicit, non-cascading and irreversible.
 
-- **Domain declarations** — a small four-section `.pact` grammar (`types` / `preconditions` / `gates` / `seed_authority`), with all six well-formedness constraints from the paper enforced: RHS & LHS uniqueness, non-empty LHS, type closure, positive-nat literals, and source-production legality.
-- **Execution semantics** — full SOS rules (Rule-P / R / E / S / W / T) with the unified `GateHolds` admission predicate (`via` / `exists` / `count` conditions). Event-sourced engine: append-only log, snapshots, crash recovery, replay equivalence.
-- **Source-production legality** — three-layer enforcement (runtime premise of Rule-P, declaration-time validation, independent static re-check).
-- **Static analysis** — six analyses from the paper's appendix: reachability, gate coverage, consumption reachability, structural deadlock (SCC-based), precondition well-formedness (A.5), and stranding risk.
-- **Fragment composition** — parallel composition of domains with the four consistency conditions (C1–C4).
-- **Three interfaces, four access paths** — REST daemon (unix socket or TCP, SSE notifications), MCP (stdio server and daemon-hosted Streamable HTTP `/mcp`), and a single `pact` CLI for humans and scripts.
-- **Transport security** — optional TLS 1.2/1.3 termination in the daemon, with optional mutual TLS via a client CA.
-- **Verifiable participants** — static bearer tokens or Ed25519 request signatures (replay protection, ±300 s window, 8 MiB cap), integrated with domain-level ACL.
-- **Enterprise identity for MCP** — the daemon acts as an OIDC resource server for `/mcp` only: discovery/JWKS, algorithm allow-list, `iss`/`aud`/`exp`/`nbf` validation, and claim-to-participant mapping. Tokens are never cached or forwarded to REST.
+Three properties follow from that design:
+
+1. **Zero implicit actions.** The Counter changes only when a participant explicitly seeds, produces or consumes. There is no auto-advance, hidden cleanup or implicit retry.
+2. **Provenance-sensitive admission.** A gate can require the *specific* predecessor instance, not merely "some artifact of type T"; that is what makes approval chains mechanically checkable.
+3. **One authority, replayable state.** Every accepted action is an event. Snapshots and indexes are derivatives; the log rebuilds state and doubles as the audit trail.
+
+## Where it fits
+
+**Category:** a declarative, state-based **coordination layer** for discrete artifact workflows. If you need a familiar label, call it a coordination or workflow engine — but note that it does not execute the work itself.
+
+More precisely, PACT is **declarative process orchestration**: the process is defined in the declaration, not drawn as a graph or written as imperative code. The graph is a derived view; execution of the actual tasks stays with the participants.
+
+PACT sits between workflow orchestration, multi-agent coordination, and authorization/audit. It overlaps with all three and is a drop-in replacement for none of them. The closest familiar reference points are:
+
+| You may know it as… | It mainly decides | How PACT differs | Can they be combined? |
+|---|---|---|---|
+| **Graph agent orchestration** — LangGraph | How an agent flow moves through nodes and edges; the graph and state are defined in code. | PACT declares rules over artifact types and current state; the next legal action is computed from the Counter. A graph is a *derived* view (CPN export), not the runtime object. The declaration can be analyzed before execution. | Yes — graph nodes or agents can act as participants and call PACT. |
+| **Durable execution / workflow-as-code** — Temporal, Step Functions | How to run business code durably, with retries, timers, signals and side effects. | The core PACT engine executes no business code, has no clock, retries or timers, and performs no automatic side effects. Every transition is an explicit participant action; the optional runtime can run side effects only after admission, with explicit compensation. | Yes — Temporal can execute the work behind a participant. |
+| **BPMN process engines** — Camunda / Zeebe | Full business-process control flow: gateways, events, timers, human tasks, compensation. | PACT has a much smaller core: AND-only preconditions, no OR gateways, no timers, explicit read/consume separation, action-level gates, and built-in static analysis. | Choose BPMN for rich control flow; choose PACT for a small, analyzable coordination kernel. They can meet at the participant boundary. |
+| **DAG schedulers / automation** — Airflow, n8n | When to run which task, on a schedule or trigger, with retries and integrations. | PACT has no scheduler, clock or auto-firing. A task happens only when a participant acts and the rules admit it. Coordination is artifact-state-driven, not schedule-driven. | Yes — a scheduler can wake participants; PACT decides whether their actions are legal. |
+| **Agent frameworks** — CrewAI, AutoGen, OpenAI Agents SDK | How agents reason, converse, call tools, and hand off work. | PACT has no model calls, messages, roles, task assignment or agent loop. It is a shared rulebook for artifacts across agents and harnesses; agents remain responsible for their own decisions. | Yes — any agent framework can run inside a participant. |
+| **Harness team / task-board plugins** — e.g. DSH Agent Teams | Who creates teammates, assigns tasks, and shares a board and messages inside one harness. | PACT does not create teams, assign tasks, or carry messages; it shares artifact rules across harnesses. | Yes — team plugins handle in-team division; PACT handles cross-team / cross-harness admission. |
+| **Policy engines** — OPA, Cedar | Whether a request is authorized by a policy over request context. | PACT gates are bound to workflow state and artifact provenance; PACT also governs production and consumption and keeps an archive. It is not a general-purpose policy language. | Yes — OPA/Cedar can supply attribute-level decisions to a participant or gateway. |
+| **Petri nets / CPN** — CPN Tools | Formal modeling and state-space analysis of concurrent systems. | PACT is an executable, declaration-based model with built-in participant gates, token identity, provenance and archive. Its raw expressiveness is *incomparable* with P/T nets (paper §4.2–§4.3); it can be encoded into Colored Petri Nets (CPN) for analysis and visualization. | Yes — `pact cpn` emits a CPN model; CPN Tools adds formal exploration. |
+
+The one-line difference: most tools answer **“what should run next?”** or **“who may call this API?”**. PACT answers **“which artifact-level action is admissible now, given what exists, what preceded it, and who is acting?”** — and makes that answer replayable.
+
+### What PACT is not
+
+- **Not an agent framework.** No model calls, prompts, conversations, tool execution or agent lifecycle.
+- **Not a task scheduler or workflow executor.** The core engine has no clock, timers, auto-advance or retries; side effects belong to participants or the optional runtime's explicit executor.
+- **Not a general workflow engine.** AND-only preconditions; no OR gateways, engine-level cancel/compensation semantics, or dynamic participant sets.
+- **Not a general policy engine.** Gates are domain-specific admission rules tied to typed artifacts, not an attribute-based authorization language.
+- **Not a distributed system.** One authority per Counter instance; no consensus, replication or cross-instance coordination.
+- **Not a graph editor.** You define the process as rules; the graph is a derived representation, not the source of truth.
+
+For the full list of what PACT deliberately does not model, see [`docs/expressiveness-boundaries.md`](docs/expressiveness-boundaries.md).
+
+### When to reach for it
+
+- Your process produces **discrete artifacts** (documents, reports, builds, tickets), and “B after A” is a real constraint rather than a preference.
+- More than one participant — human, agent, or service — must agree on **who may create, read, or consume** each artifact.
+- You need **cross-harness coordination** or an auditable record, but want to keep your existing agent framework or executor.
+- You want to **check the process before running it**: deadlock, stranding, unreachable states, gate coverage.
+- You need **provenance-sensitive approval** (this specific review must survive until deployment), not just role-based access.
+
+If your process is continuous, timer-driven, mostly OR-branches, or needs automatic retries and side effects, PACT is probably the wrong layer.
+
+## What you get
+
+**Model and check**
+
+- **Domain declarations** — a four-section `.pact` grammar (`types` / `preconditions` / `gates` / `seed_authority`) with all six well-formedness constraints from the paper enforced.
+- **Six static analyses** — reachability, gate coverage, consumption reachability, structural deadlock (SCC-based), precondition/source-production well-formedness, and stranding risk.
+- **Fragment composition** — parallel composition of domains under the four consistency conditions (C1–C4), with explicit conflict reporting.
+- **CPN export** — offline encoding of a declaration into a CPN Tools model (`pact cpn`) for formal validation and visualization.
+- **ThingRef static lint** — offline `pact ref lint` checks RefBindings, ContractCards, Tombstones and the `.pact` declaration for consistent types, contract references, schemes, retention policy and deletion evidence before references are used.
+- **ThingRef visibility** — Counter/Archive expose `thing_ref` only under `read-gate` (unconditional reads/consumes) by default, or per RefBindings `domain`/`hidden`; token existence is unaffected.
+
+**Run and govern**
+
+- **Full operational semantics** — Rule-P / R / E / S / W / T with the unified `GateHolds` admission predicate (`via` / `exists` / `count`, combinable with `and` / `or` / `not`).
+- **Event-sourced engine** — append-only JSONL log, snapshots, crash recovery, deterministic replay, optional log compaction, and a rule-level idempotency key for consumption.
+- **Multiple Counter instances and declaration handoff** — several independent instances per domain declaration, plus an explicit freeze → migrate → activate path for changing the declaration without losing accumulated state.
+- **Optional transport and identity** — TLS 1.2/1.3 and mTLS, static bearer tokens, Ed25519 request signatures, domain-level ACL, optional read audit, and an OIDC resource server for `/mcp`.
+
+**Integrate and operate**
+
+- **Three interfaces, one authority** — REST (unix socket or TCP, SSE notifications), MCP (stdio and Streamable HTTP `/mcp`, 21 tools), and a single `pact` CLI.
+- **Participant runtime** — `pact-runtime` provides reusable participant drive loops, multi-agent orchestration, and a consume-event side-effect executor with saga-style compensation.
+- **Operations surface** — health/readiness/metrics, graceful shutdown, PID file, systemd/container artifacts.
+- **Local embedding** — a WASM build for Node/desktop hosts, sharing event and snapshot formats with the native engine (single-user by design).
+- **Harness adapter** — [`dsh-plugin-pact`](https://github.com/onlookor/pact-dsh) connects DeepSeek Harness agents to the engine. The default `observe` mode only mirrors events; in `govern` mode the PACT domain decides whether a step or tool may run, while DSH still owns the agent loop, model calls and tool execution. The adapter is not the coordination model; the engine is harness-independent and can serve agents from different harnesses at once.
 
 ## Where to start
 
@@ -29,11 +104,13 @@ PACT has one onboarding ladder: authoring contract → [`pact-domain-authoring` 
 
 | If you want to… | Start here | Then |
 |---|---|---|
+| Understand what PACT is and where it fits | [What is PACT?](#what-is-pact) and [Where it fits](#where-it-fits) | [manual §1](docs/manual.md) for the category comparison, then [`paper/pactv1_rev3.md`](paper/pactv1_rev3.md) |
 | Decide whether PACT fits, or read the paradigm | [What is PACT?](#what-is-pact) and [`paper/pactv1_rev3.md`](paper/pactv1_rev3.md) | [`expressiveness-boundaries.md`](docs/expressiveness-boundaries.md) — what PACT deliberately does not model |
 | Write your first domain inside a coding agent | [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) | `pact analyze <file>` until it exits 0; [example domains](examples/README.md) |
 | Write your first domain with no toolchain installed | [Authoring workbench](https://onlookor.github.io/pact-collab/authoring/) ([offline file](web/authoring/index.html)) | [Sandbox](https://onlookor.github.io/pact-collab/sandbox/) to run it in memory |
 | Write a domain by hand, or follow the full protocol | [`docs/authoring-contract.md`](docs/authoring-contract.md) | [manual §3](docs/manual.md) for grammar, §5 for the six analyses |
 | Run a domain and drive agents | [manual §2](docs/manual.md) (daemon, `pact.toml`, identity) and §4 (CLI / REST / MCP) | [`examples/online/run.sh`](examples/online/run.sh), then the [connect wizard](https://onlookor.github.io/pact-collab/connect/) |
+| Use PACT inside DeepSeek Harness | [`dsh-plugin-pact`](https://github.com/onlookor/pact-dsh#readme) | [manual §13](docs/manual.md) for `observe` / `govern`, configuration and limits |
 | Deploy or operate it | [manual §2.2–§2.4](docs/manual.md) (TLS, tokens, signatures), §7 (audit/replay), §10 (troubleshooting) | [`architecture.md`](docs/architecture.md) §3–§4, [`design.md`](docs/design.md) §9 |
 | Decide when a shared token may be consumed | [`token-consumption-timing.md`](docs/token-consumption-timing.md) | [`authoring-contract.md`](docs/authoring-contract.md) §5 |
 | Change the engine or contribute | [`architecture.md`](docs/architecture.md) and [`design.md`](docs/design.md) | [`requirements.md`](docs/requirements.md), [Testing](#testing) |
@@ -138,7 +215,7 @@ pact status --domain proj
 | `pact-mcp` | MCP stdio thin wrapper (21 `pact_*` tools, backed by REST) |
 | `pact-runtime` | Multi-agent orchestrator: participant drive loops, gates, outbox/saga executors |
 | `pact-cpn` | CPN Tools XML encoding of a declaration (positive fragment + complementary places; offline, no I/O) |
-| `pact-cli` | Single `pact` binary: daemon control, online operations, offline validate/analyze/compose/replay/cpn |
+| `pact-cli` | Single `pact` binary: daemon control, online operations, offline validate/analyze/compose/replay/cpn/ref lint |
 
 ## Testing
 

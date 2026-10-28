@@ -1,0 +1,226 @@
+//! `pact ref lint` 离线端到端：真实二进制、真实文件、目录展开与退出码。
+
+use serde_json::Value;
+use std::path::Path;
+use std::process::{Command, Output};
+
+const DECL: &str = r#"
+types { requirement; design; implementation }
+preconditions { requirement → design; design → implementation }
+gates {
+    architect: reads requirement, consumes requirement, produces design;
+    developer: consumes design, produces implementation;
+    user: consumes implementation
+}
+seed_authority { external: seeds requirement }
+"#;
+
+const BINDINGS: &str = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: se_lifecycle
+  declarationDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+spec:
+  types:
+    design:
+      ref:
+        required: true
+        schemes: [https]
+        contract: se/design-review@2
+        pinning: required-at-archive
+"#;
+
+const CARD: &str = r#"
+apiVersion: pact.ref/v1
+kind: ContractCard
+metadata:
+  id: se/design-review
+  version: "2"
+  owner: architecture-guild
+  status: active
+spec:
+  artifact:
+    kind: document
+    mediaType: text/markdown
+    digestPolicy: optional
+  reference:
+    schemes: [https]
+    pinning:
+      requiredForArchive: true
+  lifecycle:
+    retention: P365D
+    deletionPolicy: tombstone-then-delete
+    tombstoneRef: urn:pact:tombstone:se/design-review
+"#;
+
+const TOMBSTONE: &str = r#"
+apiVersion: pact.ref/v1
+kind: Tombstone
+metadata:
+  id: "urn:pact:tombstone:se/design-review:req-001"
+spec:
+  contract: se/design-review@2
+  ref: https://artifacts.example.com/design/req-001
+  reason: expired
+  deletedAt: 2026-10-27T00:00:00Z
+  retainUntil: 2027-10-27T00:00:00Z
+"#;
+
+fn pact(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_pact"))
+        .args(args)
+        .output()
+        .expect("执行 pact 命令失败")
+}
+
+fn report(out: &Output) -> Value {
+    serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("输出应为合法 JSON")
+}
+
+fn write(dir: &Path, name: &str, text: &str) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, text).unwrap();
+    path.display().to_string()
+}
+
+#[test]
+fn ref_lint_static_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    let declaration = write(dir.path(), "se_lifecycle.pact", DECL);
+    let bindings = write(dir.path(), "se_lifecycle.refs.yaml", BINDINGS);
+    let contracts_dir = dir.path().join("contracts");
+    std::fs::create_dir(&contracts_dir).unwrap();
+    std::fs::write(contracts_dir.join("design.yaml"), CARD).unwrap();
+    let tombstones_dir = dir.path().join("tombstones");
+    std::fs::create_dir(&tombstones_dir).unwrap();
+    std::fs::write(tombstones_dir.join("req-001.yaml"), TOMBSTONE).unwrap();
+
+    // 一致输入：目录展开 ContractCard / Tombstone，0 error / 0 warning。
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &bindings,
+        "--contracts",
+        contracts_dir.to_str().unwrap(),
+        "--tombstones",
+        tombstones_dir.to_str().unwrap(),
+        "--declaration",
+        &declaration,
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value = report(&out);
+    assert_eq!(value["bindings"], 1);
+    assert_eq!(value["contracts"], 1);
+    assert_eq!(value["tombstones"], 1);
+    assert_eq!(value["errors"], 0);
+    assert_eq!(value["warnings"], 0, "report: {value}");
+    assert!(value["findings"].as_array().unwrap().is_empty());
+
+    // 类型拼写错误 → error，退出 1。
+    let bad = write(
+        dir.path(),
+        "bad.refs.yaml",
+        &BINDINGS.replace("    design:", "    desgin:"),
+    );
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &bad,
+        "--contracts",
+        contracts_dir.to_str().unwrap(),
+        "--declaration",
+        &declaration,
+    ]);
+    assert!(!out.status.success());
+    let value = report(&out);
+    assert_eq!(value["errors"], 1);
+    assert_eq!(value["findings"][0]["code"], "ref.bindings.unknown_type");
+
+    // 未提供 ContractCard：仅警告，退出 0；--strict 视为失败。
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &bindings,
+        "--declaration",
+        &declaration,
+    ]);
+    assert!(out.status.success());
+    let value = report(&out);
+    assert_eq!(value["errors"], 0);
+    assert!(value["warnings"].as_u64().unwrap() > 0);
+    assert!(value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["code"] == "ref.bindings.contract_unverified"));
+
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &bindings,
+        "--declaration",
+        &declaration,
+        "--strict",
+    ]);
+    assert!(!out.status.success(), "--strict 应把 warning 视为失败");
+
+    // 人类模式摘要。
+    let out = pact(&[
+        "ref",
+        "lint",
+        "--bindings",
+        &bindings,
+        "--contracts",
+        contracts_dir.to_str().unwrap(),
+        "--tombstones",
+        tombstones_dir.to_str().unwrap(),
+        "--declaration",
+        &declaration,
+    ]);
+    assert!(out.status.success());
+    let human = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        human.contains("bindings=1 contracts=1 tombstones=1 errors=0 warnings=0"),
+        "人类输出: {human}"
+    );
+
+    // 坏 YAML → 解析错误，不中断其余检查。
+    let broken = write(dir.path(), "broken.yaml", "apiVersion: [");
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &broken,
+        "--declaration",
+        &declaration,
+    ]);
+    assert!(!out.status.success());
+    let value = report(&out);
+    assert_eq!(value["findings"][0]["code"], "ref.bindings.parse");
+
+    // 不存在的 bindings 路径 → Io 错误体。
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        "/nonexistent/refs.yaml",
+    ]);
+    assert!(!out.status.success());
+    let value = report(&out);
+    assert_eq!(value["error"]["code"], "Io");
+}

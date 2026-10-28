@@ -2,6 +2,43 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-27（第 37 轮，引用保留与 tombstone）
+
+- **规范层职责扩展**：`pact-ref-spec` 在 URI/RefBindings/ContractCard 之上新增 Tombstone 与 lifecycle 校验；仍为纯 crate，不依赖引擎、存储或 IO。
+- **静态验收路径**：`pact-cli` 的离线 `ref lint --tombstones` 消费规范层，校验 ContractCard 保留策略、Tombstone 字段与二者一致性；不经 daemon。
+- **边界不变**：PACT 引擎不 fetch/delete/解析引用，tombstone 由域作者以正常 seed/produce 产生；保留计时、内容删除与 tombstone 发布属于治理平面/制品域。
+- **文档**：`docs/requirements.md` 新增 FR29 并扩展 FR27；`docs/design.md` 新增 D44 与 §9.11；`docs/manual.md` 新增 §7.10 并更新 §7.8；`docs/thingref-governance.md` 更新 §9/§13 阶段状态与产物清单。
+
+## 2026-10-27（第 36 轮，视图级读审计）
+
+- **审计流扩展**：独立读审计流新增 `kind=view` 记录（D43），承载 Counter/Archive 的按类型暴露计数；Rule-R 记录保持 `kind=read`，旧记录缺省兼容。
+- **写路径归属**：视图计数在 `pact-http` 过滤票面时计算，落盘仍经引擎 actor 单写者（`Engine::record_view_audit`），接口层不直接写文件。
+- **安全边界**：审计只记计数、不记 `thing_ref` 值；写失败时视图 `500` 拒绝。审计流仍不进入事件日志、`seq`、重放与 Rule-T。
+- **依赖方向**：`pact-http → pact-store` 新增 `ViewName`/`ViewAuditType` 类型引用；`pact-core`、`pact-engine-kernel` 仍不感知引用与审计。
+- **文档**：`docs/requirements.md` 扩展 FR17/FR28；`docs/design.md` 新增 D43 与 §9.10 记录示例；`docs/manual.md` §7.5/§7.9 更新；`docs/thingref-governance.md` §9/§13 更新阶段状态。
+
+## 2026-10-27（第 35 轮，物引可见性过滤）
+
+- **接口层新增策略**：`pact-http` 在 Counter/Archive 返回前过滤 `thing_ref`（D42/FR28）；默认 `read-gate`，`domain` 公开，`hidden` 隐藏；token 存在性与事件日志不变。
+- **依赖方向**：`pact-http → pact-ref-spec`（新增 workspace 依赖）与 `serde_yaml`；引擎、内核、存储仍不解析引用。
+- **配置与启动**：新增 `[ref_bindings].paths`；路径展开、解析、规范校验与重复域检查在 daemon 启动时完成，失败 fail-closed。
+- **身份边界**：令牌/签名模式下视图读取要求认证；信任模式无主体，read-gate 默认隐藏。
+- **文档**：`docs/requirements.md` 新增 FR28；`docs/design.md` 新增 D42；`docs/manual.md` §2.2/§7.9 增补配置与行为；`docs/thingref-governance.md` §9/§13 更新阶段状态。
+
+## 2026-10-27（第 34 轮，物引静态检查命令）
+
+- **新增离线命令**：`pact ref lint`（`crates/pact-cli/src/ref_lint.rs`），只读文件、只依赖 `pact-ref-spec` 与纯函数层，不经 daemon、不触状态。
+- **依赖方向**：`pact-cli → pact-ref-spec`（新增 workspace 依赖）与 `serde_yaml`；规范 crate 仍不反向依赖引擎/store。
+- **归属**：属范式引擎层之外的离线工具，不进入 daemon 拓扑，不改变存储、进程与端口。
+- **文档**：`docs/requirements.md` 新增 FR27；`docs/design.md` 新增 D41；`docs/manual.md` §7.8 与 §8.1 增补命令说明；`docs/thingref-governance.md` §9/§13 更新落地状态。
+
+## 2026-10-26（第 33 轮，物引规范层）
+
+- **新增 crate**：`crates/pact-ref-spec`，纯规范层，不依赖 engine/store，可编译到 wasm32。
+- **新增规范目录**：`spec/ref/v1/`（URI profile、两份 JSON Schema、Reference Plane OpenAPI）。
+- **依赖方向**：`pact-ref` → `pact-ref-spec`（re-export + vendored 快照）；`pact-ref-spec` 不反向依赖 PACT 引擎。PACT daemon 不调用治理平面。
+- **文档**：`docs/architecture.md` §1 新增“物引规范层”约束；`docs/design.md` 新增 D40；`docs/thingref-governance.md` §9/§13 同步落地状态。
+
 ## 2026-10-25（第 32 轮，文档编号约定附录）
 
 - **新增附录 A「文档标识符与编号约定」**：登记全部命名空间的权威定义文件（FR/NFR、D、TC-*、B、W-*、契约 G/H/R、E、S、Rule-*、A.x）与跨文件引用规则（先登记后使用、跨文件带前缀、不复用含义、描述性概念不用标签、历史不回溯、测试夹具除外）。

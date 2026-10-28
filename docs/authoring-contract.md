@@ -1,6 +1,7 @@
 # PACT 域作者契约
 
 > **用途**：把一个真实协作场景，稳定地转成一份能通过 `pact analyze` 的 `.pact` 域声明。
+> **定位**：PACT 是声明式协同层；本契约产出的是**流程定义**（域声明），不是执行代码或图。引擎负责准入与留痕，任务仍由参与者执行。
 > **读者**：没有 PACT 背景的人；以及被要求代为建模的模型。
 > **性质**：这是**生成协议**，不是规范。语义以 `paper/pactv1_rev3.md` 为准；语法细节见
 > [`manual.md`](manual.md) §3；边界编号见 [`expressiveness-boundaries.md`](expressiveness-boundaries.md)；

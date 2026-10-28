@@ -19,6 +19,7 @@ use pact_engine_kernel::{analysis_report, ConsumePreparation, KernelError, Sessi
 use pact_parser::{emit_domain, load_domain, Problem};
 use pact_store::{
     ActivePointer, Event, InstanceKey, ModelError, ReadAuditRecord, Snapshot, Store, StoreError,
+    ViewAuditType, ViewName,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -270,11 +271,20 @@ pub enum Command {
         key: InstanceKey,
         resp: Responder<StatusView>,
     },
-    /// 读审计视图（D25 子项 3）：最近 `limit` 条 Rule-R 记录（时间正序）。
+    /// 读审计视图（D25 子项 3 / D43）：最近 `limit` 条记录（时间正序）。
     QueryReadAudit {
         key: InstanceKey,
         limit: usize,
         resp: Responder<Vec<ReadAuditRecord>>,
+    },
+    /// 追加视图级读审计（D43）：`read_audit = false` 时为空操作。
+    RecordViewAudit {
+        key: InstanceKey,
+        participant: Option<String>,
+        view: ViewName,
+        type_filter: Option<String>,
+        types: Vec<ViewAuditType>,
+        resp: Responder<()>,
     },
     ListDomains {
         resp: Responder<Vec<DomainListing>>,
@@ -387,6 +397,9 @@ impl Command {
                 let _ = resp.send(Err(err));
             }
             Command::QueryReadAudit { resp, .. } => {
+                let _ = resp.send(Err(err));
+            }
+            Command::RecordViewAudit { resp, .. } => {
                 let _ = resp.send(Err(err));
             }
             Command::ListDomains { resp } => {
@@ -658,6 +671,17 @@ impl EngineActor {
             Command::QueryReadAudit { key, limit, resp } => {
                 respond(resp, self.query_read_audit(&key, limit))
             }
+            Command::RecordViewAudit {
+                key,
+                participant,
+                view,
+                type_filter,
+                types,
+                resp,
+            } => respond(
+                resp,
+                self.record_view_audit(&key, participant, view, type_filter, types),
+            ),
             Command::ListDomains { resp } => respond(resp, self.list_domains()),
             Command::UnloadDomain { key, resp } => respond(resp, self.unload_domain(&key)),
             Command::Subscribe { key, resp } => respond(resp, self.subscribe(&key)),
@@ -1200,14 +1224,13 @@ impl EngineActor {
             session.core.read(participant, token_id)?
         };
         if self.config.read_audit {
-            let rec = ReadAuditRecord {
-                version: pact_store::EVENT_SCHEMA_VERSION,
-                ts: self.clock.now(),
-                domain: key.domain.clone(),
-                instance: key.instance.clone(),
-                participant: participant.0.clone(),
-                token_id: token.id.0.clone(),
-            };
+            let rec = ReadAuditRecord::rule_r(
+                self.clock.now(),
+                key.domain.clone(),
+                key.instance.clone(),
+                participant.0.clone(),
+                token.id.0.clone(),
+            );
             self.store.append_read_audit(key, &rec)?;
         }
         Ok(token)
@@ -1304,13 +1327,39 @@ impl EngineActor {
         Ok(self.session(key)?.core.status())
     }
 
-    /// 读审计视图（D25 子项 3）：独立审计流，实例未加载也可查看历史记录。
+    /// 读审计视图（D25 子项 3 / D43）：独立审计流，实例未加载也可查看历史记录。
     fn query_read_audit(
         &self,
         key: &InstanceKey,
         limit: usize,
     ) -> Result<Vec<ReadAuditRecord>, EngineError> {
         Ok(self.store.read_audit_tail(key, limit)?)
+    }
+
+    /// 追加视图级读审计（D43）。由引擎 actor 单写者落盘；`read_audit = false` 时无操作。
+    /// 开启时写失败上抛 `EngineError::Store`，接口层据此拒绝本次视图响应（fail-closed）。
+    fn record_view_audit(
+        &self,
+        key: &InstanceKey,
+        participant: Option<String>,
+        view: ViewName,
+        type_filter: Option<String>,
+        types: Vec<ViewAuditType>,
+    ) -> Result<(), EngineError> {
+        if !self.config.read_audit {
+            return Ok(());
+        }
+        let rec = ReadAuditRecord::view(
+            self.clock.now(),
+            key.domain.clone(),
+            key.instance.clone(),
+            participant,
+            view,
+            type_filter,
+            types,
+        );
+        self.store.append_read_audit(key, &rec)?;
+        Ok(())
     }
 
     fn subscribe(
@@ -1846,7 +1895,7 @@ impl Engine {
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 
-    /// 读审计视图（D25 子项 3）：最近 `limit` 条 Rule-R 记录（时间正序）。
+    /// 读审计视图（D25 子项 3 / D43）：最近 `limit` 条记录（时间正序）。
     pub async fn read_audit(
         &self,
         key: InstanceKey,
@@ -1855,6 +1904,29 @@ impl Engine {
         let (resp, rx) = oneshot::channel();
         self.execute(Command::QueryReadAudit { key, limit, resp })
             .await?;
+        rx.await.map_err(|_| EngineError::EngineStopped)?
+    }
+
+    /// 追加视图级读审计（D43）。`read_audit = false` 时为空操作；
+    /// 开启时写失败返回 `EngineError::Store`，调用方必须拒绝本次视图响应（fail-closed）。
+    pub async fn record_view_audit(
+        &self,
+        key: InstanceKey,
+        participant: Option<String>,
+        view: ViewName,
+        type_filter: Option<String>,
+        types: Vec<ViewAuditType>,
+    ) -> Result<(), EngineError> {
+        let (resp, rx) = oneshot::channel();
+        self.execute(Command::RecordViewAudit {
+            key,
+            participant,
+            view,
+            type_filter,
+            types,
+            resp,
+        })
+        .await?;
         rx.await.map_err(|_| EngineError::EngineStopped)?
     }
 

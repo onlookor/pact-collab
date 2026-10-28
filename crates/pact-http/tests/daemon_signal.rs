@@ -45,6 +45,44 @@ fn write_config(dir: &Path, data: &Path, sock: &Path, pid: &Path) -> std::path::
     cfg
 }
 
+/// D42：RefBindings 非法 → 拒绝启动（fail-closed），不创建 PID/套接字。
+#[test]
+fn invalid_ref_bindings_abort_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    let sock = dir.path().join("pact.sock");
+    let pid = dir.path().join("pactd.pid");
+    let bad = dir.path().join("bad.refs.yaml");
+    std::fs::write(
+        &bad,
+        "apiVersion: pact.ref/v1\nkind: RefBindings\nmetadata:\n  domain: proj\nspec:\n  types:\n    design:\n      ref:\n        contract: \"not a contract id\"\n",
+    )
+    .unwrap();
+    let cfg = dir.path().join("pact.toml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "data_dir = \"{}\"\nlisten_unix = \"{}\"\npid_file = \"{}\"\n[ref_bindings]\npaths = [\"{}\"]\n",
+            data.display(),
+            sock.display(),
+            pid.display(),
+            bad.display()
+        ),
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_pactd"))
+        .arg("--config")
+        .arg(&cfg)
+        .output()
+        .expect("应能拉起 pactd");
+    assert!(!out.status.success(), "非法 RefBindings 应拒绝启动");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("RefBindings"), "stderr: {stderr}");
+    assert!(!pid.exists(), "拒绝启动时不应写 PID 文件");
+    assert!(!sock.exists(), "拒绝启动时不应创建套接字");
+}
+
 /// SIGTERM 触发优雅停机：进程以 0 退出，PID 文件与套接字被清理。
 #[test]
 fn sigterm_triggers_graceful_shutdown_and_clears_pid() {

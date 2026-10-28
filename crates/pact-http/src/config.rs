@@ -37,11 +37,28 @@ pub struct Config {
     pub read_audit: Option<bool>,
     #[serde(default)]
     pub mcp: Option<McpConfig>,
+    /// D42：物引可见性 profile 来源（RefBindings 文件或目录）。
+    #[serde(default)]
+    pub ref_bindings: Option<RefBindingsConfig>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
     /// D34：TCP 监听的可选 TLS 终止配置；缺省关闭。
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+}
+
+/// D42：RefBindings 路径列表。
+///
+/// ```toml
+/// [ref_bindings]
+/// paths = ["/etc/pact/refs/", "se_lifecycle.refs.yaml"]
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RefBindingsConfig {
+    /// 文件或目录；目录会展开 `.yaml` / `.yml` / `.json`。
+    #[serde(default)]
+    pub paths: Vec<PathBuf>,
 }
 
 /// D34：TLS 证书与可选 mTLS。
@@ -257,6 +274,14 @@ impl Config {
         })
     }
 
+    /// D42：RefBindings 路径（空 = 无显式 profile，全部走默认 read-gate）。
+    pub fn ref_binding_paths(&self) -> &[PathBuf] {
+        self.ref_bindings
+            .as_ref()
+            .map(|config| config.paths.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// D36：MCP 对外基址（RFC 9728 元数据与 `WWW-Authenticate`）。
     pub fn mcp_public_url(&self) -> Option<&str> {
         self.mcp.as_ref()?.public_url.as_deref()
@@ -265,10 +290,24 @@ impl Config {
     /// 配置合法性校验（daemon 启动前调用）。
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.validate_tls()?;
+        self.validate_ref_bindings()?;
         let tokens = self.auth_tokens();
         let keys = self.auth_keys()?;
         self.validate_acl(&tokens, &keys)?;
         self.validate_mcp(&tokens, &keys)
+    }
+
+    fn validate_ref_bindings(&self) -> Result<(), ConfigError> {
+        if self
+            .ref_bindings
+            .as_ref()
+            .is_some_and(|config| config.paths.is_empty())
+        {
+            return Err(ConfigError::Invalid(
+                "[ref_bindings] 已配置但 paths 为空".to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     fn validate_tls(&self) -> Result<(), ConfigError> {
@@ -570,6 +609,9 @@ read_audit = true
 [mcp]
 enabled = true
 
+[ref_bindings]
+paths = ["/etc/pact/refs/", "se_lifecycle.refs.yaml"]
+
 [auth]
 [auth.tokens]
 architect = "sekret"
@@ -590,10 +632,27 @@ reviewer = ["proj/review"]
         assert!(c.compact_on_start());
         assert_eq!(c.compact_keep_last(), 8);
         assert!(c.mcp.as_ref().unwrap().enabled);
+        assert_eq!(
+            c.ref_binding_paths(),
+            [
+                PathBuf::from("/etc/pact/refs/"),
+                PathBuf::from("se_lifecycle.refs.yaml")
+            ]
+        );
         assert!(c.read_audit());
         assert_eq!(c.auth_tokens()["architect"], "sekret");
         assert_eq!(c.acl()["architect"], vec!["proj/*", "other/default"]);
         c.validate().expect("完整配置合法");
+    }
+
+    #[test]
+    fn empty_ref_bindings_paths_are_rejected() {
+        let text = "[ref_bindings]\npaths = []\n";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pact.toml");
+        std::fs::write(&path, text).unwrap();
+        let c = Config::load(&path).unwrap();
+        assert!(matches!(c.validate(), Err(ConfigError::Invalid(_))));
     }
 
     #[test]

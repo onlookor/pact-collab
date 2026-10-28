@@ -19,6 +19,14 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     // 配置语义校验：ACL 非空但无令牌 → 启动失败（无法确定调用者身份）。
     cfg.validate()?;
+    // D42：票面可见性 profile（RefBindings）。任一文件解析/校验失败即拒绝启动。
+    let visibility = crate::visibility::VisibilityProfiles::load(cfg.ref_binding_paths())?;
+    if !visibility.is_empty() {
+        println!(
+            "pactd: 已加载 {} 份 RefBindings 用于票面可见性",
+            visibility.len()
+        );
+    }
     // data_dir 独占锁（D27）：单权威是**进程级**保证，两进程共用同一 data_dir
     // 会各自扫描/重建索引并交叉写入，故启动即取 flock。锁随进程存活持有。
     let _lock = acquire_data_dir_lock(&cfg.data_dir())?;
@@ -54,13 +62,14 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         .clone()
         .map(crate::oidc::OidcValidator::new)
         .transpose()?;
-    let state = ServerState::with_identity(
+    let state = ServerState::with_identity_and_visibility(
         engine.clone(),
         cfg.auth_tokens(),
         keys,
         cfg.acl(),
         oidc.clone(),
         cfg.mcp_public_url().map(str::to_owned),
+        visibility,
     );
     let mcp_enabled = cfg.mcp.as_ref().is_some_and(|m| m.enabled);
     let app = router_with_mcp(state, mcp_enabled);

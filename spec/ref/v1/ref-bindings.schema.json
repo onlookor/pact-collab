@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pact:spec:ref:v1:ref-bindings",
+  "title": "PACT RefBindings v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "pact.ref/v1" },
+    "kind": { "const": "RefBindings" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/spec" }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain"],
+      "properties": {
+        "domain": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "declarationDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaults": { "$ref": "#/$defs/ruleEntry" },
+        "types": {
+          "type": "object",
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "$ref": "#/$defs/ruleEntry" }
+        },
+        "schemes": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[a-z][a-z0-9+.-]{0,31}$" },
+          "additionalProperties": { "$ref": "#/$defs/ruleEntry" }
+        },
+        "instances": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+          "additionalProperties": { "$ref": "#/$defs/instance" }
+        }
+      }
+    },
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "types": {
+          "type": "object",
+          "propertyNames": { "minLength": 1 },
+          "additionalProperties": { "$ref": "#/$defs/ruleEntry" }
+        }
+      }
+    },
+    "ruleEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref"],
+      "properties": {
+        "ref": { "$ref": "#/$defs/rule" }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": { "type": "boolean" },
+        "visibility": { "enum": ["read-gate", "domain", "hidden"] },
+        "pinning": { "enum": ["required-at-archive", "required", "optional"] },
+        "schemes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^\\*$|^[a-z][a-z0-9+.-]{0,31}$"
+          }
+        },
+        "contract": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*@[A-Za-z0-9._+-]+$"
+        },
+        "maxLength": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "onUnknownScheme": { "enum": ["reject", "treat-as-identifier", "allow"] },
+        "allowIdentifier": { "type": "boolean" },
+        "value": { "enum": ["none", "uri", "identifier"] }
+      }
+    }
+  }
+}

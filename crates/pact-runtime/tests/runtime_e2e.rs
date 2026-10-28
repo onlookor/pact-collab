@@ -11,6 +11,7 @@ use pact_engine::{Engine, LogicalClock, SequentialIdGen};
 use pact_http::client::Client;
 use pact_http::dto::ErrorDetail;
 use pact_http::server::{router, serve_unix, ConnTracker, ServerState};
+use pact_http::visibility::VisibilityProfiles;
 use pact_runtime::driver::absorb;
 use pact_runtime::{
     AgentReport, AgentSpec, Bootstrap, Compensation, Endpoint, ExecutorConfig, Orchestrator,
@@ -102,7 +103,33 @@ async fn spawn_daemon(dir: &Path) -> PathBuf {
         Arc::new(LogicalClock::new()),
         Arc::new(SequentialIdGen::new()),
     );
-    let state = ServerState::new(engine, BTreeMap::new());
+    // D42：默认 read-gate 会隐藏无主体视图的票面；本场景需要核验补偿事实的
+    // `thing_ref` 关联，因此为 mat 域显式声明 domain 可见性。
+    let refs = dir.join("refs.yaml");
+    std::fs::write(
+        &refs,
+        r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: mat
+spec:
+  defaults:
+    ref:
+      visibility: domain
+"#,
+    )
+    .unwrap();
+    let visibility = VisibilityProfiles::load(&[refs]).unwrap();
+    let state = ServerState::with_identity_and_visibility(
+        engine,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        None,
+        None,
+        visibility,
+    );
     let app = router(state);
     let sock = dir.join("pact.sock");
     let s = sock.clone();

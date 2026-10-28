@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:pact:spec:ref:v1:contract-card",
+  "title": "PACT ContractCard v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "pact.ref/v1" },
+    "kind": { "const": "ContractCard" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/spec" }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "owner"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$" },
+        "version": { "type": "string", "pattern": "^[A-Za-z0-9._+-]+$" },
+        "owner": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["draft", "active", "deprecated", "retired"] },
+        "labels": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "description": { "type": "string" }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference"],
+      "properties": {
+        "artifact": { "$ref": "#/$defs/artifact" },
+        "capability": { "$ref": "#/$defs/capability" },
+        "reference": { "$ref": "#/$defs/reference" },
+        "parties": { "$ref": "#/$defs/parties" },
+        "resolution": { "$ref": "#/$defs/resolution" },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "failure": { "$ref": "#/$defs/failure" },
+        "verification": { "$ref": "#/$defs/verification" }
+      },
+      "oneOf": [
+        { "required": ["artifact"], "not": { "required": ["capability"] } },
+        { "required": ["capability"], "not": { "required": ["artifact"] } }
+      ]
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemes"],
+      "properties": {
+        "schemes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9+.-]{0,31}$" }
+        },
+        "uriPattern": { "type": "string", "minLength": 1 },
+        "pinning": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requiredForArchive"],
+          "properties": {
+            "requiredForArchive": { "type": "boolean" },
+            "accepted": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "mutableAllowed": { "type": "boolean" },
+        "maxLength": { "type": "integer", "minimum": 1, "maximum": 65536 }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "mediaType", "digestPolicy"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "mediaType": { "type": "string", "minLength": 1 },
+        "schema": { "type": "string", "minLength": 1 },
+        "schemaDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "digestPolicy": { "enum": ["required-at-archive", "optional", "never"] }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "server", "tool", "sideEffect"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "server": { "$ref": "#/$defs/server" },
+        "tool": { "$ref": "#/$defs/tool" },
+        "sideEffect": { "enum": ["read-only", "mutating"] },
+        "idempotency": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["key", "semantics"],
+          "properties": {
+            "key": { "type": "string", "minLength": 1 },
+            "semantics": { "type": "string", "minLength": 1 }
+          }
+        },
+        "result": { "$ref": "#/$defs/result" },
+        "auth": { "$ref": "#/$defs/auth" },
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "failure": { "$ref": "#/$defs/failure" }
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9+.-]*:" },
+        "trustAnchor": { "type": "string", "minLength": 1 },
+        "protocol": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "inputSchemaDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "outputSchemaDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["materialization"],
+      "properties": {
+        "materialization": { "enum": ["required", "optional", "forbidden"] },
+        "returns": { "type": "string", "minLength": 1 },
+        "recordDigest": { "type": "boolean" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "scheme": { "type": "string", "minLength": 1 },
+        "audience": { "type": "string", "minLength": 1 },
+        "scopes": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "credentialSource": { "type": "string", "minLength": 1 }
+      }
+    },
+    "parties": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "custodian"],
+      "properties": {
+        "producer": { "type": "string", "minLength": 1 },
+        "custodian": { "type": "string", "minLength": 1 },
+        "consumers": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "consumerScope": { "type": "string", "minLength": 1 }
+      }
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["fetch", "stream", "registry"] },
+        "endpoint": { "type": "string", "minLength": 1 },
+        "auth": { "$ref": "#/$defs/auth" },
+        "timeoutMs": { "type": "integer", "minimum": 1 },
+        "retry": { "type": "string", "minLength": 1 }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retention", "deletionPolicy"],
+      "properties": {
+        "retention": {
+          "type": "string",
+          "description": "`permanent` 或正 ISO 8601 duration（如 P365D）",
+          "pattern": "^(permanent|P(?=[0-9T])(?:[0-9]+Y)?(?:[0-9]+M)?(?:[0-9]+W)?(?:[0-9]+D)?(?:T(?=[0-9])(?:[0-9]+H)?(?:[0-9]+M)?(?:[0-9]+S)?)?)$"
+        },
+        "deletionPolicy": {
+          "type": "string",
+          "enum": ["retain", "delete", "tombstone-then-delete"]
+        },
+        "tombstoneRef": {
+          "type": "string",
+          "minLength": 1,
+          "description": "tombstone 发布位置 URI；仅 tombstone-then-delete 允许"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "deletionPolicy": { "const": "tombstone-then-delete" } },
+            "required": ["deletionPolicy"]
+          },
+          "then": { "required": ["tombstoneRef"] }
+        },
+        {
+          "if": {
+            "properties": { "deletionPolicy": { "not": { "const": "tombstone-then-delete" } } },
+            "required": ["deletionPolicy"]
+          },
+          "then": { "not": { "required": ["tombstoneRef"] } }
+        }
+      ]
+    },
+    "failure": {
+      "type": "object",
+      "propertyNames": { "minLength": 1 },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "conformance": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "suite": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pact.dev/spec/ref/v1/tombstone.schema.json",
+  "title": "PACT Tombstone",
+  "description": "内容删除/撤销/替换后的可发现证据（D44）。Tombstone 是独立于引擎的规范对象，由域作者以正常 seed/produce 产生。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "pact.ref/v1" },
+    "kind": { "const": "Tombstone" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "全局唯一的 tombstone id（URI）"
+        },
+        "owner": { "type": "string", "minLength": 1 }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "ref", "reason", "deletedAt"],
+      "properties": {
+        "contract": {
+          "type": "string",
+          "minLength": 1,
+          "description": "被删除引用所归属的 ContractCard id@version"
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "已失效的具体 ThingRef（URI 或 legacy Identifier）"
+        },
+        "reason": {
+          "type": "string",
+          "enum": ["expired", "replaced", "revoked", "compromised", "legal", "manual"]
+        },
+        "deletedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "删除生效时间（RFC3339 UTC，带 Z）"
+        },
+        "retainUntil": {
+          "type": "string",
+          "format": "date-time",
+          "description": "tombstone 保留截止时间；必须晚于 deletedAt"
+        },
+        "replacedBy": {
+          "type": "string",
+          "minLength": 1,
+          "description": "替代引用；reason=replaced 时必填"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "人类可读说明；不得含控制字符或秘密"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "reason": { "const": "replaced" } },
+            "required": ["reason"]
+          },
+          "then": { "required": ["replacedBy"] }
+        }
+      ]
+    }
+  }
+}

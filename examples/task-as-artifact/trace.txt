@@ -1,0 +1,30 @@
+# ===== 任务即制品示例：离线 analyze =====
+# 轨迹中 `+ pact ...` 是实际执行的命令，`#` 开头是讲解，其余是命令输出。
+# 分析数字与退出码应当完全一致；本示例不涉及 token id / 时间戳。
+
+# 用法一：任务状态作为类型，任务记录作为物引
+
++ pact analyze task_board.pact
+precondition_wf: 良构（0 项违规，0 项警告）
+reachability: 1 源类型，4 可达，0 不可达
+gate_coverage: 0 个无 producer 的非源类型
+consumption_reachability: 0 个无 consumer 的类型
+structural_deadlock: 0 个强连通分量
+stranding_risk: 1 处滞留风险
+  -> exit=0
+# stranding_risk=1 是刻意的：archivist 可以消费 task_doing，
+# 而 releaser 的 via 见证要求同一枚 task_doing 仍在 Counter 上。
+# 这是真实的顺序约束，不是缺陷（专题 §3.1、§7）。
+
+# 用法二：任务产出作为类型（母本 §4.1 的构造编码）
+
++ pact analyze task_dag.pact
+precondition_wf: 良构（0 项违规，0 项警告）
+reachability: 1 源类型，5 可达，0 不可达
+gate_coverage: 0 个无 producer 的非源类型
+consumption_reachability: 0 个无 consumer 的类型
+structural_deadlock: 0 个强连通分量
+stranding_risk: 0 处滞留风险
+  -> exit=0
+# 六项全 0：拓扑固定、每个类型都有 producer 与 consumer。
+# 但「六项全 0」不等于「任务图执行器」——恰好一次与同任务配对仍不在范式内（专题 §6）。

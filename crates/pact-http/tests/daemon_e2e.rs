@@ -827,8 +827,11 @@ async fn read_audit_view_reports_rule_r_records() {
 
     let audit = c.read_audit("proj", None, None).await.unwrap();
     assert_eq!(audit.records.len(), 2);
-    assert_eq!(audit.records[0].participant, "architect");
-    assert_eq!(audit.records[0].token_id, req.token.id.0);
+    assert_eq!(audit.records[0].participant.as_deref(), Some("architect"));
+    assert_eq!(
+        audit.records[0].token_id.as_deref(),
+        Some(req.token.id.0.as_str())
+    );
     assert_eq!(audit.records[0].domain, "proj");
     assert_eq!(audit.records[0].instance, "default");
     // limit 生效

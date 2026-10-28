@@ -18,8 +18,10 @@ pact-store = { path = "../pact-store" }
 pact-engine = { path = "../pact-engine" }
 pact-http = { path = "../pact-http" }
 pact-cpn = { path = "../pact-cpn" }
+pact-ref-spec = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
 

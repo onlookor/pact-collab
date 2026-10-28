@@ -155,9 +155,11 @@
 | `paper/pactv1_rev3.md` §1.3、§1.4 Rule-P Note、§1.4.4、§2.3 | 规范源；边界声明与最小澄清 |
 | `docs/design.md` §18 | 实现侧索引与模式落点 |
 | `docs/architecture.md` §5 | 质量属性表中的架构级引用 |
-| `docs/manual.md` §1.5 | 用户视角“什么时候别用”与绕法 |
+| `docs/manual.md` §1.7 | 用户视角“什么时候别用”与绕法 |
 | `examples/README.md` §7.3 | 可运行示例中的边界与 workaround |
 | `docs/skill-adaptation.md` §7 | RE/SE 技能适配中的具体边界 |
+| `docs/task-as-artifact.md` | 任务记录作为 `ThingRef`、任务状态/位置作为 `TypeName` 的两种用法；引用 B2/B4/B5/B6/B14/B15/B16/B19/B20/X1/X3/X4 |
+| `docs/thingref-governance.md` | 物引治理专题：票面/契约/通道/信任/时效五层，静态制品与动态能力的 RefBindings / ContractCard / 解析边界；引用 B11/B12/B20/X4 |
 | `crates/pact-core/src/domain.rs` | `DuplicatePrecondLhs`（B4/B10）、`ProduceWithCondition`（B7/B13） |
 | `crates/pact-analysis/src/lib.rs` | `stranding_risk`（B8/B21） |
 | `crates/pact-cpn/src/lib.rs` | `NegatedVia` / `MissingBound`（B23/B24） |

@@ -1,0 +1,202 @@
+openapi: 3.1.0
+info:
+  title: PACT Reference Plane v1
+  version: 0.1.0
+  description: |
+    ThingRef 的解析、描述、调用与撤销接口。治理平面不读写 PACT Counter/Archive；
+    参与者凭 PACT token 取得票面后调用本平面。
+servers:
+  - url: https://ref.example.com
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      security: []
+      operationId: healthz
+      responses:
+        "200": { description: alive }
+  /readyz:
+    get:
+      security: []
+      operationId: readyz
+      responses:
+        "200": { description: ready }
+        "503": { description: not ready }
+  /resolve:
+    post:
+      operationId: resolveReference
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResolveRequest" }
+      responses:
+        "200":
+          description: resolved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Resolution" }
+        "400": { $ref: "#/components/responses/InvalidReference" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Expired" }
+  /invoke:
+    post:
+      operationId: invokeCapability
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvokeRequest" }
+      responses:
+        "200":
+          description: invoked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invocation" }
+        "400": { $ref: "#/components/responses/InvalidReference" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { description: idempotency key conflict }
+  /describe:
+    post:
+      operationId: describeReference
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DescribeRequest" }
+      responses:
+        "200":
+          description: contract descriptor
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContractDescriptor" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /revoke:
+    post:
+      operationId: revokeReference
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RevokeRequest" }
+      responses:
+        "204": { description: revoked }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    InvalidReference:
+      description: reference is missing, malformed, or violates the URI profile
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: caller is not allowed to resolve or invoke
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: reference is not registered or no longer present
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Expired:
+      description: resolution has expired
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    ResolveRequest:
+      type: object
+      additionalProperties: false
+      required: [domain, type, reference, actor, intent]
+      properties:
+        domain: { type: string }
+        type: { type: string }
+        reference:
+          oneOf:
+            - type: string
+            - type: "null"
+        actor: { type: string }
+        intent: { enum: [read, verify] }
+    Resolution:
+      type: object
+      additionalProperties: false
+      required: [contractId, version, mediaType, handle]
+      properties:
+        contractId: { type: string }
+        version: { type: string }
+        mediaType: { type: string }
+        digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        expiresAt: { type: string, format: date-time }
+        handle: { type: string, description: opaque fetch handle or URL }
+    InvokeRequest:
+      type: object
+      additionalProperties: false
+      required: [domain, type, reference, actor, operation, idempotencyKey]
+      properties:
+        domain: { type: string }
+        type: { type: string }
+        reference:
+          oneOf:
+            - type: string
+            - type: "null"
+        actor: { type: string }
+        operation: { type: string }
+        idempotencyKey: { type: string }
+        input:
+          type: object
+          additionalProperties: true
+    Invocation:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { enum: [succeeded, failed, pending] }
+        resultRef:
+          oneOf:
+            - type: string
+            - type: "null"
+        resultDigest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        error: { type: string }
+    DescribeRequest:
+      type: object
+      additionalProperties: false
+      required: [domain, type, reference]
+      properties:
+        domain: { type: string }
+        type: { type: string }
+        reference:
+          oneOf:
+            - type: string
+            - type: "null"
+    ContractDescriptor:
+      type: object
+      additionalProperties: false
+      required: [contractId, version, mediaType]
+      properties:
+        contractId: { type: string }
+        version: { type: string }
+        mediaType: { type: string }
+    RevokeRequest:
+      type: object
+      additionalProperties: false
+      required: [reference, reason]
+      properties:
+        reference: { type: string }
+        reason: { type: string }
+        effectiveAt: { type: string, format: date-time }
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        traceId: { type: string }
