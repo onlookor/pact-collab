@@ -2,6 +2,17 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-28（第 75 轮，可发现性 lint 推送前安全审视）
+
+- **范围**：第 74 轮改动（`pact-cli` 可发现性 lint、e2e、六份文档），提交 `eb86654`。
+- **扫描结论**：提交内容仅 8 个文件、460 行新增；`Cargo.toml`/`Cargo.lock` 无变化；无敏感文件名、无 PEM 私钥或云凭据模式；新增生产代码无 `unsafe`、无网络/进程/文件写入、无 `unwrap`/`expect`/`panic!`（`unwrap` 仅出现在 e2e 测试）。
+- **输入与失败模式**：`ReferenceForm::classify` 与 `RefBindings::resolve` 的失败分支均以 `let ... else { continue }` 跳过，不 panic；lint 只读用户显式传入的本地文件，不写盘、不访问网络；输出只含类型名、契约 id、scheme 与本地路径，**不输出 `thing_ref` 值**；e2e 只在 `tempfile` 目录写测试输入。
+- **依赖审计**：`cargo audit --file Cargo.lock` 为 **0 vulnerability、2 unmaintained**（`unsafe-libyaml` RUSTSEC-2024-0449、`rustls-pemfile` RUSTSEC-2025-0134），与第 73 轮一致，无新增漏洞。
+- **误报说明**：全仓凭据扫描时 `web/authoring/index.html` 的内嵌 WASM base64 触发 `sk-…` 模式，经人工确认为构建产物而非凭据。
+- **接受的低风险项（沿用）**：RefBindings/契约/声明文件大小上限仍由运维控制；CI action 仍按主版本标签固定；`refd` resolve/describe 端点未实现。
+- **推送**：`pact` `750c303..eb86654` → `origin/main`；`pact-ref` 本轮无代码改动（`7044f40`，工作区干净，vendored 快照 `sync-spec.sh --check` 通过）。
+- **验证**：`cargo fmt --check`、`clippy -D warnings`、`cargo test --workspace --locked` **309 passed / 0 failed**。
+
 ## 2026-10-28（第 74 轮，引用可发现性 lint）
 
 - **触发**：保留阶段收尾——D44 已有 retention/tombstone，“下游到底能不能拿到票面与保留证据”仍缺静态验收。

@@ -501,6 +501,8 @@ Counter/Archive 可见性已实现（FR28/D42）：daemon `[ref_bindings]` 加�
 推送前安全审视修复了 tombstone 时间戳的非 ASCII 边界 panic（已加回归测试）。
 落地提交：`pact` `c5a9cd2`（静态层、可见性、视图审计、保留证据），`pact-ref` `2dbf440`（快照同步）；
 修复与审视记录见 `docs/design-change.md` 第 72 轮。
+可发现性 lint 落地与推送前安全审视：`pact` `eb86654`（2026-10-28），`pact-ref` 无新改动；
+`scripts/sync-spec.sh --check` 通过。记录见 `docs/design-change.md` 第 74–75 轮。
 `pact-ref` 远端：<https://github.com/onlookor/pact-ref>（公开）。
 下一步是 `refd` 的 resolve/describe 端点。
 
