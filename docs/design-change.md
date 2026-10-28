@@ -2,6 +2,16 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-27（第 73 轮，pact CI 依赖安全审计）
+
+- **触发**：第 72 轮安全审视把“`pact` CI 尚无 cargo audit 作业”列为剩余项，用户要求补齐。
+- **变更**：`.github/workflows/ci.yml` 新增 `audit` job，固定 `cargo-audit 0.22.2`，缓存 `~/.cargo/bin/cargo-audit`，执行 `cargo audit --file Cargo.lock`。vulnerability 即失败（退出非零）；unmaintained/unsound 告警保持可见但不阻断。
+- **顺带修复**：首次审计暴露 `tokio 1.53.1` 的 RUSTSEC-2026-0386（unsound：`AsyncFd` 构造器违反 I/O safety，patched ≥1.53.3）。项目未直接使用 `AsyncFd`，仍升级 `tokio` 至 `1.54.1`（仅 `Cargo.lock`）。审计现为 **0 vulnerability、2 unmaintained 告警**：`rustls-pemfile`（RUSTSEC-2025-0134）与 `unsafe-libyaml`（RUSTSEC-2024-0449）。
+- **安全边界**：workflow 仍只有 `contents: read`，不创建 check run、不申请 `checks`/`issues` 写权限；因此 `pull_request`（含 fork，token 只读）不会因权限失败。未新增第三方 action，仅复用既有 `actions/cache@v4`。
+- **验证**：workflow YAML 解析通过；`cargo-audit 0.22.2` 发行包自带 `Cargo.lock`，`--locked` 可复现安装；本地审计 0 vulnerability；`cargo fmt`、`clippy -D warnings`、`cargo test --workspace --locked` **306 passed / 0 failed**。
+- **后续**：评估 `serde_yaml` → safe-Rust YAML 解析器、`rustls-pemfile` → `rustls-pki-types` 的替代，消除剩余 unmaintained 告警。
+- **文档**：`docs/design.md` §10 测试策略新增“依赖安全审计”行。
+
 ## 2026-10-27（第 72 轮，推送前安全审视）
 
 - **范围**：审查第 67–71 轮与任务即制品专题的待推送改动，覆盖 `pact-ref-spec`、`pact ref lint`、可见性过滤、视图审计、保留/tombstone、daemon 配置与 CI。

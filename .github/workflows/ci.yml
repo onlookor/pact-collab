@@ -1,4 +1,4 @@
-# PACT CI：每次 push/PR 自动验证 build + 全量测试 + rustfmt + clippy。
+# PACT CI：每次 push/PR 自动验证 build + 全量测试 + rustfmt + clippy + 依赖安全审计。
 # 工具链与本地开发保持一致（stable，1.97+，edition 2021）。
 name: CI
 
@@ -13,6 +13,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_AUDIT_VERSION: 0.22.2
 
 jobs:
   check:
@@ -37,6 +38,27 @@ jobs:
 
       - name: 全量测试
         run: cargo test --workspace --locked
+
+  audit:
+    name: 依赖安全审计（cargo audit）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 安装 Rust 工具链（stable）
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 cargo-audit CLI
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-cli-${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: 安装 cargo-audit（版本固定）
+        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --version "$CARGO_AUDIT_VERSION" --locked
+
+      - name: 审计 Cargo.lock（漏洞即失败；unmaintained 仅告警）
+        run: cargo audit --file Cargo.lock
 
   wasm:
     name: wasm32 构建 / ABI 与体积门禁 / Node 冒烟

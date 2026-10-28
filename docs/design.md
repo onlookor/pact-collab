@@ -969,6 +969,7 @@ spec:
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）** | 阶段 4/5 的 e2e 测试 |
 | v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
 | WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试 | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |
+| 依赖安全审计 | `cargo audit --file Cargo.lock`：RustSec 漏洞（vulnerability）即失败；unmaintained/unsound 仅告警，保持可见不阻断；`cargo-audit` 版本固定并缓存 | `.github/workflows/ci.yml` 的 `audit` job |
 
 ## 11. 实现阶段
 
