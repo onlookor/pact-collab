@@ -74,7 +74,7 @@
 | [x] | 第 78 轮：`docs/requirements.md` FR31 + 第 39 轮；`docs/design.md` D46 与 §9.13 + 第 78 轮；`architecture.md` 附录 A/正文 + 第 39 轮；`manual.md` §7.11；治理 §8.1/§13.1 | 与代码及 e2e 实测一致 |
 | [x] | 第 80 轮：治理 §13.4.1 选项 C 改为“按数据触发闭环”，新增 §13.4.3“摘要误算是否阻塞域加载”；`design-change.md` 第 80 轮；无代码变更 | 与 §13.4 方案一致；仅文档，无需回归；提交 `0115315` |
 | [x] | 第 81 轮：治理新增 §13.5“ContractCard 生命周期：重启、显式重载与版本化”，并标注 §13.4.1 第 4 条为首版激活机制；`design-change.md` 第 81 轮；无代码变更 | 与 D27/D39 及卡片 `id@version` 语义逐条对照；仅文档，无需回归；提交 `246d4a8` |
-| [x] | 第 82 轮：登记 `FR32`/`D47`（B0）与 `FR33`/`D48`（B1）；`requirements.md` 新增两节、`requirements-change.md` 第 40 轮；`design.md` §0 新增 D47/D48；治理 §13.4.1/§13.5 标注已确认与编号；`architecture.md` 附录 A 登记 | 编号先登记后引用；仅文档，无需回归 |
+| [x] | 第 82 轮：登记 `FR32`/`D47`（B0）与 `FR33`/`D48`（B1）；`requirements.md` 新增两节、`requirements-change.md` 第 40 轮；`design.md` §0 新增 D47/D48；治理 §13.4.1/§13.5 标注已确认与编号；`architecture.md` 附录 A 登记；`architecture-change.md` 第 40 轮 | 编号先登记后引用；仅文档，无需回归；提交 `f98c698` |
 
 ### 验证与交付
 
