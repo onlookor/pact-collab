@@ -77,12 +77,14 @@
 | [x] | 全量回归 `cargo test --workspace --locked` | **317 passed / 0 failed**（50 个 test binary，含 `runtime_e2e` 5 passed） |
 | [x] | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` | 均通过（退出码 0） |
 | [x] | 推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增依赖；生产代码无 `unsafe`/网络/进程/文件写；`cargo audit` 0 vulnerability / 2 unmaintained（沿用）；结论写入 `design-change.md` 第 77 轮 |
-| [~] | 提交与推送，回填提交哈希 | 待提交 |
+| [x] | 提交与推送，回填提交哈希 | `pact` `9893541`（main）；`pact-ref` `b8e759c`（vendored 快照）；均已推送 |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
+| 2026-10-28 | ThingRef 写入路径校验（三态、URI profile、RefBindings 策略） | FR30 / D45 | `pact` `9893541`；317 passed；`pact-ref` `b8e759c` 46 passed |
+| 2026-10-28 | 进度台账纪律（`todo.md` + `AGENTS.md`） | `AGENTS.md` | `9893541` |
 | 2026-10-28 | 可发现性 lint（5 个 warning code）与真实二进制 e2e | FR29 / D44 | `eb86654`；309 passed |
 | 2026-10-28 | 推送前安全审视（可发现性 lint 批次） | `AGENTS.md` | `design-change.md` 第 75 轮 |
 | 2026-10-27 | 物引静态检查 `pact ref lint` | FR27 / D41 | 已发布 |
