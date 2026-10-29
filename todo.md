@@ -71,7 +71,7 @@
 | [x] | `docs/manual.md`：REST seed/produce 的 `thing_ref` 三态、错误码、`ref_bindings` 策略 | 与 e2e 实测一致 |
 | [x] | `docs/thingref-governance.md` §8.1 / §13.1：入口校验状态改为已实现（REST 边界），并标注 MCP/WASM 边界 | 与 FR30 引用一致 |
 | [x] | 第 78 轮：`docs/requirements.md` FR31 + 第 39 轮；`docs/design.md` D46 与 §9.13 + 第 78 轮；`architecture.md` 附录 A/正文 + 第 39 轮；`manual.md` §7.11；治理 §8.1/§13.1 | 与代码及 e2e 实测一致 |
-| [x] | 第 80 轮：治理 §13.4.1 选项 C 改为“按数据触发闭环”，新增 §13.4.3“摘要误算是否阻塞域加载”；`design-change.md` 第 80 轮；无代码变更 | 与 §13.4 方案一致；仅文档，无需回归 |
+| [x] | 第 80 轮：治理 §13.4.1 选项 C 改为“按数据触发闭环”，新增 §13.4.3“摘要误算是否阻塞域加载”；`design-change.md` 第 80 轮；无代码变更 | 与 §13.4 方案一致；仅文档，无需回归；提交 `0115315` |
 
 ### 验证与交付
 
