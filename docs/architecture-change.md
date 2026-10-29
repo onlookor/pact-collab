@@ -2,6 +2,12 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-29（第 40 轮，ContractCard 加载与重载编号登记）
+
+- 附录 A 登记 `FR32` / `D47`（ContractCard 运行期加载与版本不可变，B0）与 `FR33` / `D48`（ContractCard 与 RefBindings 显式重载，B1），权威定义分别在 `docs/requirements.md` §4 与 `docs/design.md` §0。
+- 架构正文“票面写入校验在接口层”补充：卡片加载与重载已定案、尚未实现，实现后仍位于 `pact-http` 接口层；引擎、存储与 `pact-core` 不读取卡片。
+- 未新增组件、依赖方向或数据流；`pact-ref-spec` 仍是唯一卡片校验实现，B1 重载校验须与其共用。
+
 ## 2026-10-29（第 39 轮，形态/未知 scheme/钉版运行期强制）
 
 - **接口层扩展**：在既有写入校验（FR30/D45）之上增加 `value`、`onUnknownScheme` 与 `pinning: required`（写入）/`required-at-archive`（consume 前）判定（FR31/D46）；consume 检查从 `engine.counter` 读取待消费 token 的票面，引擎与存储仍不解析 `thing_ref`。

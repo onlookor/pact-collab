@@ -2,6 +2,14 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-29（第 40 轮，ContractCard 加载与显式重载登记）
+
+- **新增 FR32（B0）**：ContractCard 运行期加载与版本不可变。可选 `[ref_contracts].paths` 在 daemon 启动时解析、规范校验并按 `contract_id()`（`metadata.id@version`）建索引；任一 RefBindings 有效规则声明 `contract` 时，必须配置且每个契约可解析，否则拒绝启动；同一 `contract_id()` 重复（无论内容）即拒绝启动。consume 的有效钉版要求 = 绑定 `pinning` ∪ 卡片 `reference.pinning.requiredForArchive` / `artifact.digestPolicy: required-at-archive`，卡片只加严。`artifact.kind`/`mediaType` 与 `lifecycle` 运行期检查不在范围。
+- **新增 FR33（B1）**：ContractCard 与 RefBindings 显式重载。REST `POST /ref/reload`（`dryRun` 可选）与 CLI `pact ref reload`，不提供 MCP 工具；卡片与绑定同事务校验后原子换索引，失败保持旧状态；并发 `409 RefReloadBusy`，校验失败 `400 RefReloadInvalid`；审计写 `<data_dir>/ref-reload.jsonl`（`ts`/`by`/`dryRun`/`outcome`/每文件 `sha256`），审计写失败拒绝重载；ACL 要求覆盖当前与新的绑定索引中每个域的 `{domain}/*`。不做文件监听、SIGHUP、自动回滚或按域灰度。
+- **回溯性加严**：按 FR31/D46 在 consume 时按当前规则判定；换绑到更严卡片版本会让存量未钉版 token 不可归档，由 `dryRun` 影响报告与发布说明承担，不改变判定时机。
+- **FR30/FR31 边界同步**：ContractCard 运行期加载由 FR32/FR33 承接，仍待实现；`declarationDigest` 未定，仍待决策。
+- 其余 FR1–FR31、NFR1–NFR7 不变。
+
 ## 2026-10-29（第 39 轮，引用形态、未知 scheme 与钉版运行期强制）
 
 - **新增 FR31**：把 RefBindings 的 `value`、`onUnknownScheme`、`pinning` 从“仅 lint 生效”接到运行期。

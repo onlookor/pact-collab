@@ -2,6 +2,18 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-29（第 82 轮，ContractCard 加载与重载编号登记，无实现变更）
+
+- **触发**：用户确认 §13.5 方案，要求先登记 B1 的 FR/D 编号。
+- **新增编号**（已先登记于 `docs/architecture.md` 附录 A）：
+  - `FR32` / `D47`：ContractCard 运行期加载与版本不可变（B0）——可选 `[ref_contracts].paths`、`contract_id()` 索引、按数据触发闭环、同版本不可变、consume 钉版并集（只加严）。
+  - `FR33` / `D48`：ContractCard 与 RefBindings 显式重载（B1）——`POST /ref/reload` + `pact ref reload`、卡片与绑定同事务、原子换索引、`dryRun` 影响报告、`ref-reload.jsonl` 审计、ACL 覆盖每个绑定域；不做文件监听/SIGHUP/自动回滚。
+- **需求侧**：`docs/requirements.md` 新增 FR32/FR33；FR30/FR31 的“未生效项”指向新编号；`requirements-change.md` 第 40 轮。
+- **设计侧**：`docs/design.md` §0 新增 D47/D48；未改架构正文（能力尚未实现，只在附录 A 登记编号）。
+- **治理侧**：`docs/thingref-governance.md` §13.5 的 B0/B1 标注已登记编号；B2 仍按需再评估。
+- **变更范围**：仅文档；无代码、测试、schema 或配置变更。实现顺序仍为 B0（FR32/D47）→ B1（FR33/D48）；B1 依赖 B0 的索引与不可变性。
+- **待用户确认**：`declarationDigest`（FR27 边界）仍待决策，不影响本轮登记。
+
 ## 2026-10-29（第 81 轮，ContractCard 生命周期方案，无实现变更）
 
 - **触发**：用户追问 §13.4.1 第 4 条“首版只在启动时加载、卡片变更需重启”是首版约束还是终身形态；域声明已有迁移式生命周期（D27 实例快照声明、D39 显式交接），卡片能否取得类似效果。

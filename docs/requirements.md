@@ -257,7 +257,7 @@
   - `maxLength` 覆盖默认 2048 字节上限，超过 → `400 InvalidThingRef`。
   未加载该域绑定时只做结构规则，不做策略校验。
 - **继承与边界**：CLI 与 MCP 经 REST client 调用，自动继承同一套校验；MCP 工具参数省略时 client 发送显式 `null`（等价 `∅`），无法表达“缺失”。`pact-wasm` 本地宿主与 `pact-runtime` 的进程内路径不在本需求内（WASM 入口校验单列事项）。
-- **未生效项**：`declarationDigest` 与 ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载仍未落地（`onUnknownScheme`、`value`、`pinning` 已由 FR31 接入运行期）；见 `todo.md` P1。
+- **未生效项**：`declarationDigest` 与 ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载仍未落地（`onUnknownScheme`、`value`、`pinning` 已由 FR31 接入运行期；卡片加载与重载由 FR32/FR33 定义，均待实现）；见 `todo.md` P1。
 - **错误码**：均为 `400`，沿用 §6.3 结构化错误体；`code` 为 `ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，`message` 携带原始规范错误文本（不含票面全文以外的敏感信息，票面本身可能含位置信息，按调用方权限返回）。
 - **实现状态**：已实现（2026-10-28）。`pact-ref-spec` 修复 userinfo 与 Identifier 文法；`pact-http` 新增 `ThingRefField`（区分缺失/`null`）与 `VisibilityProfiles::validate_thing_ref`；`seed`/`produce` 在引擎调用前接线。单元测试覆盖三态、结构规则、`git+ssh` 与 Identifier 文法；端到端测试覆盖缺失/`null`、userinfo、裸路径、Identifier、超长、大写 scheme 规范化与绑定策略。
 
@@ -275,8 +275,32 @@
   - `optional`（缺省）：不要求。
   钉版判定为 URI 携带内容摘要 `sha256:<64 位小写十六进制>`，接受 URL fragment `#sha256=<hex>` 与 OCI `@sha256:<hex>` 两种写法；`∅` 表示没有外部制品，不受钉版约束；Identifier 不是钉版。失败 → `400 ThingRefUnpinned`。
 - **执行点**：`pinning: required` 与上述形态/未知 scheme 策略在 seed/produce 前判定；`required-at-archive` 在 `/consume` 进入引擎前读取待消费 token 的票面判定。consume 只读取继承出的 `pinning`，不重复执行写入期规则，避免历史票面因后续收紧而无法归档。
-- **边界**：ContractCard 的 `artifact.digestPolicy: required-at-archive` 与 `reference.pinning.requiredForArchive` 尚未在运行期加载（daemon 目前只加载 RefBindings），登记为 `todo.md` P1 的独立事项，需先定卡片来源与加载配置。`pact-wasm` 本地宿主仍不经过该边界。
+- **边界**：ContractCard 的 `artifact.digestPolicy: required-at-archive` 与 `reference.pinning.requiredForArchive` 尚未在运行期加载（daemon 目前只加载 RefBindings），已由 FR32 定义加载与版本不可变、FR33 定义显式重载，均待实现。`pact-wasm` 本地宿主仍不经过该边界。
 - **实现状态**：已实现（2026-10-29）。单元测试覆盖未知 scheme 三分支、`value` 三态、写入钉版与归档钉版；端到端测试覆盖 `ThingRefUnpinned`（写入与 consume）及钉版引用正常归档。
+
+### FR32 ContractCard 运行期加载与版本不可变（D47）
+
+- **定位**：让 daemon 在启动时加载 ContractCard，使绑定已声明、lint 已检查的卡片在运行期可解析；引擎、存储与 `pact-core` 仍不读卡片，卡片校验与消费只在 REST 边界（D45/D46 同一层）。
+- **加载**：daemon 配置新增可选 `[ref_contracts].paths`（文件或目录，可重复；目录展开 `.yaml`/`.yml`/`.json`，规则与 `[ref_bindings]` 一致）。每个文件必须能解析为 `ContractCard` 并通过 `ContractCard::validate`；按 `contract_id()`（`metadata.id@version`）建索引，与绑定的 `contract` 引用键一致。
+- **按数据触发闭环**：任一 RefBindings 有效规则（合并继承后）声明了 `contract` ⇒ 必须配置 `[ref_contracts]` 且每个被引用的契约可解析，否则 **daemon 拒绝启动**（fail-closed）；完全没有 `contract` 引用的部署无需配置，行为不变。
+- **同版本不可变**：同一 `contract_id()` 出现两次（无论内容是否相同）⇒ 拒绝启动；卡片内容变更必须提升 `metadata.version`。运行期加载与 `pact ref lint` 的重复契约检查语义一致。
+- **有效钉版（只加严）**：consume 进入 Archive 前的钉版要求 = 绑定 `pinning` **并集** 卡片 `reference.pinning.requiredForArchive` 或 `artifact.digestPolicy: required-at-archive`；卡片不得放宽绑定。判定与错误码沿用 FR31（`400 ThingRefUnpinned`）。
+- **未生效项**：`artifact.kind` / `mediaType` 检查（票面不携带 media type，当前无法判定）、`lifecycle` 的运行期计时/删除、热更新与显式重载（FR33）；均不在 FR32 范围。
+- **失败语义**：加载失败、卡片规范校验失败、重复 `contract_id()`、绑定引用的契约缺失 ⇒ 启动失败，错误信息指名文件与契约；无部分加载。
+- **实现状态**：未实现（2026-10-29 登记，作为 D47 的 B0 阶段；待随 ContractCard 运行期加载落地）。
+
+### FR33 ContractCard 与 RefBindings 显式重载（D48）
+
+- **定位**：提供卡片与绑定的**控制面显式激活**，替代“改卡片必须重启 daemon”。不做文件监听、不做 SIGHUP 隐式重载；域声明的 D27/D39 迁移机制不变，卡片换版不触发状态交接。
+- **接口面**：REST `POST /ref/reload`，请求体 `{"dryRun": bool}`（缺省 `false`）；CLI `pact ref reload [--dry-run] [--json]`。**不提供 MCP 工具**，避免 agent 触发全局治理变更。
+- **事务与原子性**：读取 `[ref_contracts]` 与 `[ref_bindings]` 配置源 → 解析并规范校验全部卡片与绑定 → 校验所有 `contract` 引用可解析 → 计算影响报告 → 写控制面审计 → 原子替换内存索引与规则。任一步失败保持旧状态并返回结构化错误；不做部分生效。并发重载单飞，冲突返回 `409 RefReloadBusy`。在途请求持旧快照完成，新请求使用新索引。
+- **预检**：`dryRun=true` 完成全部校验与影响报告但不替换。影响报告按 `(domain, instance, type)` 统计“重载后因缺摘要而无法归档”的存量 Counter token 数，不输出票面值。
+- **审计**：`<data_dir>/ref-reload.jsonl`（append+fsync）每次记录 `ts`、`by`（无身份为 `null`）、`dryRun`、`outcome`（`applied`/`rejected`）、`files[{path,sha256,kind}]`、卡片/绑定计数与可选 `error`。审计写失败 ⇒ 拒绝本次重载（不替换索引）。
+- **认证与授权**：配置任何身份（令牌或签名）后必须认证；ACL 启用时，调用者须对当前与新的 RefBindings 索引中每个域持有 `{domain}/*`；索引为空时只需认证；信任声明模式放行匿名。
+- **错误码**：解析/规范校验失败、重复 `contract_id()`、契约引用不可解析 ⇒ `400 RefReloadInvalid`；并发重载 ⇒ `409 RefReloadBusy`；ACL 越权沿用 `403`；审计写失败 ⇒ `500`。均为 §6.3 结构化错误体。
+- **回溯性加严**：按 FR31/D46，归档钉版在 consume 时按当前有效规则判定；把绑定切到更严的卡片版本会让存量未钉版 token 不可归档。这是运维决策，由预检报告与发布说明承担，不改变判定时机；不做“只影响切换后 token”的豁免（那需要记录 token 产生时的规则版本，另立事项）。
+- **明确不做**：文件监听自动热加载、自动回滚、按域灰度（一次重载对全部域生效）、把卡片/绑定写入事件日志或 `seq`。
+- **实现状态**：未实现（2026-10-29 登记，作为 D48 的 B1 阶段；依赖 FR32 的索引与不可变性）。
 
 ## 5. 非功能需求
 
