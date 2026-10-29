@@ -41,8 +41,8 @@
 | [x] | `pinning` 运行期强制：`required` 在写入时、`required-at-archive` 在 consume 进入 Archive 前要求钉版摘要（FR31/D46） | FR31 / D46 / `uri-profile.md` §4 | 单测 + e2e：写入/consume 缺摘要 → `400 ThingRefUnpinned`；钉版可归档 |
 | [x] | `onUnknownScheme` 运行期生效（`reject` / `treat-as-identifier` / `allow`） | FR31 / D46 / `uri-profile.md` | 单测三分支 + `treat-as-identifier` 未放行 Identifier 被拒 |
 | [x] | `RefRule.value`（`none`/`uri`/`identifier`）语义落地 | FR31 / D46 / `ref-bindings.schema.json` | 入口强校验 + 单测；`required=true` 与 `value=none` 由绑定校验拒绝 |
-| [ ] | ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载（拆分项：daemon 目前只加载 RefBindings） | D44 / FR29 / FR31 | 需先定卡片来源与 daemon 配置（`contracts` paths）；本轮未实现，原因见 `design-change.md` 第 78 轮 |
-| [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 阻塞：需用户确认摘要对象与规范化算法（声明原文/规范化 AST/包含注释？）后再实现 |
+| [ ] | ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载（拆分项：daemon 目前只加载 RefBindings） | D44 / FR29 / FR31 | 方案与收益/代价见治理 §13.4.1；推荐“可选 `[ref_contracts]` + 启用即 fail-closed + 只加严”，**待用户确认** |
+| [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 方案与收益/代价见治理 §13.4.2；**待用户确认**摘要对象（语义接口 vs 规范化 AST）与是否分两步走 |
 
 ### P2 跨仓库与快照
 

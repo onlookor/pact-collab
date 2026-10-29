@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-29（第 79 轮，待决方案分析，无实现变更）
+
+- **背景**：P1 剩余两项（ContractCard 运行期加载、`declarationDigest`）缺前置决策。用户要求给出方案与收益/代价。
+- **记录**：分析写入 `docs/thingref-governance.md` §13.4（不新增需求/设计编号）。ContractCard 推荐“可选 `[ref_contracts]` + 启用即 fail-closed + 只加严”；`declarationDigest` 推荐“语义接口摘要 + 工具/lint 先行、运行期后置”。
+- **变更**：仅文档。`todo.md` 两项状态与依据已指向该节；无代码、测试或 schema 变化。
+- **待用户确认**：两项推荐是否采纳；确认后再登记新需求/设计编号并实现。
+
 ## 2026-10-29（第 78 轮，形态 / 未知 scheme / 钉版运行期强制）
 
 - **触发**：`todo.md` P1。RefBindings 的 `value`、`onUnknownScheme`、`pinning` 此前只在 `pact ref lint` 生效，运行期不强制。
