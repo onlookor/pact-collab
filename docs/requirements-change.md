@@ -2,6 +2,16 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-29（第 39 轮，引用形态、未知 scheme 与钉版运行期强制）
+
+- **新增 FR31**：把 RefBindings 的 `value`、`onUnknownScheme`、`pinning` 从“仅 lint 生效”接到运行期。
+  - `value` 约束非空票面形态（`none`/`uri`/`identifier`），`required=true` 与 `value=none` 互斥；
+  - `onUnknownScheme` 以“不在有效 `schemes` 白名单”判定未知，支持 `reject`（缺省）/`allow`/`treat-as-identifier`；
+  - `pinning: required` 在写入时、`required-at-archive` 在 consume（进入 Archive）前要求 URI 携带 `sha256` 摘要（fragment 或 OCI 形式）；`∅` 不受约束，Identifier 不算钉版；失败返回 `400 ThingRefUnpinned`。
+- **FR30 收窄未生效项**：`onUnknownScheme`、`value`、`pinning` 已由 FR31 生效；`declarationDigest` 与 ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载仍未落地，登记于 `todo.md`。
+- **边界**：consume 检查只读取继承出的 `pinning`，不重跑写入期规则，避免历史票面因规则收紧而无法归档；ContractCard 运行期加载需先定卡片来源与配置（独立事项）。
+- 其余 FR1–FR30、NFR1–NFR7 不变。
+
 ## 2026-10-28（第 38 轮，ThingRef 写入路径校验）
 
 - **新增 FR30**：`thing_ref` 在 REST 写入边界（`POST .../seeds`、`POST .../tokens`）完成三态判定（缺失 → `400 ThingRefMissing`；显式 `null` → `∅`；字符串 → 引用）、URI profile 结构校验（控制字符、裸路径、密码型 userinfo、长度）、Identifier 文法与 RefBindings 策略（`required` / `allowIdentifier` / `schemes` / `maxLength`）。成功写入规范化后的值（scheme 小写）。

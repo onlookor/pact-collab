@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-29（第 39 轮，形态/未知 scheme/钉版运行期强制）
+
+- **接口层扩展**：在既有写入校验（FR30/D45）之上增加 `value`、`onUnknownScheme` 与 `pinning: required`（写入）/`required-at-archive`（consume 前）判定（FR31/D46）；consume 检查从 `engine.counter` 读取待消费 token 的票面，引擎与存储仍不解析 `thing_ref`。
+- **依赖方向不变**：`pact-http → pact-ref-spec`；`pact-core`/`pact-engine`/`pact-store` 不新增治理依赖。消费路径只多一次内部视图读取，不改变事件、快照与 Rule-P/GateExpr 语义。
+- **入口边界不变**：CLI/MCP/`pact-runtime` 经 REST 继承；`pact-wasm` 本地宿主仍不在边界内。
+- **文档**：附录 A 登记 `FR31`/`D46`；`docs/requirements.md` 新增 FR31；`docs/design.md` 新增 D46 与 §9.13；`docs/manual.md` §7.11 补充形态、未知 scheme、钉版与错误码。
+
 ## 2026-10-28（第 38 轮，ThingRef 写入校验）
 
 - **接口层新增写入边界**：`pact-http` 在 `POST /seeds` 与 `POST /tokens` 调引擎前执行票面三态判定、URI profile 校验与 RefBindings 策略（FR30/D45）；引擎调用之后票面仍为不透明 `ThingRef`。

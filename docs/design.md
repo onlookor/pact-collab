@@ -51,6 +51,7 @@
 | D43 | 视图级读审计（FR17/FR28，2026-10-27，继续推进物引治理路线） | `read_audit = true` 同时覆盖 Counter/Archive 视图读取：同一 `.read-audit.jsonl` 新增 `kind=view` 记录，字段含 `view`（`counter`/`archive`）、`type_filter` 与按类型聚合的 `types[{type,tokens,refs_visible,refs_filtered}]`；只记暴露计数，**不记 `thing_ref` 值**。`ReadAuditRecord` 的 `participant`/`token_id` 改为可选（匿名视图）；`kind` 缺省 `read`，旧审计流无 `kind` 仍按 `read` 解析。视图审计由引擎 actor 单写者落盘（`Engine::record_view_audit`），写失败上抛 → 接口层 `500` 拒绝视图（fail-closed）。 | 可见性过滤若无审计只形成「表面安全」，无法回答谁在何时看到了哪类票面；复用既有独立审计流与 `read_audit` 开关，避免第二套真源。只记计数不记票面值，守住 ThingRef「无秘密」约束；旧记录兼容避免审计流迁移。审计仍不进入事件日志 / `seq` / 重放 / Rule-T，也不改变可见性判定本身。 |
 | D44 | 引用保留、tombstone 与可发现性（FR29，2026-10-27，保留阶段） | ContractCard `lifecycle` 收紧：`retention` 只接受 `permanent` 或正 ISO 8601 duration；`deletionPolicy` 枚举 `retain`/`delete`/`tombstone-then-delete`；`tombstone-then-delete` 强制 URI `tombstoneRef`，其余策略禁止声明；归档钉版（`pinning.requiredForArchive`）禁止 `delete`。新增 `pact-ref-spec::Tombstone` 与 `spec/ref/v1/tombstone.schema.json`：`metadata.id` 为 URI，`spec` 含 `contract`/`ref`/`reason`/`deletedAt`、可选 `retainUntil`（须晚于 `deletedAt`）、`replacedBy`（`reason=replaced` 必填）与 `note`。`pact ref lint --tombstones` 增加契约存在性、策略一致、引用 scheme/长度、重复 id 与重复 (contract, ref) 检查；归档钉版但无 `lifecycle` 的契约给出警告。`pact ref lint` 另对 `required=true` 做可发现性检查：`required_hidden`、`view_read_path_missing`、`no_reader`、`retention_missing`、`deletion_without_tombstone`。 | 保留期与删除证据必须能在进入运行前验收，否则 Archive 中的 token 可能指向已消失且无迹可查的制品；可发现性检查回答“下游行动时是否真的能拿到票面与保留证据”。复用既有 `lifecycle` 字段并收紧语义，不新增引擎能力；tombstone 作为普通域制品/token 产生，保持引擎不 fetch/delete。只做静态一致性，不做计时与自动删除，避免把治理平面塞进引擎；周与日期分量互斥、时间戳必须可比，减少「看起来合法」的保留声明。 |
 | D45 | ThingRef 入口校验边界与策略（FR30，2026-10-28，入口阶段） | 校验放在 **REST 写入边界**：`pact-http` 在 `seed_inner`/`produce_inner` 调引擎前执行 `VisibilityProfiles::validate_thing_ref`；三态由 `ThingRefField` 保留（缺失/显式 `null`/字符串），结构规则与 RefBindings 策略（`required`/`allowIdentifier`/`schemes`/`maxLength`）在写入时强制，成功写规范化值。错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef` 均为 `400`。 | 引擎与 `pact-core` 必须保持不透明、不得依赖治理 crate，否则「引擎不解析票面」的隔离被打破；放 REST 边界使 CLI、MCP、`pact-runtime` 经同一 client 自动继承，避免多套真源。三态必须在反序列化层保留，serde 的 `Option` 会折叠「没说」与「确认没有」。策略校验复用规范层匹配，保证 lint 与运行期同一套语义；WASM 本地宿主不在 REST 边界内，单列事项。 |
+| D46 | 形态、未知 scheme 与钉版策略的执行点（FR31，2026-10-29，入口/归档阶段） | `value`、`onUnknownScheme`、`pinning` 在 REST 边界执行：写入时（seed/produce）与归档前（consume 调引擎前）。`onUnknownScheme` 的“未知”= 有效 `schemes` 非空且不含 `*` 时不在白名单；`treat-as-identifier` 重分类后仍须 `allowIdentifier`。`pinning: required` 写入即拦，`required-at-archive` 仅在 consume 拦；钉版=URI 含 `sha256:<64 小写 hex>`（fragment 或 OCI 形式），`∅` 豁免。consume 只读 `merged_rule` 的 `pinning`，不重跑写入期规则。失败 `ThingRefUnpinned`（`400`）。 | 规范层早已声明三类策略，但只在 lint 生效会让“检查通过”与“运行期行为”脱节；执行点继续放 REST 边界以保持引擎不透明。`required-at-archive` 必须在进入 Archive 的唯一转换（consume）上拦，否则归档后无法补救；归档检查只读钉版字段，避免规则收紧后历史 token 永久无法归档（fail-open 于写入规则、fail-closed 于钉版）。ContractCard 的等价字段需要先解决“卡片从哪加载”，故不并入本轮。 |
 
 ## 1. 总体结构
 
@@ -996,15 +997,40 @@ spec:
 
 **行为变化**：一旦某域加载了 RefBindings，该域默认只接受 URI——旧 Identifier 需要在绑定里显式 `allowIdentifier: true`；未加载绑定的域只做结构规则，Identifier 仍可写入（回归锚点）。
 
-**未覆盖路径**：`pact-wasm` 的 `prepare_seed`/`prepare_produce` 直接构造 `ThingRef`，未接本校验；`pact-runtime` 的进程内 REST 客户端继承本校验。归档钉版、`onUnknownScheme`、`RefRule.value`、`declarationDigest` 不在本层生效，见 FR30「未生效项」。
+**未覆盖路径**：`pact-wasm` 的 `prepare_seed`/`prepare_produce` 直接构造 `ThingRef`，未接本校验；`pact-runtime` 的进程内 REST 客户端继承本校验。归档钉版、`onUnknownScheme`、`RefRule.value` 由 D46 在后续层接入；`declarationDigest` 仍未生效。
 
 **测试**：`pact-ref-spec` 单测（userinfo、Identifier 文法、长度、规范化）；`pact-http` 单测（三态、绑定策略）；`crates/pact-http/tests/visibility_e2e.rs` 端到端（原始 HTTP 缺失字段、显式 `null`、userinfo、裸路径、空格 Identifier、超长、大写 scheme、`required` 拒绝 `∅`、Identifier/scheme/maxLength 拒绝）。
+
+### 9.13 形态、未知 scheme 与钉版（D46，已实现）
+
+**执行点**：
+
+| 策略 | 写入（seed/produce） | 归档（consume） |
+|---|---|---|
+| `value` | 判定 | 不重跑 |
+| `onUnknownScheme` | 判定 | 不重跑 |
+| `pinning: required` | 判定 | 兜底判定 |
+| `pinning: required-at-archive` | 放行 | 判定 |
+
+**`onUnknownScheme`**：`schemes` 非空且不含 `*` 时，scheme 不在白名单即“未知”。`reject`（缺省）由 `RefBindings::resolve` 直接拒绝；`allow` 跳过白名单；`treat-as-identifier` 用 `classify_identifier` 重新分类，并要求 `allowIdentifier`。白名单为空/含 `*` 表示不限，不触发策略。
+
+**`value`**：对非空票面判定 `none` / `uri` / `identifier`；`∅` 只由 `required` 决定。`required=true` 与 `value=none` 在 `RefBindings::validate` 阶段即报错（配置矛盾不进入运行期）。
+
+**钉版判定**：`pact-ref-spec::pinned_digest` 接受 `sha256:<64 位小写 hex>` 与 `sha256=<64 位小写 hex>`，即 OCI `@sha256:…` 与 URL `#sha256=…` 两种形态；大写十六进制、长度不足或后接额外十六进制字符均不算钉版。`∅` 豁免，Identifier 不算钉版。
+
+**归档检查**：`consume_inner` 在 `authorize_action` 之后、引擎调用之前执行 `enforce_archive_pinning`：若该域加载了 RefBindings，则从 `engine.counter` 找到待消费 token，取 `thing_ref` 与类型，调用 `validate_archive_thing_ref`。该方法先用 `pinned_digest` 快速放行，再只用 `RefBindings::merged_rule` 读取继承出的 `pinning`，**不**重跑 `required`/`schemes`/`value`。token 不存在时不拦截，交给引擎返回原有的 not-found / 幂等结果。
+
+**错误码**：`pinning` 失败 → `400 ThingRefUnpinned`（`message` 区分写入/归档）；`value`/`onUnknownScheme` 失败 → `400 InvalidThingRef`；配置矛盾 → daemon 启动失败（`RefBindings` 校验）。
+
+**边界**：ContractCard 的 `artifact.digestPolicy: required-at-archive` 与 `reference.pinning.requiredForArchive` 需要 daemon 加载契约卡（来源与配置未定），不在本层生效；`pact-wasm` 本地宿主不在 REST 边界内。
+
+**测试**：`pact-ref-spec`（`pinned_digest`、未知 scheme 三分支、`merged_rule` 跳过入口校验、`required+value=none` 拒绝）；`pact-http` 单测（形态、未知 scheme、写入/归档钉版）；`visibility_e2e` 端到端（`ThingRefUnpinned` 写入与 consume、钉版引用成功归档）。
 
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
 | 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码** | 阶段 4/5 的 e2e 测试 |

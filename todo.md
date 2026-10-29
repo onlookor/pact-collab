@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-28，第 77 轮）：P0 入口校验已在 REST 边界落地并全量回归通过；P1 归档钉版/运行期策略、WASM 入口、`refd` 与动态阶段未开始。下一轮按 P1 → P2 → P3 顺序推进。
+当前状态（2026-10-29，第 78 轮）：P0 入口校验与 P1 的 `pinning` / `onUnknownScheme` / `value` 已落地并全量回归通过；P1 剩余 ContractCard 运行期加载（待定来源）与 `declarationDigest`（待确认摘要算法），WASM 入口、`refd` 与动态阶段未开始。下一轮按 P1 剩余 → P2 → P3 顺序推进。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -38,17 +38,18 @@
 
 | 状态 | 事项 | 依据 | 验收方式 |
 |---|---|---|---|
-| [ ] | `pinning.requiredForArchive` 运行期强制：归档钉版类型的引用在进入 Archive 前必须有摘要/钉版证据；`digestPolicy=required-at-archive` 落地 | D44 / FR29 / `uri-profile.md` §4 | 需先登记新决策编号（`D46`）再实现；e2e 覆盖缺证据 → `409/400` |
-| [ ] | `onUnknownScheme` 运行期生效（`reject` / `treat-as-identifier` / `allow`），当前只影响 lint | FR30 / `uri-profile.md` | 入口校验单测按策略分支 |
-| [ ] | `RefRule.value`（`none`/`uri`/`identifier`）语义落地或移除：当前 schema 与 crate 保留但无消费点 | FR30 / `ref-bindings.schema.json` | 实现入口强校验 + 单测；或删字段并同步 schema（需变更记录） |
-| [ ] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 先定摘要算法（需用户确认），再实现与测试 |
+| [x] | `pinning` 运行期强制：`required` 在写入时、`required-at-archive` 在 consume 进入 Archive 前要求钉版摘要（FR31/D46） | FR31 / D46 / `uri-profile.md` §4 | 单测 + e2e：写入/consume 缺摘要 → `400 ThingRefUnpinned`；钉版可归档 |
+| [x] | `onUnknownScheme` 运行期生效（`reject` / `treat-as-identifier` / `allow`） | FR31 / D46 / `uri-profile.md` | 单测三分支 + `treat-as-identifier` 未放行 Identifier 被拒 |
+| [x] | `RefRule.value`（`none`/`uri`/`identifier`）语义落地 | FR31 / D46 / `ref-bindings.schema.json` | 入口强校验 + 单测；`required=true` 与 `value=none` 由绑定校验拒绝 |
+| [ ] | ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载（拆分项：daemon 目前只加载 RefBindings） | D44 / FR29 / FR31 | 需先定卡片来源与 daemon 配置（`contracts` paths）；本轮未实现，原因见 `design-change.md` 第 78 轮 |
+| [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 阻塞：需用户确认摘要对象与规范化算法（声明原文/规范化 AST/包含注释？）后再实现 |
 
 ### P2 跨仓库与快照
 
 | 状态 | 事项 | 依据 | 验收方式 |
 |---|---|---|---|
-| [x] | `pact-ref` vendored 快照同步：本轮 `pact-ref-spec` 改动（`HARD_MAX_REFERENCE_LENGTH`、Identifier 文法、userinfo 修复、`InvalidIdentifier`） | `AGENTS.md` 跨仓库纪律 | `scripts/sync-spec.sh` 已同步，`--check` 通过；改动 4 个文件 + `pact-ref-spec-source.json` |
-| [x] | `pact-ref` 回归：vendored 快照更新后跑 `cargo fmt/clippy/test` | 同上 | `fmt`/`clippy -D warnings` 通过；`cargo test --workspace --locked` **46 passed / 0 failed** |
+| [x] | `pact-ref` vendored 快照同步（第 77 轮：`HARD_MAX`、Identifier 文法、userinfo、`InvalidIdentifier`；第 78 轮：`merged_rule`、`pinned_digest`、`classify_identifier`、新错误） | `AGENTS.md` 跨仓库纪律 | `scripts/sync-spec.sh --check` 通过 |
+| [x] | `pact-ref` 回归：vendored 快照更新后跑 `cargo fmt/clippy/test` | 同上 | 第 77 轮 46 passed；第 78 轮 **50 passed / 0 failed**，`fmt`/`clippy` 通过 |
 | [!] | `pact-ref` conformance：补入口校验用例（缺失/`null`、userinfo、Identifier 文法、`maxLength`） | `conformance/` | 阻塞：`conformance/runner` 仍是骨架（不执行用例）；待 runner 落地后补 |
 
 ### P3 治理平面与动态阶段
@@ -69,15 +70,17 @@
 | [x] | `docs/architecture.md` 正文补“REST 边界校验，引擎不透明”，`architecture-change.md` 第 38 轮 | 附录 A 已登记 `FR30`/`D45` |
 | [x] | `docs/manual.md`：REST seed/produce 的 `thing_ref` 三态、错误码、`ref_bindings` 策略 | 与 e2e 实测一致 |
 | [x] | `docs/thingref-governance.md` §8.1 / §13.1：入口校验状态改为已实现（REST 边界），并标注 MCP/WASM 边界 | 与 FR30 引用一致 |
+| [x] | 第 78 轮：`docs/requirements.md` FR31 + 第 39 轮；`docs/design.md` D46 与 §9.13 + 第 78 轮；`architecture.md` 附录 A/正文 + 第 39 轮；`manual.md` §7.11；治理 §8.1/§13.1 | 与代码及 e2e 实测一致 |
 
 ### 验证与交付
 
 | 状态 | 事项 | 验收方式 |
 |---|---|---|
-| [x] | 全量回归 `cargo test --workspace --locked` | **317 passed / 0 failed**（50 个 test binary，含 `runtime_e2e` 5 passed） |
-| [x] | `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` | 均通过（退出码 0） |
-| [x] | 推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增依赖；生产代码无 `unsafe`/网络/进程/文件写；`cargo audit` 0 vulnerability / 2 unmaintained（沿用）；结论写入 `design-change.md` 第 77 轮 |
-| [x] | 提交与推送，回填提交哈希 | `pact` `9893541`（main）；`pact-ref` `b8e759c`（vendored 快照）；均已推送 |
+| [x] | 第 77 轮全量回归 `cargo test --workspace --locked` | **317 passed / 0 failed**（50 个 test binary，含 `runtime_e2e` 5 passed） |
+| [x] | 第 78 轮全量回归 `cargo test --workspace --locked` | **327 passed / 0 failed**（新增 10 项：`pact-ref-spec` 4、`pact-http` 4、e2e 2） |
+| [x] | 第 77/78 轮 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` | 均通过（退出码 0） |
+| [x] | 推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增依赖；生产代码无 `unsafe`/网络/进程/文件写；`cargo audit` 0 vulnerability / 2 unmaintained（沿用）；结论写入 `design-change.md` 第 77/78 轮 |
+| [~] | 第 78 轮提交与推送，回填提交哈希 | 待提交 |
 
 ## 已完成归档区
 

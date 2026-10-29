@@ -257,9 +257,26 @@
   - `maxLength` 覆盖默认 2048 字节上限，超过 → `400 InvalidThingRef`。
   未加载该域绑定时只做结构规则，不做策略校验。
 - **继承与边界**：CLI 与 MCP 经 REST client 调用，自动继承同一套校验；MCP 工具参数省略时 client 发送显式 `null`（等价 `∅`），无法表达“缺失”。`pact-wasm` 本地宿主与 `pact-runtime` 的进程内路径不在本需求内（WASM 入口校验单列事项）。
-- **未生效项**：`onUnknownScheme`、`RefRule.value`、`declarationDigest` 与归档钉版（`pinning.requiredForArchive` / `digestPolicy=required-at-archive`）仍只在规范层或 `pact ref lint` 中生效，运行期未强制；见 `todo.md` P1。
+- **未生效项**：`declarationDigest` 与 ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载仍未落地（`onUnknownScheme`、`value`、`pinning` 已由 FR31 接入运行期）；见 `todo.md` P1。
 - **错误码**：均为 `400`，沿用 §6.3 结构化错误体；`code` 为 `ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，`message` 携带原始规范错误文本（不含票面全文以外的敏感信息，票面本身可能含位置信息，按调用方权限返回）。
 - **实现状态**：已实现（2026-10-28）。`pact-ref-spec` 修复 userinfo 与 Identifier 文法；`pact-http` 新增 `ThingRefField`（区分缺失/`null`）与 `VisibilityProfiles::validate_thing_ref`；`seed`/`produce` 在引擎调用前接线。单元测试覆盖三态、结构规则、`git+ssh` 与 Identifier 文法；端到端测试覆盖缺失/`null`、userinfo、裸路径、Identifier、超长、大写 scheme 规范化与绑定策略。
+
+### FR31 引用形态、未知 scheme 与钉版的运行期强制（D46）
+
+- **定位**：把 RefBindings 中已声明、但此前只在 `pact ref lint` 生效的三类策略接到运行期：`value`（期望形态）、`onUnknownScheme`（未知 scheme 处理）、`pinning`（钉版）。执行点仍在 REST 边界（D45/D46），引擎不感知票面。
+- **`value`**：约束**非空**票面的形态——`none` 只允许 `∅`；`uri` 只允许 URI；`identifier` 只允许 Identifier；未声明不限制。`∅` 是否允许只由 `required` 决定。`required=true` 与 `value=none` 互斥，声明即校验失败。形态不符 → `400 InvalidThingRef`。
+- **`onUnknownScheme`**：有效 `schemes` 非空且不含 `*` 时，scheme 不在白名单内视为“未知”；白名单为空或含 `*` 表示不限。
+  - `reject`（缺省）：`400 InvalidThingRef`；
+  - `allow`：放行该引用（仍执行长度与 `value`/钉版检查）；
+  - `treat-as-identifier`：按 Identifier 文法重新分类，且必须有 `allowIdentifier: true`，否则 `400 InvalidThingRef`。
+- **`pinning`**：
+  - `required`：写入（seed/produce）时即要求钉版；
+  - `required-at-archive`：写入不拦，但在 consume（进入 Archive 的唯一转换）前要求钉版；
+  - `optional`（缺省）：不要求。
+  钉版判定为 URI 携带内容摘要 `sha256:<64 位小写十六进制>`，接受 URL fragment `#sha256=<hex>` 与 OCI `@sha256:<hex>` 两种写法；`∅` 表示没有外部制品，不受钉版约束；Identifier 不是钉版。失败 → `400 ThingRefUnpinned`。
+- **执行点**：`pinning: required` 与上述形态/未知 scheme 策略在 seed/produce 前判定；`required-at-archive` 在 `/consume` 进入引擎前读取待消费 token 的票面判定。consume 只读取继承出的 `pinning`，不重复执行写入期规则，避免历史票面因后续收紧而无法归档。
+- **边界**：ContractCard 的 `artifact.digestPolicy: required-at-archive` 与 `reference.pinning.requiredForArchive` 尚未在运行期加载（daemon 目前只加载 RefBindings），登记为 `todo.md` P1 的独立事项，需先定卡片来源与加载配置。`pact-wasm` 本地宿主仍不经过该边界。
+- **实现状态**：已实现（2026-10-29）。单元测试覆盖未知 scheme 三分支、`value` 三态、写入钉版与归档钉版；端到端测试覆盖 `ThingRefUnpinned`（写入与 consume）及钉版引用正常归档。
 
 ## 5. 非功能需求
 

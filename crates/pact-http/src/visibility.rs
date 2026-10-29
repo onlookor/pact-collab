@@ -11,8 +11,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use pact_ref_spec::{
-    RefBindings, ReferenceForm, SpecError, Visibility, DEFAULT_MAX_REFERENCE_LENGTH,
-    HARD_MAX_REFERENCE_LENGTH,
+    classify_identifier, pinned_digest, PinningRequirement, RefBindings, ReferenceForm, SpecError,
+    UnknownSchemePolicy, Visibility, DEFAULT_MAX_REFERENCE_LENGTH, HARD_MAX_REFERENCE_LENGTH,
 };
 
 /// 单个 token 的票面暴露级别。
@@ -101,7 +101,8 @@ impl VisibilityProfiles {
     /// `None` = 字段缺失，`Some(None)` = 显式 `∅`，`Some(Some(raw))` = 有引用。
     ///
     /// 无 RefBindings 的域只做结构校验（默认 2048 字节、URI profile、Identifier 文法）；
-    /// 有 RefBindings 的域再强制 `required` / `allowIdentifier` / `schemes` / `maxLength`。
+    /// 有 RefBindings 的域再强制 `required` / `allowIdentifier` / `schemes` /
+    /// `onUnknownScheme` / `value` / `pinning: required` / `maxLength`（D45/D46）。
     pub fn validate_thing_ref(
         &self,
         domain: &str,
@@ -123,25 +124,130 @@ impl VisibilityProfiles {
         };
         let reference = ReferenceForm::classify_with_limit(Some(raw), HARD_MAX_REFERENCE_LENGTH)
             .map_err(RefEntryError::Invalid)?;
-        let max_length = if let Some(loaded) = self.bindings.get(domain) {
-            let matched = loaded
-                .bindings
-                .resolve(Some(instance), ty, &reference)
-                .map_err(RefEntryError::Invalid)?;
-            matched
-                .rule
-                .max_length
-                .unwrap_or(DEFAULT_MAX_REFERENCE_LENGTH)
-        } else {
-            DEFAULT_MAX_REFERENCE_LENGTH
+        let Some(loaded) = self.bindings.get(domain) else {
+            if raw.len() > DEFAULT_MAX_REFERENCE_LENGTH {
+                return Err(RefEntryError::Invalid(SpecError::TooLong {
+                    actual: raw.len(),
+                    max: DEFAULT_MAX_REFERENCE_LENGTH,
+                }));
+            }
+            return Ok(reference.as_str().map(str::to_owned));
         };
+        let matched = loaded
+            .bindings
+            .resolve(Some(instance), ty, &reference)
+            .map_err(RefEntryError::Invalid)?;
+
+        // D46：未知 scheme 的三种处理。`resolve` 只拦 `reject`（缺省），
+        // 其余两种在这里落地。
+        let mut effective = reference;
+        if let ReferenceForm::Uri(uri) = &effective {
+            let scheme = effective.scheme().unwrap_or_default().to_owned();
+            if scheme_is_unknown(&matched.rule, &scheme) {
+                match matched
+                    .rule
+                    .on_unknown_scheme
+                    .unwrap_or(UnknownSchemePolicy::Reject)
+                {
+                    UnknownSchemePolicy::Allow => {}
+                    UnknownSchemePolicy::TreatAsIdentifier => {
+                        if !matched.rule.allow_identifier.unwrap_or(false) {
+                            return Err(RefEntryError::Invalid(SpecError::IdentifierNotAllowed {
+                                type_name: ty.to_owned(),
+                            }));
+                        }
+                        effective = classify_identifier(uri).map_err(RefEntryError::Invalid)?;
+                    }
+                    UnknownSchemePolicy::Reject => {
+                        return Err(RefEntryError::Invalid(SpecError::SchemeNotAllowed {
+                            scheme,
+                            type_name: ty.to_owned(),
+                        }));
+                    }
+                }
+            }
+        }
+
+        // D46：`value` 约束非空票面的形态；`∅` 由 `required` 决定。
+        if let Some(expected) = matched.rule.value.as_deref() {
+            let actual = match &effective {
+                ReferenceForm::Uri(_) => "uri",
+                ReferenceForm::Identifier(_) => "identifier",
+                ReferenceForm::Absent => "null",
+            };
+            let ok = match expected {
+                "none" => effective.is_absent(),
+                "uri" => effective.is_uri(),
+                "identifier" => effective.is_identifier(),
+                _ => true,
+            };
+            if !ok {
+                return Err(RefEntryError::Invalid(SpecError::ValueFormMismatch {
+                    expected: expected.to_owned(),
+                    actual: actual.to_owned(),
+                }));
+            }
+        }
+
+        // D46：写入时钉版（`required-at-archive` 留到 consume）。
+        if matched.pins_at_entry() {
+            if let Some(value) = effective.as_str() {
+                if pinned_digest(value).is_none() {
+                    return Err(RefEntryError::Invalid(SpecError::PinningRequired {
+                        type_name: ty.to_owned(),
+                        at_archive: false,
+                    }));
+                }
+            }
+        }
+
+        let max_length = matched
+            .rule
+            .max_length
+            .unwrap_or(DEFAULT_MAX_REFERENCE_LENGTH);
         if raw.len() > max_length {
             return Err(RefEntryError::Invalid(SpecError::TooLong {
                 actual: raw.len(),
                 max: max_length,
             }));
         }
-        Ok(reference.as_str().map(str::to_owned))
+        Ok(effective.as_str().map(str::to_owned))
+    }
+
+    /// D46：进入 Archive（consume）前的钉版检查。
+    ///
+    /// 只读取继承出的 `pinning`，不重复执行写入期策略：历史票面可能已经不符合
+    /// 收紧后的入口规则，但归档要求仍按当前绑定生效。`∅` 不受钉版约束。
+    pub fn validate_archive_thing_ref(
+        &self,
+        domain: &str,
+        instance: &str,
+        ty: &str,
+        thing_ref: Option<&str>,
+    ) -> Result<(), RefEntryError> {
+        let Some(raw) = thing_ref else {
+            return Ok(());
+        };
+        if pinned_digest(raw).is_some() {
+            return Ok(());
+        }
+        let Some(loaded) = self.bindings.get(domain) else {
+            return Ok(());
+        };
+        // 分类失败的历史值按 Identifier 处理（无 scheme 覆盖），只影响继承链选择。
+        let reference = ReferenceForm::classify_with_limit(Some(raw), HARD_MAX_REFERENCE_LENGTH)
+            .unwrap_or_else(|_| ReferenceForm::Identifier(raw.to_owned()));
+        let rule = loaded.bindings.merged_rule(Some(instance), ty, &reference);
+        if matches!(
+            rule.pinning,
+            Some(PinningRequirement::Required | PinningRequirement::RequiredAtArchive)
+        ) {
+            return Err(RefEntryError::Invalid(SpecError::PinningRequired {
+                type_name: ty.to_owned(),
+                at_archive: true,
+            }));
+        }
+        Ok(())
     }
 
     /// 计算单个 token 的票面暴露级别。
@@ -181,6 +287,16 @@ impl VisibilityProfiles {
             Visibility::ReadGate => RefExposure::ReadGate,
         }
     }
+}
+
+/// 有效 `schemes` 非空且不含 `*` 时，不在白名单内的 scheme 视为“未知”。
+fn scheme_is_unknown(rule: &pact_ref_spec::RefRule, scheme: &str) -> bool {
+    rule.schemes.as_ref().is_some_and(|allowed| {
+        !allowed.is_empty()
+            && !allowed
+                .iter()
+                .any(|candidate| candidate == "*" || candidate == scheme)
+    })
 }
 
 /// defaults → type → instance/type 的 visibility 继承（忽略 scheme 覆盖）。
@@ -560,17 +676,225 @@ spec:
             ),
             Err(RefEntryError::Invalid(SpecError::TooLong { .. }))
         ));
+    }
+
+    const POLICY_BINDINGS: &str = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  types:
+    requirement:
+      ref:
+        schemes: ["https"]
+        onUnknownScheme: allow
+    design:
+      ref:
+        schemes: ["https"]
+        onUnknownScheme: treat-as-identifier
+        allowIdentifier: true
+    service:
+      ref:
+        schemes: ["https"]
+        onUnknownScheme: treat-as-identifier
+    implementation:
+      ref:
+        allowIdentifier: true
+        value: uri
+    test_report:
+      ref:
+        value: none
+    deployment:
+      ref:
+        pinning: required
+    review:
+      ref:
+        allowIdentifier: true
+        pinning: required-at-archive
+"#;
+
+    fn pinned_uri() -> String {
+        format!("https://artifacts.example.com/d#sha256={}", "9f".repeat(32))
+    }
+
+    #[test]
+    fn unknown_scheme_policy_applies_at_entry() {
+        use super::RefEntryError;
+        use pact_ref_spec::SpecError;
+
+        let (_dir, profiles) = load(POLICY_BINDINGS);
         assert_eq!(
             profiles
                 .validate_thing_ref(
                     "proj",
                     "default",
                     "requirement",
+                    Some(Some("mcp://build.example.com/run"))
+                )
+                .unwrap()
+                .as_deref(),
+            Some("mcp://build.example.com/run"),
+            "allow 放行未知 scheme"
+        );
+        assert_eq!(
+            profiles
+                .validate_thing_ref(
+                    "proj",
+                    "default",
+                    "design",
+                    Some(Some("mcp://build.example.com/run"))
+                )
+                .unwrap()
+                .as_deref(),
+            Some("mcp://build.example.com/run"),
+            "treat-as-identifier 且 allowIdentifier=true → 接受"
+        );
+        let rejected = profiles.validate_thing_ref(
+            "proj",
+            "default",
+            "service",
+            Some(Some("mcp://build.example.com/run")),
+        );
+        assert!(
+            matches!(
+                rejected,
+                Err(RefEntryError::Invalid(
+                    SpecError::IdentifierNotAllowed { .. }
+                ))
+            ),
+            "treat-as-identifier 未放行 Identifier → 拒绝"
+        );
+    }
+
+    #[test]
+    fn value_policy_applies_at_entry() {
+        use super::RefEntryError;
+        use pact_ref_spec::SpecError;
+
+        let (_dir, profiles) = load(POLICY_BINDINGS);
+        assert_eq!(
+            profiles
+                .validate_thing_ref(
+                    "proj",
+                    "default",
+                    "implementation",
                     Some(Some("https://example.com/a"))
                 )
                 .unwrap()
                 .as_deref(),
             Some("https://example.com/a")
         );
+        assert!(matches!(
+            profiles.validate_thing_ref(
+                "proj",
+                "default",
+                "implementation",
+                Some(Some("REQ-001"))
+            ),
+            Err(RefEntryError::Invalid(SpecError::ValueFormMismatch {
+                expected,
+                ..
+            })) if expected == "uri"
+        ));
+        assert!(matches!(
+            profiles.validate_thing_ref(
+                "proj",
+                "default",
+                "test_report",
+                Some(Some("https://example.com/a"))
+            ),
+            Err(RefEntryError::Invalid(SpecError::ValueFormMismatch {
+                expected,
+                ..
+            })) if expected == "none"
+        ));
+        assert_eq!(
+            profiles
+                .validate_thing_ref("proj", "default", "test_report", Some(None))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn pinning_required_rejects_unpinned_entry() {
+        use super::RefEntryError;
+        use pact_ref_spec::SpecError;
+
+        let (_dir, profiles) = load(POLICY_BINDINGS);
+        assert!(matches!(
+            profiles.validate_thing_ref(
+                "proj",
+                "default",
+                "deployment",
+                Some(Some("https://example.com/d"))
+            ),
+            Err(RefEntryError::Invalid(SpecError::PinningRequired {
+                at_archive: false,
+                ..
+            }))
+        ));
+        assert_eq!(
+            profiles
+                .validate_thing_ref("proj", "default", "deployment", Some(Some(&pinned_uri())))
+                .unwrap()
+                .as_deref(),
+            Some(pinned_uri().as_str())
+        );
+        assert_eq!(
+            profiles
+                .validate_thing_ref("proj", "default", "deployment", Some(None))
+                .unwrap(),
+            None,
+            "∅ 不受钉版约束"
+        );
+    }
+
+    #[test]
+    fn archive_pinning_requires_digest() {
+        use super::RefEntryError;
+        use pact_ref_spec::SpecError;
+
+        let (_dir, profiles) = load(POLICY_BINDINGS);
+        // required-at-archive 不拦写入。
+        assert_eq!(
+            profiles
+                .validate_thing_ref(
+                    "proj",
+                    "default",
+                    "review",
+                    Some(Some("https://example.com/r"))
+                )
+                .unwrap()
+                .as_deref(),
+            Some("https://example.com/r")
+        );
+        assert!(matches!(
+            profiles.validate_archive_thing_ref(
+                "proj",
+                "default",
+                "review",
+                Some("https://example.com/r")
+            ),
+            Err(RefEntryError::Invalid(SpecError::PinningRequired {
+                at_archive: true,
+                ..
+            }))
+        ));
+        profiles
+            .validate_archive_thing_ref("proj", "default", "review", Some(&pinned_uri()))
+            .expect("pinned");
+        profiles
+            .validate_archive_thing_ref("proj", "default", "review", None)
+            .expect("∅ 可归档");
+        profiles
+            .validate_archive_thing_ref(
+                "proj",
+                "default",
+                "requirement",
+                Some("https://example.com/a"),
+            )
+            .expect("未要求钉版的类型不拦");
     }
 }

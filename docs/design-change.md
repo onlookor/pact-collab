@@ -2,6 +2,21 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-29（第 78 轮，形态 / 未知 scheme / 钉版运行期强制）
+
+- **触发**：`todo.md` P1。RefBindings 的 `value`、`onUnknownScheme`、`pinning` 此前只在 `pact ref lint` 生效，运行期不强制。
+- **决策（D46）**：三类策略继续在 REST 边界执行；`pinning: required` 在 seed/produce 拦，`required-at-archive` 在 consume（进入 Archive 的唯一转换）拦；consume 只读 `merged_rule` 的 `pinning`，不重跑写入期规则，避免规则收紧后历史 token 永久无法归档。ContractCard 等价字段需先解决卡片加载来源，拆分独立事项。
+- **规范层**（`pact-ref-spec`）：
+  - `resolve` 对“未知 scheme”按策略分流：`reject` 仍直接拒绝，`allow` / `treat-as-identifier` 放行给调用方；
+  - 新增 `merged_rule`（只合并继承链、不做校验）供归档检查；
+  - 新增 `classify_identifier`（重分类）与 `pinned_digest`（识别 `sha256:` / `sha256=` 的 64 位小写摘要）；
+  - `validate_rule` 增加 `required=true` 与 `value=none` 矛盾检查；
+  - 新增错误 `ValueFormMismatch`、`PinningRequired`。
+- **接口层**（`pact-http`）：`validate_thing_ref` 增加未知 scheme 分流、`value` 形态检查与写入钉版；新增 `validate_archive_thing_ref`；`consume_inner` 在授权后、引擎前调用 `enforce_archive_pinning`（从 `engine.counter` 取待消费 token）。错误码新增 `ThingRefUnpinned`（`400`）。
+- **测试**：`pact-ref-spec` 新增 4 个单测（钉版识别、未知 scheme 三分支、`merged_rule`、矛盾配置）；`pact-http` 新增 4 个单测（未知 scheme、`value`、写入钉版、归档钉版）；`visibility_e2e` 新增 2 个端到端（写入与 consume 的 `ThingRefUnpinned`、钉版引用成功归档），该文件 **9 passed**；`pact-ref-spec`+`pact-http` 定向 **52 + 33 passed**。
+- **未做**：ContractCard `digestPolicy` 运行期加载（需先定来源/配置）；`declarationDigest` 漂移检测（需用户确认摘要算法）；WASM 入口校验；conformance runner。均登记 `todo.md`。
+- **文档**：FR31、D46 与 §9.13；同步 FR30 未生效项、§9.12、§10 测试策略、manual §7.11、治理 §8.1/§13.1、架构附录 A 与正文。
+
 ## 2026-10-28（第 77 轮，ThingRef 入口校验）
 
 - **触发**：第 76 轮审视的最高优先级缺口——`POST /seeds` / `POST /tokens` 直接透传 `thing_ref`，URI profile 与 RefBindings 策略只在视图过滤和离线 lint 中生效。用户要求按建议顺序开始修复。

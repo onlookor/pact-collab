@@ -1131,11 +1131,16 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 - `required: true`：`∅` → `400 ThingRefRequired`。
 - `allowIdentifier`：默认 `false`——该域从此只接受 URI；旧 Identifier 必须显式 `allowIdentifier: true`。
 - `schemes`：URI 的 scheme 必须在集合内（`*` 表示任意）。
+- `onUnknownScheme`：scheme 不在 `schemes` 白名单内时——`reject`（缺省）拒绝、`allow` 放行、`treat-as-identifier` 按 Identifier 处理（仍需 `allowIdentifier: true`）。
+- `value`：非空票面的形态——`none` 只允许 `∅`、`uri` 只允许 URI、`identifier` 只允许 Identifier；与 `required: true` 搭配 `none` 属配置矛盾，daemon 启动失败。
+- `pinning`：`required` 要求写入时即带摘要；`required-at-archive` 只在 consume（归档）前要求；`optional`（缺省）不要求。
 - `maxLength`：覆盖默认长度。
 
-**错误码**：`ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，均为 `400`，错误体同 §6.3（`error.code` + `error.detail` + `error.message`）。
+**钉版与归档**：钉版 = URI 携带 `sha256:<64 位小写十六进制>`，如 `https://artifacts.example.com/d#sha256=…` 或 `oci://registry/team/image@sha256:…`。`∅` 不受钉版约束，Identifier 不算钉版。`pinning: required-at-archive` 的类型在 `pact consume` 时若票面未钉版 → `400 ThingRefUnpinned`，token 留在 Counter；补一个带摘要的新 token 后再消费即可。
 
-**未生效**：`onUnknownScheme`、`value`、`declarationDigest` 与归档钉版（`pinning.requiredForArchive`）目前只在 `pact ref lint` 中检查，运行期未强制；WASM 本地宿主不经过 REST，尚无该校验。
+**错误码**：`ThingRefMissing` / `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`，均为 `400`，错误体同 §6.3（`error.code` + `error.detail` + `error.message`）。
+
+**未生效**：`declarationDigest` 漂移检测与 ContractCard 的 `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载尚未实现；WASM 本地宿主不经过 REST，尚无该校验。
 
 ---
 
@@ -1236,7 +1241,7 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 
 **票面可见性（D42）**：`GET /counter` 与 `GET /archive` 的 `thing_ref` 默认 `read-gate`，按调用者的无条件 `reads`/`consumes` 子句返回；`[ref_bindings]` 可显式声明 `domain`/`hidden`。token 存在性、类型与计数不变；`GET /tokens/{id}` 仍由 Rule-R 授权。详见 §7.9。
 
-**票面写入校验（D45）**：`POST .../seeds` 与 `POST .../tokens` 的 `thing_ref` 支持三态——字段缺失 → `400 ThingRefMissing`、显式 `null` → `∅`、字符串 → 校验后写入规范化值；URI profile 与 RefBindings 策略在引擎调用前强制执行。详见 §7.11。
+**票面写入校验（D45/D46）**：`POST .../seeds` 与 `POST .../tokens` 的 `thing_ref` 支持三态——字段缺失 → `400 ThingRefMissing`、显式 `null` → `∅`、字符串 → 校验后写入规范化值；URI profile、RefBindings 形态/未知 scheme/钉版策略在引擎调用前强制执行。`POST .../consume` 对声明 `pinning: required-at-archive` 的类型要求票面已钉版。详见 §7.11。
 
 **运维端点（D25，免身份）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验身份**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不做域级授权（但启用签名时仍需签名；破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
 

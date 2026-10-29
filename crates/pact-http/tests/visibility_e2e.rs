@@ -558,3 +558,148 @@ async fn entry_validation_applies_bindings_policy() {
     .await
     .unwrap();
 }
+
+const ARCHIVE_PIN_BINDINGS: &str = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  types:
+    design:
+      ref:
+        pinning: required-at-archive
+"#;
+
+const ENTRY_PIN_BINDINGS: &str = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  types:
+    design:
+      ref:
+        pinning: required
+"#;
+
+fn pinned(uri: &str) -> String {
+    format!("{uri}#sha256={}", "9f".repeat(32))
+}
+
+/// D46：`pinning: required-at-archive` 在 consume（进入 Archive）时拒绝未钉版引用。
+#[tokio::test]
+async fn archive_pinning_blocks_unpinned_consume() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn(dir.path(), tokens(), Some(ARCHIVE_PIN_BINDINGS)).await;
+    let external = Client::unix(&sock).with_bearer("ext-token");
+    let architect = Client::unix(&sock).with_bearer("arch-token");
+    let developer = Client::unix(&sock).with_bearer("dev-token");
+    external
+        .load_domain("proj", DECL, None, false)
+        .await
+        .unwrap();
+    let requirement = external
+        .seed(
+            "proj",
+            None,
+            "external",
+            "requirement",
+            Some("https://example.com/req"),
+        )
+        .await
+        .unwrap();
+    let design = architect
+        .produce(
+            "proj",
+            None,
+            "architect",
+            "design",
+            vec![requirement.token.id.0.clone()],
+            Some("https://example.com/design"),
+        )
+        .await
+        .unwrap();
+
+    match developer
+        .consume("proj", None, "developer", &design.token.id.0, None)
+        .await
+    {
+        Err(ClientError::Api(detail)) => assert_eq!(detail.code, "ThingRefUnpinned"),
+        other => panic!("未钉版引用应在归档前被拒，实际 {other:?}"),
+    }
+
+    let pinned_ref = pinned("https://example.com/design");
+    let design = architect
+        .produce(
+            "proj",
+            None,
+            "architect",
+            "design",
+            vec![requirement.token.id.0.clone()],
+            Some(&pinned_ref),
+        )
+        .await
+        .unwrap();
+    developer
+        .consume("proj", None, "developer", &design.token.id.0, None)
+        .await
+        .unwrap();
+    let archive = developer.archive("proj", None, None).await.unwrap();
+    assert_eq!(archive.entries.len(), 1);
+    assert_eq!(
+        archive.entries[0].token.thing_ref.0.as_deref(),
+        Some(pinned_ref.as_str())
+    );
+}
+
+/// D46：`pinning: required` 在写入时拒绝未钉版引用。
+#[tokio::test]
+async fn entry_pinning_blocks_unpinned_produce() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn(dir.path(), tokens(), Some(ENTRY_PIN_BINDINGS)).await;
+    let external = Client::unix(&sock).with_bearer("ext-token");
+    let architect = Client::unix(&sock).with_bearer("arch-token");
+    external
+        .load_domain("proj", DECL, None, false)
+        .await
+        .unwrap();
+    let requirement = external
+        .seed(
+            "proj",
+            None,
+            "external",
+            "requirement",
+            Some("https://example.com/req"),
+        )
+        .await
+        .unwrap();
+
+    match architect
+        .produce(
+            "proj",
+            None,
+            "architect",
+            "design",
+            vec![requirement.token.id.0.clone()],
+            Some("https://example.com/design"),
+        )
+        .await
+    {
+        Err(ClientError::Api(detail)) => assert_eq!(detail.code, "ThingRefUnpinned"),
+        other => panic!("未钉版引用应在写入时被拒，实际 {other:?}"),
+    }
+
+    let pinned_ref = pinned("https://example.com/design");
+    architect
+        .produce(
+            "proj",
+            None,
+            "architect",
+            "design",
+            vec![requirement.token.id.0.clone()],
+            Some(&pinned_ref),
+        )
+        .await
+        .unwrap();
+}

@@ -271,6 +271,34 @@ impl ServerState {
         Ok(())
     }
 
+    /// D46：consume（进入 Archive）前检查归档钉版。
+    ///
+    /// 只在该域加载了 RefBindings 时查票面；token 不存在时不拦截，交给引擎
+    /// 返回既有的 not-found / 幂等结果。引擎仍不感知票面内容。
+    async fn enforce_archive_pinning(&self, key: &InstanceKey, id: &str) -> Result<(), ApiError> {
+        if !self.visibility.has_domain(&key.domain) {
+            return Ok(());
+        }
+        let view = self.engine.counter(key.clone(), None).await?;
+        let Some(token) = view.tokens.iter().find(|token| token.id.0 == id) else {
+            return Ok(());
+        };
+        self.visibility
+            .validate_archive_thing_ref(
+                &key.domain,
+                &key.instance,
+                &token.ty.0,
+                token.thing_ref.0.as_deref(),
+            )
+            .map_err(|error| {
+                let code = match &error {
+                    RefEntryError::Invalid(SpecError::PinningRequired { .. }) => "ThingRefUnpinned",
+                    _ => "InvalidThingRef",
+                };
+                ApiError::new(StatusCode::BAD_REQUEST, code, error.to_string())
+            })
+    }
+
     fn forbidden(domain: &str, instance: &str) -> ApiError {
         ApiError {
             status: StatusCode::FORBIDDEN,
@@ -1551,6 +1579,7 @@ async fn consume_inner(
     req: ConsumeReq,
 ) -> Result<Json<EntryResp>, ApiError> {
     st.authorize_action(&req.participant, &headers, &key)?;
+    st.enforce_archive_pinning(&key, &id).await?;
     let entry = st
         .engine
         .consume(
@@ -1747,6 +1776,7 @@ fn validate_entry_thing_ref(
             let code = match &error {
                 RefEntryError::Missing => "ThingRefMissing",
                 RefEntryError::Invalid(SpecError::ReferenceRequired) => "ThingRefRequired",
+                RefEntryError::Invalid(SpecError::PinningRequired { .. }) => "ThingRefUnpinned",
                 RefEntryError::Invalid(_) => "InvalidThingRef",
             };
             ApiError::new(StatusCode::BAD_REQUEST, code, error.to_string())
