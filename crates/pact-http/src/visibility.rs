@@ -10,7 +10,10 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use pact_ref_spec::{RefBindings, ReferenceForm, SpecError, Visibility};
+use pact_ref_spec::{
+    RefBindings, ReferenceForm, SpecError, Visibility, DEFAULT_MAX_REFERENCE_LENGTH,
+    HARD_MAX_REFERENCE_LENGTH,
+};
 
 /// 单个 token 的票面暴露级别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +95,55 @@ impl VisibilityProfiles {
         self.bindings.contains_key(domain)
     }
 
+    /// D45：写入路径的票面校验。
+    ///
+    /// `input` 的三态与 [`ThingRefField`](crate::dto::ThingRefField) 对齐：
+    /// `None` = 字段缺失，`Some(None)` = 显式 `∅`，`Some(Some(raw))` = 有引用。
+    ///
+    /// 无 RefBindings 的域只做结构校验（默认 2048 字节、URI profile、Identifier 文法）；
+    /// 有 RefBindings 的域再强制 `required` / `allowIdentifier` / `schemes` / `maxLength`。
+    pub fn validate_thing_ref(
+        &self,
+        domain: &str,
+        instance: &str,
+        ty: &str,
+        input: Option<Option<&str>>,
+    ) -> Result<Option<String>, RefEntryError> {
+        let Some(value) = input else {
+            return Err(RefEntryError::Missing);
+        };
+        let Some(raw) = value else {
+            if let Some(loaded) = self.bindings.get(domain) {
+                loaded
+                    .bindings
+                    .resolve(Some(instance), ty, &ReferenceForm::Absent)
+                    .map_err(RefEntryError::Invalid)?;
+            }
+            return Ok(None);
+        };
+        let reference = ReferenceForm::classify_with_limit(Some(raw), HARD_MAX_REFERENCE_LENGTH)
+            .map_err(RefEntryError::Invalid)?;
+        let max_length = if let Some(loaded) = self.bindings.get(domain) {
+            let matched = loaded
+                .bindings
+                .resolve(Some(instance), ty, &reference)
+                .map_err(RefEntryError::Invalid)?;
+            matched
+                .rule
+                .max_length
+                .unwrap_or(DEFAULT_MAX_REFERENCE_LENGTH)
+        } else {
+            DEFAULT_MAX_REFERENCE_LENGTH
+        };
+        if raw.len() > max_length {
+            return Err(RefEntryError::Invalid(SpecError::TooLong {
+                actual: raw.len(),
+                max: max_length,
+            }));
+        }
+        Ok(reference.as_str().map(str::to_owned))
+    }
+
     /// 计算单个 token 的票面暴露级别。
     ///
     /// `thing_ref` 为空时不涉及票面，返回 `Visible`；匹配失败或绑定拒绝时回退
@@ -156,6 +208,24 @@ fn inherited_visibility(bindings: &RefBindings, instance: &str, ty: &str) -> Opt
         visibility = Some(value);
     }
     visibility
+}
+
+/// 写入路径的票面校验错误。
+#[derive(Debug)]
+pub enum RefEntryError {
+    /// 请求体缺少 `thing_ref` 字段（作者漏传）。
+    Missing,
+    /// 结构或 RefBindings 策略拒绝。
+    Invalid(SpecError),
+}
+
+impl fmt::Display for RefEntryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing => f.write_str("请求体缺少 thing_ref 字段；确认无制品请显式传 null"),
+            Self::Invalid(error) => error.fmt(f),
+        }
+    }
 }
 
 /// 加载/校验错误。
@@ -398,5 +468,109 @@ spec:
         .unwrap();
         let error = VisibilityProfiles::load(&[path]).unwrap_err();
         assert!(error.to_string().contains("校验失败"), "{error}");
+    }
+
+    const STRICT_BINDINGS: &str = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  types:
+    requirement:
+      ref:
+        required: true
+        allowIdentifier: false
+        schemes: ["https"]
+        maxLength: 32
+"#;
+
+    #[test]
+    fn entry_validation_without_bindings_is_structural() {
+        use super::RefEntryError;
+        use pact_ref_spec::{SpecError, DEFAULT_MAX_REFERENCE_LENGTH};
+
+        let profiles = VisibilityProfiles::empty();
+        assert!(matches!(
+            profiles.validate_thing_ref("proj", "default", "requirement", None),
+            Err(RefEntryError::Missing)
+        ));
+        assert_eq!(
+            profiles
+                .validate_thing_ref("proj", "default", "requirement", Some(None))
+                .unwrap(),
+            None
+        );
+        for raw in ["https://user:pass@example.com/a", "/tmp/a", "foo bar"] {
+            assert!(
+                matches!(
+                    profiles.validate_thing_ref("proj", "default", "requirement", Some(Some(raw))),
+                    Err(RefEntryError::Invalid(_))
+                ),
+                "{raw} should be rejected"
+            );
+        }
+        let long = "x".repeat(DEFAULT_MAX_REFERENCE_LENGTH + 1);
+        assert!(matches!(
+            profiles.validate_thing_ref("proj", "default", "requirement", Some(Some(&long))),
+            Err(RefEntryError::Invalid(SpecError::TooLong { .. }))
+        ));
+        let normalized = profiles
+            .validate_thing_ref(
+                "proj",
+                "default",
+                "requirement",
+                Some(Some("HTTPS://Example.com/a")),
+            )
+            .unwrap();
+        assert_eq!(normalized.as_deref(), Some("https://Example.com/a"));
+    }
+
+    #[test]
+    fn entry_validation_applies_bindings_policy() {
+        use super::RefEntryError;
+        use pact_ref_spec::SpecError;
+
+        let (_dir, profiles) = load(STRICT_BINDINGS);
+        assert!(matches!(
+            profiles.validate_thing_ref("proj", "default", "requirement", Some(None)),
+            Err(RefEntryError::Invalid(SpecError::ReferenceRequired))
+        ));
+        assert!(matches!(
+            profiles.validate_thing_ref("proj", "default", "requirement", Some(Some("REQ-1"))),
+            Err(RefEntryError::Invalid(
+                SpecError::IdentifierNotAllowed { .. }
+            ))
+        ));
+        assert!(matches!(
+            profiles.validate_thing_ref(
+                "proj",
+                "default",
+                "requirement",
+                Some(Some("git://example.com/a"))
+            ),
+            Err(RefEntryError::Invalid(SpecError::SchemeNotAllowed { .. }))
+        ));
+        assert!(matches!(
+            profiles.validate_thing_ref(
+                "proj",
+                "default",
+                "requirement",
+                Some(Some("https://example.com/aaaaaaaaaaaaaaaaaaaa"))
+            ),
+            Err(RefEntryError::Invalid(SpecError::TooLong { .. }))
+        ));
+        assert_eq!(
+            profiles
+                .validate_thing_ref(
+                    "proj",
+                    "default",
+                    "requirement",
+                    Some(Some("https://example.com/a"))
+                )
+                .unwrap()
+                .as_deref(),
+            Some("https://example.com/a")
+        );
     }
 }

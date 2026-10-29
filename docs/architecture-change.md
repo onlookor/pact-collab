@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-28（第 38 轮，ThingRef 写入校验）
+
+- **接口层新增写入边界**：`pact-http` 在 `POST /seeds` 与 `POST /tokens` 调引擎前执行票面三态判定、URI profile 校验与 RefBindings 策略（FR30/D45）；引擎调用之后票面仍为不透明 `ThingRef`。
+- **依赖方向不变**：`pact-http → pact-ref-spec` 已存在（第 35 轮视图过滤引入）；`pact-core`、`pact-engine`、`pact-store` 仍不依赖治理 crate，GateExpr/Rule-P/Rule-T 不读取票面。
+- **入口继承**：CLI 与 MCP 经 REST client 自动继承校验；`pact-wasm` 本地宿主直接构造 `ThingRef`，不在该边界内（登记于 `todo.md`）。
+- **文档**：`docs/requirements.md` 新增 FR30；`docs/design.md` 新增 D45 与 §9.12；`docs/manual.md` 补充 REST 规则与错误码；`docs/thingref-governance.md` 更新 §8.1/§13.1 状态；新建 `todo.md` 进度台账。
+
 ## 2026-10-27（第 37 轮，引用保留与 tombstone）
 
 - **规范层职责扩展**：`pact-ref-spec` 在 URI/RefBindings/ContractCard 之上新增 Tombstone 与 lifecycle 校验；仍为纯 crate，不依赖引擎、存储或 IO。

@@ -7,8 +7,10 @@ use crate::dto::{
     conflicts_detail, problem_detail, rule_error_detail, ActivateReq, ActiveResp, CompactReq,
     ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledOption, EnabledResp, EntryResp,
     ErrorBody, ErrorDetail, FreezeReq, GatesResp, HandoffReq, InstantiateReq, LoadDomainReq,
-    ParticipantReq, ProduceReq, ReadAuditResp, SeedReq, TokenResp, ValidateReq, ValidateResp,
+    ParticipantReq, ProduceReq, ReadAuditResp, SeedReq, ThingRefField, TokenResp, ValidateReq,
+    ValidateResp,
 };
+use crate::visibility::RefEntryError;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, Request, State};
@@ -21,6 +23,7 @@ use futures::StreamExt;
 use pact_core::{ParticipantName, ThingRef, TokenId, TypeName};
 use pact_engine::views::StatusView;
 use pact_engine::{Engine, EngineError, InstanceKey, DEFAULT_INSTANCE};
+use pact_ref_spec::SpecError;
 use pact_store::{StoreError, ViewName};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1286,13 +1289,14 @@ async fn seed_inner(
     req: SeedReq,
 ) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
     st.authorize_action(&req.participant, &headers, &key)?;
+    let thing_ref = validate_entry_thing_ref(st, &key, &req.ty, &req.thing_ref)?;
     let token = st
         .engine
         .seed(
             key,
             ParticipantName(req.participant),
             TypeName(req.ty),
-            thing_ref(req.thing_ref),
+            thing_ref,
         )
         .await?;
     Ok((StatusCode::CREATED, Json(TokenResp { token })))
@@ -1323,6 +1327,7 @@ async fn produce_inner(
     req: ProduceReq,
 ) -> Result<(StatusCode, Json<TokenResp>), ApiError> {
     st.authorize_action(&req.participant, &headers, &key)?;
+    let thing_ref = validate_entry_thing_ref(st, &key, &req.ty, &req.thing_ref)?;
     let predecessors = req.predecessors.into_iter().map(TokenId).collect();
     let token = st
         .engine
@@ -1331,7 +1336,7 @@ async fn produce_inner(
             ParticipantName(req.participant),
             TypeName(req.ty),
             predecessors,
-            thing_ref(req.thing_ref),
+            thing_ref,
         )
         .await?;
     Ok((StatusCode::CREATED, Json(TokenResp { token })))
@@ -1729,8 +1734,24 @@ async fn events_inner(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-fn thing_ref(s: Option<String>) -> ThingRef {
-    ThingRef(s)
+fn validate_entry_thing_ref(
+    st: &ServerState,
+    key: &InstanceKey,
+    ty: &str,
+    field: &ThingRefField,
+) -> Result<ThingRef, ApiError> {
+    let validated = st
+        .visibility
+        .validate_thing_ref(&key.domain, &key.instance, ty, field.as_input())
+        .map_err(|error| {
+            let code = match &error {
+                RefEntryError::Missing => "ThingRefMissing",
+                RefEntryError::Invalid(SpecError::ReferenceRequired) => "ThingRefRequired",
+                RefEntryError::Invalid(_) => "InvalidThingRef",
+            };
+            ApiError::new(StatusCode::BAD_REQUEST, code, error.to_string())
+        })?;
+    Ok(ThingRef(validated))
 }
 
 // ============ 监听 ============

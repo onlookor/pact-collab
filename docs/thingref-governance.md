@@ -311,6 +311,11 @@ Token { domain, type, thing_ref }
 
 结论：**真正的耦合点在入口层和参与者运行时，不在引擎。**
 
+现状（2026-10-28）：`pact-http` 已实现入口校验——`POST /seeds`、`POST /tokens` 在引擎调用前完成三态判定、URI profile 与 RefBindings 策略（FR30/D45），CLI 与 MCP 经 REST 继承；
+`/counter`、`/archive` 的视图过滤与视图审计已实现（FR28/D42、D43）。`pact-cli` 的离线 `ref lint` 已实现（FR27/D41）。
+仍未接入：`pact-wasm` 本地宿主（直接构造 `ThingRef`）与 `pact-runtime` 的进程内路径；归档钉版、`onUnknownScheme`、`value`、`declarationDigest` 的运行期强制。
+待做项与优先级见 `todo.md`（与 §13.1 对齐）。
+
 ### 8.2 单 WASM 是否仍能支撑
 
 | 能力 | 单 WASM 能否支撑 | 原因 |
@@ -996,7 +1001,8 @@ spec:
 1. **静态阶段（已完成，2026-10-27）**：`pact-ref-spec` 纯 crate + `spec/ref/v1/`（URI profile、两份 schema、OpenAPI）已落地，
    18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 44 项测试通过）；`pact ref lint` 已实现（FR27/D41），
    覆盖绑定/契约/声明一致性与退出码。
-   **待做**：`refd` 的 resolve/describe 端点。
+   **待做**：`refd` 的 resolve/describe 端点；`pact-wasm` 本地宿主的入口校验。
+   **已完成（2026-10-28）**：REST 写入路径入口校验（FR30/D45）——`POST /seeds`、`POST /tokens` 区分缺失/`null`/字符串，执行 URI profile 与 RefBindings 策略，错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef`；CLI/MCP 经 REST 继承。
 2. **可见性阶段（已完成，2026-10-27）**：Counter/Archive 返回前过滤 `thing_ref`（FR28/D42）；
    默认 `read-gate`（无条件 `reads`/`consumes`），RefBindings 的 `domain`/`hidden` 显式覆盖；
    daemon `[ref_bindings].paths` 加载 profile，失败 fail-closed；令牌/签名模式下视图要求身份。

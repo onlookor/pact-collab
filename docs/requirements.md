@@ -241,6 +241,26 @@
 - **边界**：不校验内容是否真的已删除、tombstone 是否已发布或解析可达；不做运行期保留计时与自动删除；不改变引擎/存储/Archive 的既有语义。可发现性检查只证明静态路径存在，不保证运行期一定可读。
 - **实现状态**：已实现（2026-10-27）。`pact-ref-spec` 规范校验、`pact-cli` 单元与端到端测试覆盖 retention 语法、策略组合、Tombstone 字段、交叉检查与可发现性五项检查。
 
+### FR30 ThingRef 写入路径校验（D45）
+
+- **定位**：把 `pact-ref-spec` 的 URI profile 与 RefBindings 策略接到**写入路径**，让 `ThingRef` 在进入引擎前就被拒绝或规范化。校验位于 REST 写入边界（`pact-http` 的 `POST /domains/{d}[/instances/{i}]/seeds` 与 `.../tokens`）；引擎、存储与 `pact-core` 仍把 `ThingRef` 当作不透明字符串，不依赖治理 crate。
+- **三态**：
+  - 字段**缺失** → `400 ThingRefMissing`（“没说”不等于“确认没有”）；
+  - 显式 `null` → `∅`，成功写入，但仍按绑定策略校验（`required=true` 时 `400 ThingRefRequired`）；
+  - 字符串 → 有引用，按下列结构规则与绑定策略校验，成功时写入**规范化**值。
+- **结构规则**（不依赖绑定）：空串或全空白、首尾空白、控制字符、裸路径（`/`、`./`、`../`、`~/`、`\`、`C:\` 等）、密码型 userinfo（authority 中 `user:pass@`）→ `400 InvalidThingRef`；纯用户名 userinfo（如 `git+ssh://git@example.com/...`）允许。长度先按硬上限 65536 字节拦截（RefBindings `maxLength` 不得声明超过该值）。
+- **形态判定**：带合法 scheme（首字符字母、后续字母/数字/`+`/`-`/`.`、≤32）且 `:` 后有内容 → URI，scheme 规范化为小写后写入；否则按 Identifier 文法 `1*(ALPHA / DIGIT / "_" / "-" / "." / ":" / "/" / "@" / "#")` 校验，字符集外（空格、`?`、`%` 等）→ `400 InvalidThingRef`。
+- **绑定策略**：daemon 已加载该域 RefBindings 时，按 `defaults → scheme → type → instance/type` 合并出规则并强制执行：
+  - `required=true` 且值为 `∅` → `400 ThingRefRequired`；
+  - Identifier 且 `allowIdentifier` 不为 `true` → `400 InvalidThingRef`（有绑定即默认只接受 URI，旧 Identifier 需显式放行）；
+  - `schemes` 非空且不含 `*` 时，URI 的 scheme 必须在集合内；
+  - `maxLength` 覆盖默认 2048 字节上限，超过 → `400 InvalidThingRef`。
+  未加载该域绑定时只做结构规则，不做策略校验。
+- **继承与边界**：CLI 与 MCP 经 REST client 调用，自动继承同一套校验；MCP 工具参数省略时 client 发送显式 `null`（等价 `∅`），无法表达“缺失”。`pact-wasm` 本地宿主与 `pact-runtime` 的进程内路径不在本需求内（WASM 入口校验单列事项）。
+- **未生效项**：`onUnknownScheme`、`RefRule.value`、`declarationDigest` 与归档钉版（`pinning.requiredForArchive` / `digestPolicy=required-at-archive`）仍只在规范层或 `pact ref lint` 中生效，运行期未强制；见 `todo.md` P1。
+- **错误码**：均为 `400`，沿用 §6.3 结构化错误体；`code` 为 `ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，`message` 携带原始规范错误文本（不含票面全文以外的敏感信息，票面本身可能含位置信息，按调用方权限返回）。
+- **实现状态**：已实现（2026-10-28）。`pact-ref-spec` 修复 userinfo 与 Identifier 文法；`pact-http` 新增 `ThingRefField`（区分缺失/`null`）与 `VisibilityProfiles::validate_thing_ref`；`seed`/`produce` 在引擎调用前接线。单元测试覆盖三态、结构规则、`git+ssh` 与 Identifier 文法；端到端测试覆盖缺失/`null`、userinfo、裸路径、Identifier、超长、大写 scheme 规范化与绑定策略。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。

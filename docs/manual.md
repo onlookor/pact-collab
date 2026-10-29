@@ -594,6 +594,8 @@ pact consume --domain D --participant architect --token 01M500J9… [--request-i
 
 `--thing-ref` 是产物内部结构的**唯一**出口：Token 本身不可变、不透明，
 把外部系统的引用（文件路径、工单号、URL）挂在这里。
+值会在 daemon 写入前按 URI profile 与 RefBindings 校验（D45，见 §7.11）；
+省略 `--thing-ref` 表示“确认没有引用”（`∅`），不是“缺失”。
 
 ### 4.3 看清当前局面
 
@@ -1102,6 +1104,39 @@ spec:
 
 完整规范见 `spec/ref/v1/contract-card.schema.json` 与 `spec/ref/v1/tombstone.schema.json`；契约卡示例见设计 §9.11。
 
+### 7.11 写入票面校验（D45）
+
+`POST /domains/{d}[/instances/{i}]/seeds` 与 `.../tokens` 的 `thing_ref` 在进入引擎前校验；CLI `pact seed` / `pact produce`、MCP `pact_seed` / `pact_produce` 经同一 REST 接口，自动继承同一套规则。
+
+**三态**：
+
+| 你发送的 | 含义 | 结果 |
+|---|---|---|
+| 不带 `thing_ref` 字段 | 未表态 | `400 ThingRefMissing` |
+| `"thing_ref": null` | 确认没有外部制品（`∅`） | 成功写入；`required=true` 时 `400 ThingRefRequired` |
+| `"thing_ref": "…"` | 有引用 | 校验后写入规范化值 |
+
+CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 `null`，即“确认没有”，不会触发 `ThingRefMissing`。
+
+**结构规则**（无 RefBindings 也执行）：
+
+- 拒绝：空串/全空白、首尾空白、控制字符、裸路径（`/tmp/x`、`./x`、`../x`、`~/x`、`\x`、`C:\x`）、密码型 userinfo（`https://user:pass@host/…`）。
+- 允许：纯用户名 userinfo（如 `git+ssh://git@example.com/repo`）。
+- URI 的 scheme 规范化为小写后写入（`HTTPS://Example.com/a` → `https://Example.com/a`）。
+- 形如 Identifier 的值必须匹配 `字母/数字/_/-/./:/@/#`，否则拒绝（空格、`?`、`%` 等不合法）。
+- 长度默认 ≤ 2048 字节；绑定声明 `maxLength` 可覆盖（上限 65536）。
+
+**绑定策略**（daemon 已加载该域 RefBindings 时）：
+
+- `required: true`：`∅` → `400 ThingRefRequired`。
+- `allowIdentifier`：默认 `false`——该域从此只接受 URI；旧 Identifier 必须显式 `allowIdentifier: true`。
+- `schemes`：URI 的 scheme 必须在集合内（`*` 表示任意）。
+- `maxLength`：覆盖默认长度。
+
+**错误码**：`ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，均为 `400`，错误体同 §6.3（`error.code` + `error.detail` + `error.message`）。
+
+**未生效**：`onUnknownScheme`、`value`、`declarationDigest` 与归档钉版（`pinning.requiredForArchive`）目前只在 `pact ref lint` 中检查，运行期未强制；WASM 本地宿主不经过 REST，尚无该校验。
+
 ---
 
 ## 8. 接口参考
@@ -1200,6 +1235,8 @@ spec:
 **域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。**未配置 ACL** 时不做域级授权：既有生命周期/查询/压缩端点保持信任声明行为（Bearer 令牌约束四类动作端点与视图身份；启用签名时这些端点仍需签名）；**新增控制面端点**（`handoff` / `freeze` / `active`）在配置了任何身份后仍要求认证（见上）。交接还额外要求域通配键 `{d}/*`——它会改写域级 `declaration.pact`。详见 §7.6。
 
 **票面可见性（D42）**：`GET /counter` 与 `GET /archive` 的 `thing_ref` 默认 `read-gate`，按调用者的无条件 `reads`/`consumes` 子句返回；`[ref_bindings]` 可显式声明 `domain`/`hidden`。token 存在性、类型与计数不变；`GET /tokens/{id}` 仍由 Rule-R 授权。详见 §7.9。
+
+**票面写入校验（D45）**：`POST .../seeds` 与 `POST .../tokens` 的 `thing_ref` 支持三态——字段缺失 → `400 ThingRefMissing`、显式 `null` → `∅`、字符串 → 校验后写入规范化值；URI profile 与 RefBindings 策略在引擎调用前强制执行。详见 §7.11。
 
 **运维端点（D25，免身份）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验身份**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不做域级授权（但启用签名时仍需签名；破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
 

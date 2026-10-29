@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::watch;
 
 const DECL: &str = r#"
@@ -57,6 +58,44 @@ spec:
       ref:
         visibility: domain
 "#;
+
+const STRICT_ENTRY_BINDINGS: &str = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  types:
+    requirement:
+      ref:
+        required: true
+        allowIdentifier: false
+        schemes: ["https"]
+        maxLength: 32
+"#;
+
+/// 绕过客户端直接发 REST 请求，用于覆盖“字段缺失”。
+async fn raw_post(sock: &Path, path: &str, bearer: &str, body: &str) -> (u16, String) {
+    let mut stream = tokio::net::UnixStream::connect(sock).await.unwrap();
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {bearer}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.unwrap();
+    let text = String::from_utf8(raw).unwrap();
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default();
+    (status, body)
+}
 
 fn tokens() -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -419,4 +458,103 @@ async fn view_audit_is_anonymous_in_trust_mode_and_fail_closed() {
         Err(ClientError::Api(detail)) => assert_eq!(detail.code, "Store"),
         other => panic!("预期审计失败返回 500，实际 {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn entry_validation_structural_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn(dir.path(), tokens(), None).await;
+    let c = Client::unix(&sock).with_bearer("ext-token");
+    c.load_domain("proj", DECL, None, false).await.unwrap();
+
+    // 字段缺失 → 400；显式 null → ∅ 并成功。
+    let (status, body) = raw_post(
+        &sock,
+        "/domains/proj/seeds",
+        "ext-token",
+        r#"{"participant":"external","type":"requirement"}"#,
+    )
+    .await;
+    assert_eq!(status, 400, "body: {body}");
+    let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value["error"]["code"], "ThingRefMissing");
+
+    let (status, body) = raw_post(
+        &sock,
+        "/domains/proj/seeds",
+        "ext-token",
+        r#"{"participant":"external","type":"requirement","thing_ref":null}"#,
+    )
+    .await;
+    assert_eq!(status, 201, "body: {body}");
+
+    let long = "x".repeat(2049);
+    for raw in [
+        "https://user:pass@example.com/a",
+        "/tmp/local.md",
+        "foo bar",
+        long.as_str(),
+    ] {
+        match c
+            .seed("proj", None, "external", "requirement", Some(raw))
+            .await
+        {
+            Err(ClientError::Api(detail)) => {
+                assert_eq!(detail.code, "InvalidThingRef", "raw={raw:?}")
+            }
+            other => panic!("预期拒绝 {raw:?}，实际 {other:?}"),
+        }
+    }
+
+    let token = c
+        .seed(
+            "proj",
+            None,
+            "external",
+            "requirement",
+            Some("HTTPS://Example.com/a"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        token.token.thing_ref.0.as_deref(),
+        Some("https://Example.com/a")
+    );
+}
+
+#[tokio::test]
+async fn entry_validation_applies_bindings_policy() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn(dir.path(), tokens(), Some(STRICT_ENTRY_BINDINGS)).await;
+    let c = Client::unix(&sock).with_bearer("ext-token");
+    c.load_domain("proj", DECL, None, false).await.unwrap();
+
+    match c.seed("proj", None, "external", "requirement", None).await {
+        Err(ClientError::Api(detail)) => assert_eq!(detail.code, "ThingRefRequired"),
+        other => panic!("required 域应拒绝 ∅，实际 {other:?}"),
+    }
+    for raw in [
+        "REQ-1",
+        "git://example.com/a",
+        "https://example.com/aaaaaaaaaaaaaaaaaaaa",
+    ] {
+        match c
+            .seed("proj", None, "external", "requirement", Some(raw))
+            .await
+        {
+            Err(ClientError::Api(detail)) => {
+                assert_eq!(detail.code, "InvalidThingRef", "raw={raw}")
+            }
+            other => panic!("预期拒绝 {raw:?}，实际 {other:?}"),
+        }
+    }
+    c.seed(
+        "proj",
+        None,
+        "external",
+        "requirement",
+        Some("https://example.com/a"),
+    )
+    .await
+    .unwrap();
 }

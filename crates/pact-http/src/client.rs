@@ -6,8 +6,8 @@
 use crate::dto::{
     ActivateReq, ActiveResp, CompactReq, ComposeReq, ConsumeReq, DomainInfo, DomainsResp,
     EnabledResp, EntryResp, ErrorBody, ErrorDetail, FreezeReq, GatesResp, HandoffReq,
-    InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, ReadAuditResp, SeedReq, TokenResp,
-    ValidateReq, ValidateResp,
+    InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, ReadAuditResp, SeedReq,
+    ThingRefField, TokenResp, ValidateReq, ValidateResp,
 };
 use crate::sign::SigningIdentity;
 use axum::Router;
@@ -399,7 +399,7 @@ impl Client {
             Some(&SeedReq {
                 participant: participant.to_owned(),
                 ty: ty.to_owned(),
-                thing_ref: thing_ref.map(str::to_owned),
+                thing_ref: ThingRefField::explicit(thing_ref.map(str::to_owned)),
             }),
         )?;
         decode(self.dispatch(req).await?).await
@@ -421,7 +421,7 @@ impl Client {
                 participant: participant.to_owned(),
                 ty: ty.to_owned(),
                 predecessors,
-                thing_ref: thing_ref.map(str::to_owned),
+                thing_ref: ThingRefField::explicit(thing_ref.map(str::to_owned)),
             }),
         )?;
         decode(self.dispatch(req).await?).await

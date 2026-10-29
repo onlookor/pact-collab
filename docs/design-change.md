@@ -2,6 +2,40 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-28（第 77 轮，ThingRef 入口校验）
+
+- **触发**：第 76 轮审视的最高优先级缺口——`POST /seeds` / `POST /tokens` 直接透传 `thing_ref`，URI profile 与 RefBindings 策略只在视图过滤和离线 lint 中生效。用户要求按建议顺序开始修复。
+- **边界定案（D45）**：校验放在 REST 写入边界（`pact-http`），在引擎调用前完成；`pact-engine` / `pact-store` / `pact-core` 仍不依赖 `pact-ref-spec`，票面保持不透明。CLI 与 MCP 经同一 client 自动继承；WASM 本地宿主另立事项。
+- **规范层修复**（`pact-ref-spec`）：
+  - `has_userinfo` 只拒绝含 `:` 的 userinfo（密码型）；`git+ssh://git@example.com/...` 恢复合法；
+  - 新增 `is_valid_identifier`，强制执行 `1*(ALPHA/DIGIT/_/-/./:/@/#)`；新增 `SpecError::InvalidIdentifier`；
+  - 新增硬上限 `HARD_MAX_REFERENCE_LENGTH = 65_536`，`RefBindings` 的 `maxLength` 不得超过它。
+- **请求三态**（`pact-http::dto`）：`SeedReq` / `ProduceReq` 的 `thing_ref` 由 `Option<String>` 改为 `ThingRefField(Option<Option<String>>)`；自定义 `Serialize`/`Deserialize` 保留“字段缺失 vs 显式 `null`”。client 构造请求时显式发送该字段（缺省为 `null`）。
+- **校验实现**（`pact-http::visibility`）：新增 `VisibilityProfiles::validate_thing_ref` 与 `RefEntryError`（`Missing` / `Invalid(SpecError)`）。顺序为三态 → `classify_with_limit(65536)` → `RefBindings::resolve`（`required`/`allowIdentifier`/`schemes`）→ 有效 `maxLength`（缺省 2048）→ 返回规范化值。
+- **接线与错误码**（`pact-http::server`）：`seed_inner` / `produce_inner` 调 `validate_entry_thing_ref`；`Missing` → `ThingRefMissing`、`ReferenceRequired` → `ThingRefRequired`、其余 → `InvalidThingRef`，均 `400`。删除旧的 `fn thing_ref` 透传。
+- **行为变化**：域加载 RefBindings 后默认只接受 URI（旧 Identifier 需显式 `allowIdentifier: true`）；未加载绑定的域仍允许 Identifier（回归锚点）。
+- **测试**：`pact-ref-spec` 新增 userinfo 与 Identifier 文法单测；`pact-http` 新增三态序列化与绑定策略单测；`visibility_e2e` 新增 `entry_validation_structural_rules`、`entry_validation_applies_bindings_policy`（原始 HTTP 缺失字段、`null`、userinfo、裸路径、空格 Identifier、超长、大写 scheme 规范化、`required` 拒绝 `∅`、Identifier/scheme/maxLength 拒绝）。
+- **回归修正**：全量测试暴露 `pact-runtime` 的 `runtime_e2e` 卡死——`mat` 域 RefBindings 只声明 `visibility: domain`，但场景沿用旧 Identifier（`task-1`、token ULID），新入口校验按“有绑定即默认 URI”拒绝种子，编排器持续重试。按既有语义给 fixture 补 `allowIdentifier: true`（不放松规则本身），`runtime_e2e` **5 passed**。该现象确认了行为变化的影响面：已有 visibility-only 绑定的域若仍写 Identifier，升级后需显式放行。
+- **验证**：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 通过；`cargo test --workspace --locked` **317 passed / 0 failed**（50 个 test binary）。
+- **安全审视**：无新增依赖（`Cargo.toml`/`Cargo.lock` 未改）；生产代码新增仅纯校验，无 `unsafe`/网络/进程/文件写入；`cargo audit` **0 vulnerability / 2 unmaintained**（`unsafe-libyaml`、`rustls-pemfile`，沿用）。错误文本回显的票面值已通过控制字符/文法过滤（不可注入换行），且仅返回给提交该值的调用方；daemon 不记录该错误详情。
+- **跨仓库**：`pact-ref` vendored 快照已同步（`scripts/sync-spec.sh --check` 通过），`fmt`/`clippy`/`cargo test` **46 passed / 0 failed**。
+- **未做（已入 `todo.md`）**：归档钉版与 `digestPolicy` 运行期强制、`onUnknownScheme`、`RefRule.value`、`declarationDigest` 漂移检测、WASM 入口校验、conformance 用例（runner 仍是骨架）。
+- **文档**：新增 FR30、D45 与 §9.12；同步 §10 测试策略、`docs/manual.md`、`docs/thingref-governance.md`、`docs/architecture.md`；新建 `todo.md` 并在 `AGENTS.md` 建立进度台账纪律。
+
+## 2026-10-28（第 76 轮，ThingRef 未尽事宜审视）
+
+- **范围**：对照 `docs/thingref-governance.md` §3/§4/§8/§13、FR27–FR29、D41–D44，核对 `pact` workspace 与 `pact-ref` 当前实现；只读审视，未改代码。
+- **已复核完成**：规范层（URI/Identifier/`∅` 分类、RefBindings 匹配、ContractCard、Tombstone、retention）；离线 lint（绑定/契约/声明/tombstone/可发现性）；视图可见性（`read-gate`/`domain`/`hidden`）；视图级读审计；快照同步（`pact-ref` 44 项测试通过）。
+- **发现 1（最高优先级）：入口票面校验缺失。** `POST /seeds` 与 `POST /tokens` 的 `thing_ref` 直接透传为 `ThingRef`（`dto.rs` 的 `Option<String>` + `server.rs` 的 `seed_inner`/`produce_inner`），`pact-cli` 在线命令与 `pact-mcp` 同样只转 REST；`ReferenceForm::classify` 与 `RefBindings::resolve` 目前只在 `GET /counter`/`GET /archive` 的可见性计算与离线 lint 中调用。后果：userinfo、裸路径、控制字符、超长引用、Identifier 语法、`required`/`allowIdentifier`/`schemes`/`maxLength`/`onUnknownScheme` 均不在写入时拒绝。`docs/thingref-governance.md` §8.1 表的“入口校验 / `--thing-ref` 校验 / 与 REST 同一套校验”目前是目标而非现状。
+- **发现 2：缺失与 `null` 未区分。** `SeedReq`/`ProduceReq` 的 `#[serde(default)] Option<String>` 把“字段缺失”和“显式 null”都折叠为 `None`，违反 `spec/ref/v1/uri-profile.md` §1 的“缺失 → 400，`null` → `∅`”。
+- **发现 3：绑定策略与归档钉版未进入运行期。** `RefBindings` 的 `required`、`allowIdentifier`、`schemes`、`maxLength`、`onUnknownScheme` 只被 lint 或视图可见性间接使用；`pinning.requiredForArchive` 与 `digestPolicy=required-at-archive` 只在 lint 检查，`/archive` 不校验摘要（`uri-profile.md` §4 的归档钉版约束尚未落地）。
+- **发现 4：规范层两处与 v1 profile 不一致（已用临时程序验证）。** `git+ssh://git@example.com/...` 是 `uri-profile.md` §3 的合法示例，却被 `has_userinfo` 以 authority 含 `@` 判为 `UserInfoNotAllowed`；Identifier 语法 `1*(ALPHA/DIGIT/_/-/./:/@/#)` 未执行，`foo bar`、`foo?bar` 被接受为 Identifier。
+- **发现 5：RefBindings 存在未生效字段。** `RefRule.value`（`none`/`uri`/`identifier`）在 schema 与规范 crate 中保留但无消费点；`declarationDigest` 只检查“是否记录”，不参与匹配或漂移检测（后者 FR27 已声明为边界）；`onUnknownScheme` 只影响 lint 告警，不影响运行期。
+- **发现 6：治理平面仍是骨架。** `pact-ref` 5 个 adapter 与 auth/invoker/registry/audit 均为占位，`refd` 只打印装配状态并注明 “No endpoints are wired yet”；resolve/describe/invoke/revoke 端点未实现，动态只读/动态写/可选注册表三个阶段未开始。
+- **发现 7：其他入口形态未接入静态校验。** `pact-wasm` 直接构造 `ThingRef`，未做 URI/绑定校验；`pact-runtime` 无 resolve/invoke 审计边车。二者在治理文档中属“可支撑/适合放”的方向，不是已实现能力。
+- **文档影响**：`docs/thingref-governance.md` §13.1 第 1 阶段补记“入口校验”待做；§8.1 表增加现状说明。未分配新 FR/设计编号；若把入口校验立项，编号须先在 `docs/architecture.md` 附录 A 登记。
+- **建议顺序**：先定“入口校验放在 REST 边界还是引擎前”的边界（推荐 REST，CLI/MCP/runtime 自动继承）；再修 `git+ssh` 与 Identifier 语法两个确定性缺陷；随后做缺失/null 区分与绑定策略强制；最后才进入 `refd` 与动态阶段。
+
 ## 2026-10-28（第 75 轮，可发现性 lint 推送前安全审视）
 
 - **范围**：第 74 轮改动（`pact-cli` 可发现性 lint、e2e、六份文档），提交 `eb86654`。

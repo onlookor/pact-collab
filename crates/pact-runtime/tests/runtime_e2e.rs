@@ -105,6 +105,8 @@ async fn spawn_daemon(dir: &Path) -> PathBuf {
     );
     // D42：默认 read-gate 会隐藏无主体视图的票面；本场景需要核验补偿事实的
     // `thing_ref` 关联，因此为 mat 域显式声明 domain 可见性。
+    // D45：加载 RefBindings 后默认只接受 URI；本场景沿用旧 Identifier（`task-1`、
+    // token ULID），须显式放行。
     let refs = dir.join("refs.yaml");
     std::fs::write(
         &refs,
@@ -117,6 +119,7 @@ spec:
   defaults:
     ref:
       visibility: domain
+      allowIdentifier: true
 "#,
     )
     .unwrap();

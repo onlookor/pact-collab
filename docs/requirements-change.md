@@ -2,6 +2,14 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-28（第 38 轮，ThingRef 写入路径校验）
+
+- **新增 FR30**：`thing_ref` 在 REST 写入边界（`POST .../seeds`、`POST .../tokens`）完成三态判定（缺失 → `400 ThingRefMissing`；显式 `null` → `∅`；字符串 → 引用）、URI profile 结构校验（控制字符、裸路径、密码型 userinfo、长度）、Identifier 文法与 RefBindings 策略（`required` / `allowIdentifier` / `schemes` / `maxLength`）。成功写入规范化后的值（scheme 小写）。
+- **边界**：校验在接口层完成，引擎/存储/`pact-core` 仍不解析票面；CLI 与 MCP 经 REST 继承；WASM 本地宿主与 `pact-runtime` 进程内路径不在本次范围（WASM 单列事项）。
+- **未生效项**：`onUnknownScheme`、`RefRule.value`、`declarationDigest` 与归档钉版运行期强制仍待做，登记于 `todo.md` P1。
+- **修正规范层两处偏差**：`git+ssh://git@example.com/...`（纯用户名 userinfo）不再被误拒；Identifier 严格执行 `1*(ALPHA/DIGIT/_/-/./:/@/#)`，空格与 `?` 等字符不再被接受。
+- 其余 FR1–FR29、NFR1–NFR7 不变。
+
 ## 2026-10-27（第 37 轮，引用可发现性 lint）
 
 - **FR29 扩展**：`pact ref lint` 对 `required=true` 的绑定增加可发现性静态检查，共 5 个 warning code：`ref.discoverability.required_hidden`、`view_read_path_missing`、`no_reader`、`retention_missing`（非归档钉版的无 `lifecycle` 契约）、`deletion_without_tombstone`（`deletionPolicy=delete`）。`--strict` 将 warning 视为失败。

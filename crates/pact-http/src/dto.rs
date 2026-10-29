@@ -6,9 +6,53 @@
 use pact_core::{ArchiveEntry, ProductionOption, RuleError, Token, TokenId, TypeName};
 use pact_engine::views::{DomainListing, GateClause};
 use pact_parser::Problem;
+use serde::de::Deserializer;
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
 // ============ 请求 ============
+
+/// 请求体中的 `thing_ref` 字段，区分三种输入：
+/// 字段缺失（作者漏传，400）、显式 `null`（`∅`）、字符串（有引用）。
+///
+/// `serde` 的 `Option<Option<String>>` 无法区分缺失与 `null`（两者都反序列化为 `None`），
+/// 因此用自定义类型保留“字段是否出现”。
+#[derive(Debug, Clone, Default)]
+pub struct ThingRefField(Option<Option<String>>);
+
+impl ThingRefField {
+    pub fn missing() -> Self {
+        Self(None)
+    }
+
+    pub fn explicit(value: Option<String>) -> Self {
+        Self(Some(value))
+    }
+
+    pub fn is_missing(&self) -> bool {
+        self.0.is_none()
+    }
+
+    /// `None` = 缺失；`Some(None)` = 显式 `null`；`Some(Some(v))` = 有引用。
+    pub fn as_input(&self) -> Option<Option<&str>> {
+        self.0.as_ref().map(|value| value.as_deref())
+    }
+}
+
+impl Serialize for ThingRefField {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_ref() {
+            Some(value) => value.serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThingRefField {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self(Some(Option::<String>::deserialize(deserializer)?)))
+    }
+}
 
 /// `POST /domains`：声明 + 实例化（不指定实例 ⇒ 默认实例 `default`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +153,7 @@ pub struct SeedReq {
     #[serde(rename = "type")]
     pub ty: String,
     #[serde(default)]
-    pub thing_ref: Option<String>,
+    pub thing_ref: ThingRefField,
 }
 
 /// `POST /domains/{d}/tokens`（Rule-P）。
@@ -121,7 +165,7 @@ pub struct ProduceReq {
     #[serde(default)]
     pub predecessors: Vec<String>,
     #[serde(default)]
-    pub thing_ref: Option<String>,
+    pub thing_ref: ThingRefField,
 }
 
 /// `POST .../tokens/{id}/read` | `.../consume`
@@ -346,6 +390,41 @@ pub fn conflicts_detail(conflicts: &[pact_compose::Conflict]) -> ErrorDetail {
 mod tests {
     use super::*;
     use pact_core::{Action, ParticipantName};
+
+    #[test]
+    fn thing_ref_field_distinguishes_missing_null_and_value() {
+        let missing: SeedReq =
+            serde_json::from_str(r#"{"participant":"dev","type":"requirement"}"#).unwrap();
+        assert!(missing.thing_ref.is_missing());
+        assert_eq!(missing.thing_ref.as_input(), None);
+
+        let null: SeedReq =
+            serde_json::from_str(r#"{"participant":"dev","type":"requirement","thing_ref":null}"#)
+                .unwrap();
+        assert!(!null.thing_ref.is_missing());
+        assert_eq!(null.thing_ref.as_input(), Some(None));
+
+        let value: SeedReq = serde_json::from_str(
+            r#"{"participant":"dev","type":"requirement","thing_ref":"https://example.com/a"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            value.thing_ref.as_input(),
+            Some(Some("https://example.com/a"))
+        );
+    }
+
+    #[test]
+    fn client_serializes_explicit_null_thing_ref() {
+        let req = SeedReq {
+            participant: "dev".into(),
+            ty: "requirement".into(),
+            thing_ref: ThingRefField::explicit(None),
+        };
+        let value = serde_json::to_value(&req).unwrap();
+        assert!(value.get("thing_ref").is_some());
+        assert!(value["thing_ref"].is_null());
+    }
 
     #[test]
     fn rule_error_body_shape() {
