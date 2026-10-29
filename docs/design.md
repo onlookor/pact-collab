@@ -997,7 +997,7 @@ spec:
 
 **行为变化**：一旦某域加载了 RefBindings，该域默认只接受 URI——旧 Identifier 需要在绑定里显式 `allowIdentifier: true`；未加载绑定的域只做结构规则，Identifier 仍可写入（回归锚点）。
 
-**未覆盖路径**：`pact-wasm` 的 `prepare_seed`/`prepare_produce` 直接构造 `ThingRef`，未接本校验；`pact-runtime` 的进程内 REST 客户端继承本校验。归档钉版、`onUnknownScheme`、`RefRule.value` 由 D46 在后续层接入；`declarationDigest` 仍未生效。
+**未覆盖路径**：`pact-wasm` 的 `prepare_seed`/`prepare_produce` 直接构造 `ThingRef`，未接本校验；`pact-runtime` 的进程内 REST 客户端继承本校验。归档钉版、`onUnknownScheme`、`RefRule.value` 见 §9.13（D46）；`declarationDigest` 与 ContractCard 运行期加载仍未生效（方案见 `docs/thingref-governance.md` §13.4）。
 
 **测试**：`pact-ref-spec` 单测（userinfo、Identifier 文法、长度、规范化）；`pact-http` 单测（三态、绑定策略）；`crates/pact-http/tests/visibility_e2e.rs` 端到端（原始 HTTP 缺失字段、显式 `null`、userinfo、裸路径、空格 Identifier、超长、大写 scheme、`required` 拒绝 `∅`、Identifier/scheme/maxLength 拒绝）。
 

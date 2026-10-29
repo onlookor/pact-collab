@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-29，第 78 轮）：P0 入口校验与 P1 的 `pinning` / `onUnknownScheme` / `value` 已落地并全量回归通过；P1 剩余 ContractCard 运行期加载（待定来源）与 `declarationDigest`（待确认摘要算法），WASM 入口、`refd` 与动态阶段未开始。下一轮按 P1 剩余 → P2 → P3 顺序推进。
+当前状态（2026-10-29，第 80 轮）：P0 入口校验与 P1 的 `pinning` / `onUnknownScheme` / `value` 已落地并全量回归通过；P1 剩余 ContractCard 运行期加载（推荐“按数据触发闭环”的 C）与 `declarationDigest`（推荐语义接口摘要 + 首版默认 `warn`）仍待用户确认，WASM 入口、`refd` 与动态阶段未开始。下一轮按 P1 剩余 → P2 → P3 顺序推进。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -41,8 +41,8 @@
 | [x] | `pinning` 运行期强制：`required` 在写入时、`required-at-archive` 在 consume 进入 Archive 前要求钉版摘要（FR31/D46） | FR31 / D46 / `uri-profile.md` §4 | 单测 + e2e：写入/consume 缺摘要 → `400 ThingRefUnpinned`；钉版可归档 |
 | [x] | `onUnknownScheme` 运行期生效（`reject` / `treat-as-identifier` / `allow`） | FR31 / D46 / `uri-profile.md` | 单测三分支 + `treat-as-identifier` 未放行 Identifier 被拒 |
 | [x] | `RefRule.value`（`none`/`uri`/`identifier`）语义落地 | FR31 / D46 / `ref-bindings.schema.json` | 入口强校验 + 单测；`required=true` 与 `value=none` 由绑定校验拒绝 |
-| [ ] | ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载（拆分项：daemon 目前只加载 RefBindings） | D44 / FR29 / FR31 | 方案与收益/代价见治理 §13.4.1；推荐“可选 `[ref_contracts]` + 启用即 fail-closed + 只加严”，**待用户确认** |
-| [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 方案与收益/代价见治理 §13.4.2；**待用户确认**摘要对象（语义接口 vs 规范化 AST）与是否分两步走 |
+| [ ] | ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载（拆分项：daemon 目前只加载 RefBindings） | D44 / FR29 / FR31 | 方案与收益/代价见治理 §13.4.1；推荐 C“按数据触发闭环”：声明了 `contract` ⇒ 必须配置 `[ref_contracts]` 且可解析，否则启动失败；未声明 ⇒ 无需配置；卡片只加严。**待用户确认** |
+| [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 方案与收益/代价见治理 §13.4.2；推荐语义接口摘要（C）+ 工具/lint 先行，运行期首版默认 `warn`、`enforce` 可选（误算不直接阻塞 `load_domain`，见 §13.4.3）；**待用户确认**摘要对象、是否分两步、摘要字符串格式 |
 
 ### P2 跨仓库与快照
 
@@ -71,6 +71,7 @@
 | [x] | `docs/manual.md`：REST seed/produce 的 `thing_ref` 三态、错误码、`ref_bindings` 策略 | 与 e2e 实测一致 |
 | [x] | `docs/thingref-governance.md` §8.1 / §13.1：入口校验状态改为已实现（REST 边界），并标注 MCP/WASM 边界 | 与 FR30 引用一致 |
 | [x] | 第 78 轮：`docs/requirements.md` FR31 + 第 39 轮；`docs/design.md` D46 与 §9.13 + 第 78 轮；`architecture.md` 附录 A/正文 + 第 39 轮；`manual.md` §7.11；治理 §8.1/§13.1 | 与代码及 e2e 实测一致 |
+| [x] | 第 80 轮：治理 §13.4.1 选项 C 改为“按数据触发闭环”，新增 §13.4.3“摘要误算是否阻塞域加载”；`design-change.md` 第 80 轮；无代码变更 | 与 §13.4 方案一致；仅文档，无需回归 |
 
 ### 验证与交付
 

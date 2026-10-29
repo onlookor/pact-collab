@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-29（第 80 轮，待决方案澄清，无实现变更）
+
+- **触发**：用户追问“决策一的选项 C 是否仍具 B 的闭环与可扩展收益”“若 `[ref_contract]` 可选且决策二选 C，摘要误算是否直接阻塞域加载”。
+- **收紧 C 的语义**：“可选加载”改为**按数据触发闭环**——任一 RefBindings 规则声明了 `contract` 时，必须配置 `[ref_contracts]` 且能解析，否则启动失败；完全没有 `contract` 引用的部署无需配置。结论：在声明 contract 的部署上闭环等价于 B，可扩展能力（`artifact.kind`/`mediaType`、生命周期检查）与 B 相同；B 仅多出“无 contract 也挂卡”的形式统一，无治理收益。
+- **明确摘要误算的失败模式**（治理 §13.4.3）：`[ref_contracts]` 与摘要比对相互独立；摘要比对只看 `metadata.declarationDigest` 与 `[ref_digest].mode`。首版默认 `warn`（只记 `expected`/`actual`/算法版本，`load_domain` 成功），`enforce` 为显式可选项；摘要缺失、算法版本不受支持、daemon 启动恢复既有域均不阻塞。仅“`enforce` + 摘要存在但不匹配”返回 `400`。
+- **误算来源与缓解**：工具/运行时实现漂移、规范化定义歧义、手写摘要、真实声明变更；缓解为共用 `pact-ref-spec` 实现、冻结规范化规则、golden/conformance、lint 作为提交前门禁、错误报告 `expected`/`actual`。
+- **变更范围**：仅 `docs/thingref-governance.md` §13.4.1 / §13.4.2 / 新增 §13.4.3 与 `todo.md` 表述；无代码、测试、schema 或配置变更，未新增 FR/D 编号。
+- **待用户确认**：C 的“按数据触发闭环”是否采纳；摘要对象（语义接口 vs 规范化 AST）、两步走、运行期首版默认 `warn`、摘要字符串是否带算法版本前缀。
+
 ## 2026-10-29（第 79 轮，待决方案分析，无实现变更）
 
 - **背景**：P1 剩余两项（ContractCard 运行期加载、`declarationDigest`）缺前置决策。用户要求给出方案与收益/代价。
