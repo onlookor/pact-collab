@@ -42,7 +42,7 @@
 | [x] | `onUnknownScheme` 运行期生效（`reject` / `treat-as-identifier` / `allow`） | FR31 / D46 / `uri-profile.md` | 单测三分支 + `treat-as-identifier` 未放行 Identifier 被拒 |
 | [x] | `RefRule.value`（`none`/`uri`/`identifier`）语义落地 | FR31 / D46 / `ref-bindings.schema.json` | 入口强校验 + 单测；`required=true` 与 `value=none` 由绑定校验拒绝 |
 | [x] | B0：ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载；daemon 新增 `[ref_contracts].paths`，按 `contract_id()` 建索引；声明 `contract` 的部署缺卡即拒绝启动；重复 `id@version` 即拒绝启动 | FR32 / D47 | 单测：加载/索引、按数据触发、重复 `id@version`、钉版并集只加严；e2e：卡片钉版阻断未钉版 consume（`ThingRefUnpinned`）、重复版本拒绝启动；`pact-http` 全绿，全量 338 passed；提交 `4b42778` |
-| [x] | B1：显式重载 `POST /ref/reload` + `pact ref reload`；卡片与绑定同事务、原子换索引、`dryRun` 影响报告、`ref-reload.jsonl` 审计、ACL 覆盖绑定域；不做文件监听 | FR33 / D48 | 单测 3 项（审计 JSONL、审计失败、并发 `409 RefReloadBusy`）；`ref_reload_e2e` 7 项（`dryRun` 报告、成功重载后新规则生效、失败保持旧状态、ACL 当前/新域、认证/信任模式、未配置 500）；CLI e2e 1 项；全量 349 passed；`fmt`/`clippy` 通过；提交见归档 |
+| [x] | B1：显式重载 `POST /ref/reload` + `pact ref reload`；卡片与绑定同事务、原子换索引、`dryRun` 影响报告、`ref-reload.jsonl` 审计、ACL 覆盖绑定域；不做文件监听 | FR33 / D48 | 单测 3 项（审计 JSONL、审计失败、并发 `409 RefReloadBusy`）；`ref_reload_e2e` 7 项（`dryRun` 报告、成功重载后新规则生效、失败保持旧状态、ACL 当前/新域、认证/信任模式、未配置 500）；CLI e2e 1 项；全量 349 passed；`fmt`/`clippy` 通过；提交 `a514380` |
 | [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 方案与收益/代价见治理 §13.4.2；推荐语义接口摘要（C）+ 工具/lint 先行，运行期首版默认 `warn`、`enforce` 可选（误算不直接阻塞 `load_domain`，见 §13.4.3）；**待用户确认**摘要对象、是否分两步、摘要字符串格式 |
 
 ### P2 跨仓库与快照
@@ -98,7 +98,7 @@
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
 | 2026-10-30 | B0：ContractCard 运行期加载、版本不可变与归档钉版并集 | FR32 / D47 | `pact-http` 单测 + e2e；338 passed；`fmt`/`clippy` 通过；`4b42778` |
-| 2026-10-30 | B1：RefBindings/ContractCard 显式重载（`POST /ref/reload` + CLI，`dryRun`/审计/ACL/原子快照） | FR33 / D48 | 单测 3 + `ref_reload_e2e` 7 + CLI e2e 1；349 passed；`fmt`/`clippy` 通过；提交见本轮回填 |
+| 2026-10-30 | B1：RefBindings/ContractCard 显式重载（`POST /ref/reload` + CLI，`dryRun`/审计/ACL/原子快照） | FR33 / D48 | 单测 3 + `ref_reload_e2e` 7 + CLI e2e 1；349 passed；`fmt`/`clippy` 通过；`a514380` |
 | 2026-10-28 | ThingRef 写入路径校验（三态、URI profile、RefBindings 策略） | FR30 / D45 | `pact` `9893541`；317 passed；`pact-ref` `b8e759c` 46 passed |
 | 2026-10-28 | 进度台账纪律（`todo.md` + `AGENTS.md`） | `AGENTS.md` | `9893541` |
 | 2026-10-28 | 可发现性 lint（5 个 warning code）与真实二进制 e2e | FR29 / D44 | `eb86654`；309 passed |
