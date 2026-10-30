@@ -2,6 +2,14 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-30（第 41 轮，B1 显式重载实现）
+
+- **FR33 实现**：`POST /ref/reload`（`{"dryRun": bool}`）与 CLI `pact ref reload [--dry-run] [--json]` 落地；卡片与绑定同事务重新读取、解析并规范校验 → 校验全部 `contract` 引用 → 计算新增归档阻断报告 → 写 `<data_dir>/ref-reload.jsonl` 审计（append+fsync）→ 以 `RwLock<Arc<VisibilityProfiles>>` 原子换快照。任一步失败保持旧快照；`dryRun` 在审计后停止且 `applied=false`。
+- **错误面**：`400 RefReloadInvalid`、`409 RefReloadBusy`、`403 Forbidden`（ACL 未覆盖当前或新绑定域）、`401 Unauthorized`（配置身份后未认证）；实现防御分支 `500 RefReloadUnavailable`（未注入重载配置）、`500 RefReloadFailed`（影响预检失败）、`500 RefReloadAuditFailed`（审计写失败，覆盖原错误）。认证失败与并发冲突不写审计。
+- **FR33 状态**：由“未实现”改为“已实现（2026-10-30，B1）”；FR32 状态与边界描述同步。
+- **FR30/FR32 过期措辞修正**：`docs/requirements.md` 中“卡片加载与显式重载均待实现”“显式重载仍待 FR33”等改为已实现；FR30 未生效项收敛为仅剩 `declarationDigest`。
+- 其余 FR1–FR32、NFR1–NFR7 不变。
+
 ## 2026-10-29（第 40 轮，ContractCard 加载与显式重载登记）
 
 - **新增 FR32（B0）**：ContractCard 运行期加载与版本不可变。可选 `[ref_contracts].paths` 在 daemon 启动时解析、规范校验并按 `contract_id()`（`metadata.id@version`）建索引；任一 RefBindings 有效规则声明 `contract` 时，必须配置且每个契约可解析，否则拒绝启动；同一 `contract_id()` 重复（无论内容）即拒绝启动。consume 的有效钉版要求 = 绑定 `pinning` ∪ 卡片 `reference.pinning.requiredForArchive` / `artifact.digestPolicy: required-at-archive`，卡片只加严。`artifact.kind`/`mediaType` 与 `lifecycle` 运行期检查不在范围。

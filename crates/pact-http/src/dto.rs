@@ -183,7 +183,41 @@ pub struct ConsumeReq {
     pub request_id: Option<String>,
 }
 
+/// `POST /ref/reload`：控制面显式重载（D48）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefReloadReq {
+    /// 只做校验与影响预检，不替换内存索引（缺省 false）。
+    #[serde(rename = "dryRun", default)]
+    pub dry_run: bool,
+}
+
 // ============ 响应 ============
+
+/// `POST /ref/reload` 影响预检分组：按 `(domain, instance, type)` 统计。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockedTokenGroup {
+    pub domain: String,
+    pub instance: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// 重载后会因缺摘要而无法归档的存量 token 数（不输出票面值）。
+    pub tokens: usize,
+}
+
+/// `POST /ref/reload` 成功响应。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefReloadResp {
+    #[serde(rename = "dryRun")]
+    pub dry_run: bool,
+    /// `dryRun=true` 时恒为 false。
+    pub applied: bool,
+    pub bindings: usize,
+    pub contracts: usize,
+    #[serde(rename = "blockedTokens")]
+    pub blocked_tokens: Vec<BlockedTokenGroup>,
+    #[serde(rename = "blockedTotal")]
+    pub blocked_total: usize,
+}
 
 /// §6.3 成功响应（Rule-S/P/R）。
 #[derive(Debug, Clone, Serialize, Deserialize)]

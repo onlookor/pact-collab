@@ -9,6 +9,7 @@ pub mod dto;
 pub mod mcp;
 pub mod middleware;
 pub mod oidc;
+pub mod reload;
 pub mod server;
 pub mod sign;
 pub mod tls;

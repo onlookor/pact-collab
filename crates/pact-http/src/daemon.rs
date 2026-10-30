@@ -81,6 +81,12 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         cfg.mcp_public_url().map(str::to_owned),
         visibility,
     );
+    // D48：显式重载源与审计文件（`<data_dir>/ref-reload.jsonl`）。
+    state.configure_reload(crate::reload::RefReloadConfig::new(
+        cfg.ref_binding_paths().to_vec(),
+        cfg.ref_contract_paths().to_vec(),
+        cfg.data_dir(),
+    ));
     let mcp_enabled = cfg.mcp.as_ref().is_some_and(|m| m.enabled);
     let app = router_with_mcp(state, mcp_enabled);
     if mcp_enabled && oidc.is_none() && cfg.auth_tokens().is_empty() {

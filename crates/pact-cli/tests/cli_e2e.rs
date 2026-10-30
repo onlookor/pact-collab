@@ -27,6 +27,11 @@ seed_authority { external: seeds requirement }
 
 /// 起一个真实 `pact daemon start` 子进程（临时配置），返回子进程句柄与套接字路径。
 fn start_daemon(dir: &Path) -> (Child, std::path::PathBuf) {
+    start_daemon_with(dir, "")
+}
+
+/// 同 `start_daemon`，附加配置片段（如 `[ref_bindings]`）。
+fn start_daemon_with(dir: &Path, extra: &str) -> (Child, std::path::PathBuf) {
     let bin = env!("CARGO_BIN_EXE_pact");
     let sock = dir.join("pact.sock");
     let data = dir.join("data");
@@ -34,7 +39,7 @@ fn start_daemon(dir: &Path) -> (Child, std::path::PathBuf) {
     std::fs::write(
         &config,
         format!(
-            "data_dir = \"{}\"\nlisten_unix = \"{}\"\n",
+            "data_dir = \"{}\"\nlisten_unix = \"{}\"\n{extra}",
             data.display(),
             sock.display()
         ),
@@ -561,6 +566,91 @@ fn instance_commands_and_default_fallback() {
     assert_eq!(c_x["size"], 0, "force 重置 x");
     let c_def = ok_json(&pact(&sock, true, &["counter", "ls", "--domain", "proj"]));
     assert_eq!(c_def["size"], 1, "default 不受影响");
+
+    daemon.kill().unwrap();
+    let _ = daemon.wait();
+}
+
+/// D48：真实二进制 `pact ref reload [--dry-run] [--json]` 与 daemon 联调。
+#[test]
+fn ref_reload_through_real_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let bindings = dir.path().join("refs.yaml");
+    std::fs::write(
+        &bindings,
+        "apiVersion: pact.ref/v1\nkind: RefBindings\nmetadata:\n  domain: proj\nspec: {}\n",
+    )
+    .unwrap();
+    let extra = format!("[ref_bindings]\npaths = [\"{}\"]\n", bindings.display());
+    let (mut daemon, sock) = start_daemon_with(dir.path(), &extra);
+
+    let decl_file = dir.path().join("proj.pact");
+    std::fs::write(&decl_file, DECL).unwrap();
+    ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "domain",
+            "load",
+            decl_file.to_str().unwrap(),
+            "--name",
+            "proj",
+        ],
+    ));
+
+    // 换绑：requirement 写入即要求钉版；dry-run 只报告不生效。
+    std::fs::write(
+        &bindings,
+        "apiVersion: pact.ref/v1\nkind: RefBindings\nmetadata:\n  domain: proj\n\
+         spec:\n  types:\n    requirement:\n      ref:\n        required: true\n",
+    )
+    .unwrap();
+    let dry = ok_json(&pact(&sock, true, &["ref", "reload", "--dry-run"]));
+    assert_eq!(dry["dryRun"], true);
+    assert_eq!(dry["applied"], false);
+    assert_eq!(dry["bindings"], 1);
+
+    // dry-run 后旧规则仍生效：无 thing_ref 的 seed 成功。
+    ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "seed",
+            "--domain",
+            "proj",
+            "--participant",
+            "external",
+            "--type",
+            "requirement",
+        ],
+    ));
+
+    let applied = ok_json(&pact(&sock, true, &["ref", "reload"]));
+    assert_eq!(applied["dryRun"], false);
+    assert_eq!(applied["applied"], true);
+    assert_eq!(applied["bindings"], 1);
+
+    // 新规则生效：缺失 thing_ref → ThingRefRequired。
+    let out = pact(
+        &sock,
+        true,
+        &[
+            "seed",
+            "--domain",
+            "proj",
+            "--participant",
+            "external",
+            "--type",
+            "requirement",
+        ],
+    );
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "ThingRefRequired");
+
+    // 审计：每次尝试一行。
+    let text = std::fs::read_to_string(dir.path().join("data").join("ref-reload.jsonl")).unwrap();
+    assert_eq!(text.lines().count(), 2);
 
     daemon.kill().unwrap();
     let _ = daemon.wait();

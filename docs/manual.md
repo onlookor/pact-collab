@@ -198,6 +198,8 @@ listen_unix = "./pact.sock"       # 默认监听；单机安全
 # [ref_contracts]
 # paths = ["/etc/pact/contracts/", "se_design.contract.yaml"]  # 文件或目录；目录展开 .yaml/.yml/.json
 
+# D48：显式重载会重新读取上面两个配置源；无需重启 daemon（见 §7.12）
+
 # NFR6 v2：TLS / mTLS（可选；仅对 listen_tcp 生效）
 # [tls]
 # certificate = "/etc/pact/server-chain.pem"   # PEM 证书链
@@ -244,6 +246,7 @@ architect = "sekret"              # 参与者 → 令牌，请求头 Authorizati
 - `[tls]` 必须同时给 `certificate` 与 `private_key`，且必须配置 `listen_tcp`；只配其中一个会拒绝启动。
 - `[ref_bindings]` 一旦出现，`paths` 不能为空；任一 RefBindings 读取/解析/校验失败或同域重复声明，daemon 拒绝启动（fail-closed）。
 - `[ref_contracts]` 一旦出现，`paths` 不能为空；卡片读取/解析/校验失败或同一 `id@version` 重复，daemon 拒绝启动。绑定声明了 `contract` 却未配置或引用不可解析，同样拒绝启动（D47）。
+- 修改 `[ref_bindings]` / `[ref_contracts]` 指向的文件后，无需重启：调用 `pact ref reload`（或 `POST /ref/reload`）原子生效（D48，见 §7.12）。
 
 ### 2.3 启动与停止 daemon
 
@@ -1151,7 +1154,33 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 
 **错误码**：`ThingRefMissing` / `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`，均为 `400`，错误体同 §6.3（`error.code` + `error.detail` + `error.message`）。
 
-**未生效**：`declarationDigest` 漂移检测、卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除与显式重载（FR33）尚未实现；WASM 本地宿主不经过 REST，尚无该校验。
+**未生效**：`declarationDigest` 漂移检测、卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除；WASM 本地宿主不经过 REST，尚无该校验。显式重载见 §7.12。
+
+### 7.12 物引配置显式重载（D48）
+
+修改 `[ref_bindings]` / `[ref_contracts]` 指向的文件后，用控制面入口让 daemon 重新加载，无需重启：
+
+```bash
+pact ref reload --dry-run    # 只校验并报告影响，不替换内存索引
+pact ref reload              # 校验 → 审计 → 原子替换
+```
+
+REST 等价入口：`POST /ref/reload`，请求体 `{"dryRun": true}` 或 `{"dryRun": false}`；响应：
+
+```json
+{ "dryRun": true, "applied": false, "bindings": 1, "contracts": 2,
+  "blockedTokens": [{"domain": "proj", "instance": "default", "type": "design", "tokens": 3}],
+  "blockedTotal": 3 }
+```
+
+- **同事务**：卡片与绑定一起读取、校验、替换；任一步失败保持旧规则，不做部分生效。在途请求持旧快照完成，新请求使用新索引。
+- **预检**：`blockedTokens` 统计换绑后因缺摘要而**新增**无法归档的存量 Counter token，只给计数、不含票面值。旧规则已阻断的不重复计入。
+- **审计**：每次尝试向 `<data_dir>/ref-reload.jsonl` 追加一行（append+fsync）：`ts`、`by`（无身份为 `null`）、`dryRun`、`outcome`（`applied`/`rejected`）、`files[{path,sha256,kind}]`、绑定/卡片计数与可选 `error`。审计写失败则拒绝本次重载。
+- **认证与授权**：配置了令牌或签名后必须认证（匿名 `401`）；启用 ACL 时，调用者须对当前与新索引中每个绑定域都有 `{domain}/*`（单实例授权不足）。信任声明模式放行匿名。
+- **不做**：文件监听自动热加载、SIGHUP、自动回滚、按域灰度（一次重载对全部域生效）。
+- **回溯性加严**：归档钉版按当前规则判定，收紧后会令存量未钉版 token 不可归档；用 `--dry-run` 先查看 `blockedTokens`，再决定是否发布。
+
+**错误码**：`RefReloadInvalid`（`400`，解析/校验/重复版本/引用不可解析）、`RefReloadBusy`（`409`，已有重载进行中）、`Forbidden`（`403`，ACL 未覆盖）、`Unauthorized`（`401`）；内部错误 `RefReloadUnavailable` / `RefReloadFailed` / `RefReloadAuditFailed` 均为 `500`。
 
 ---
 
@@ -1206,6 +1235,7 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 | `replay <FILE>` | **离线** | 重放 `<instance>.events.jsonl`（校验事件 schema `version`） |
 | `cpn <FILE> --out PATH [--instance I] [--bound T=N]…` | **离线** | 生成单实例 CPN Tools 模型（论文 §4.5/§B；负条件需上界） |
 | `ref lint --bindings PATH… [--contracts PATH…] [--tombstones PATH…] [--declaration FILE] [--name N] [--strict]` | **离线** | 物引静态检查（FR27/D41/D44）：绑定、契约卡、Tombstone 与声明的一致性 |
+| `ref reload [--dry-run]` | 在线 | 显式重载 RefBindings 与 ContractCard（FR33/D48；`--dry-run` 只校验与预检） |
 
 **实例 flag（D27/D39）**：所有域操作命令的 `--instance I` 可选，**缺省 = 活动实例**（`active.json`；无指针回退 `default`）——既有不带该 flag 的调用与脚本语义不变；显式给 `--instance` 即直连该实例（不受活动指针影响）。`--force` 仅用于对**非空实例**（含 `Imported` 接手状态）的再加载：默认拒绝（`DomainBusy`），加 `--force` 才重置其 Counter 并清除冻结标记。
 
@@ -1245,14 +1275,17 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 | `PUT /domains/{d}/instances/{i}/freeze` | `{frozen}` | `204`（`true` 冻结、`false` 解冻） |
 | `POST/GET/DELETE /mcp` | MCP JSON-RPC / 会话控制 | MCP Streamable HTTP（D35；`[mcp].enabled = true` 时存在） |
 | `GET /.well-known/oauth-protected-resource` | — | `200` `{resource, authorization_servers, bearer_methods_supported}`（D36；OIDC 未启用时 `404`） |
+| `POST /ref/reload` | `{dryRun?}`（缺省 `false`） | `200` `{dryRun, applied, bindings, contracts, blockedTokens[], blockedTotal}`（D48） |
 
 **签名错误语义（D34）**：缺头/未知参与者/时间戳越界/签名错误 → `401`；请求体 > 8 MiB → `413`；nonce 重放 → `429`。`/mcp` 的 OIDC 令牌非法 → `401`，IdP/JWKS 不可达 → `503`。
 
-**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。**未配置 ACL** 时不做域级授权：既有生命周期/查询/压缩端点保持信任声明行为（Bearer 令牌约束四类动作端点与视图身份；启用签名时这些端点仍需签名）；**新增控制面端点**（`handoff` / `freeze` / `active`）在配置了任何身份后仍要求认证（见上）。交接还额外要求域通配键 `{d}/*`——它会改写域级 `declaration.pact`。详见 §7.6。
+**域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。**未配置 ACL** 时不做域级授权：既有生命周期/查询/压缩端点保持信任声明行为（Bearer 令牌约束四类动作端点与视图身份；启用签名时这些端点仍需签名）；**新增控制面端点**（`handoff` / `freeze` / `active` / `ref/reload`）在配置了任何身份后仍要求认证（见上）。交接还额外要求域通配键 `{d}/*`——它会改写域级 `declaration.pact`。详见 §7.6。
 
 **票面可见性（D42）**：`GET /counter` 与 `GET /archive` 的 `thing_ref` 默认 `read-gate`，按调用者的无条件 `reads`/`consumes` 子句返回；`[ref_bindings]` 可显式声明 `domain`/`hidden`。token 存在性、类型与计数不变；`GET /tokens/{id}` 仍由 Rule-R 授权。详见 §7.9。
 
 **票面写入校验（D45/D46/D47）**：`POST .../seeds` 与 `POST .../tokens` 的 `thing_ref` 支持三态——字段缺失 → `400 ThingRefMissing`、显式 `null` → `∅`、字符串 → 校验后写入规范化值；URI profile、RefBindings 形态/未知 scheme/钉版策略在引擎调用前强制执行。`POST .../consume` 对声明 `pinning: required-at-archive` 的类型、以及绑定引用的 ContractCard 要求归档钉版的类型，要求票面已钉版。详见 §7.11。
+
+**物引配置重载（D48）**：`POST /ref/reload` 把 `[ref_bindings]` 与 `[ref_contracts]` 作为同一事务重新读取、校验并原子替换内存规则；`dryRun` 只校验与预检。审计写 `<data_dir>/ref-reload.jsonl`；ACL 启用时要求调用者对当前与新索引中每个绑定域持有 `{d}/*`。详见 §7.12。
 
 **运维端点（D25，免身份）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验身份**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不做域级授权（但启用签名时仍需签名；破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
 
@@ -1363,7 +1396,12 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `InvalidDomainName` | 400 | 域名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
 | `InvalidInstanceName` | 400 | 实例名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
 | `Unauthorized` | 401 | 令牌/签名缺失或不匹配；签名身份与请求 `participant` 不一致；`/mcp` 的 OIDC 令牌缺失/非法/claim 不合规 |
-| `Forbidden` | 403 | ACL 拒绝：身份有效但无该 `(domain, instance)` 授权 |
+| `Forbidden` | 403 | ACL 拒绝：身份有效但无该 `(domain, instance)` 授权；`ref/reload` 还要求当前与新索引中每个绑定域都有 `{d}/*` |
+| `RefReloadInvalid` | 400 | 物引配置重载解析/规范校验失败、重复 `contract_id()` 或引用不可解析（D48） |
+| `RefReloadBusy` | 409 | 已有物引重载正在进行（D48） |
+| `RefReloadUnavailable` | 500 | daemon 未注入重载配置源（D48，配置防御分支） |
+| `RefReloadFailed` | 500 | 重载影响预检失败（D48） |
+| `RefReloadAuditFailed` | 500 | 重载审计写入失败；本次重载未生效（D48） |
 | `PayloadTooLarge` | 413 | 签名验证前的请求体超过 8 MiB（D34） |
 | `TooManyRequests` | 429 | 签名 nonce 重放，或 nonce 缓存已满（D34） |
 | `NotFound` | 404 | 路径不存在；OIDC 未启用时 `/.well-known/oauth-protected-resource` 亦返回 404 |

@@ -20,6 +20,8 @@ listen_tcp = "0.0.0.0:8787"
 # [ref_contracts]
 # paths = ["/etc/pact/contracts/"]  # 文件或目录；目录展开 .yaml/.yml/.json
 
+# D48：修改上述文件后用 `pact ref reload [--dry-run]` 显式重载，无需重启 daemon
+
 # [auth]
 # [auth.tokens]
 # architect = "…"

@@ -313,7 +313,7 @@ Token { domain, type, thing_ref }
 
 现状（2026-10-30）：`pact-http` 已实现入口与归档校验——`POST /seeds`、`POST /tokens` 在引擎调用前完成三态判定、URI profile 与 RefBindings 策略（FR30/D45）；`POST /consume` 在进入 Archive 前强制 `pinning: required-at-archive`（FR31/D46）与绑定引用卡片的归档钉版要求（FR32/D47）；`value` 与 `onUnknownScheme` 也在写入时生效。
 `/counter`、`/archive` 的视图过滤与视图审计已实现（FR28/D42、D43）。`pact-cli` 的离线 `ref lint` 已实现（FR27/D41）。
-仍未接入：`pact-wasm` 本地宿主（直接构造 `ThingRef`）；`declarationDigest` 漂移检测；卡片与绑定的显式重载（已登记 `FR33` / `D48`）。
+仍未接入：`pact-wasm` 本地宿主（直接构造 `ThingRef`）；`declarationDigest` 漂移检测。
 待做项与优先级见 `todo.md`（与 §13.1 对齐）。
 
 ### 8.2 单 WASM 是否仍能支撑
@@ -1001,10 +1001,10 @@ spec:
 1. **静态阶段（已完成，2026-10-27）**：`pact-ref-spec` 纯 crate + `spec/ref/v1/`（URI profile、两份 schema、OpenAPI）已落地，
    18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 46 项测试通过）；`pact ref lint` 已实现（FR27/D41），
    覆盖绑定/契约/声明一致性与退出码。
-   **待做**：`refd` 的 resolve/describe 端点；`pact-wasm` 本地宿主的入口校验；卡片与绑定的显式重载（`FR33` / `D48`，方案见 §13.5）与 `declarationDigest`。
+   **待做**：`refd` 的 resolve/describe 端点；`pact-wasm` 本地宿主的入口校验；`declarationDigest`。
    **已完成（2026-10-28）**：REST 写入路径入口校验（FR30/D45）——`POST /seeds`、`POST /tokens` 区分缺失/`null`/字符串，执行 URI profile 与 RefBindings 策略，错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef`；CLI/MCP 经 REST 继承。
    **已完成（2026-10-29）**：`value`、`onUnknownScheme` 与钉版运行期强制（FR31/D46）——`pinning: required` 写入即拦，`required-at-archive` 在 consume 进入 Archive 前拦，错误码 `ThingRefUnpinned`。
-   **已完成（2026-10-30）**：ContractCard 运行期加载与版本不可变（FR32/D47）——`[ref_contracts]` 启动加载、`contract_id()` 索引、按数据触发闭环、重复 `id@version` 拒绝、consume 钉版并集（只加严）。
+   **已完成（2026-10-30）**：ContractCard 运行期加载与版本不可变（FR32/D47）——`[ref_contracts]` 启动加载、`contract_id()` 索引、按数据触发闭环、重复 `id@version` 拒绝、consume 钉版并集（只加严）；卡片与绑定显式重载（FR33/D48）——`POST /ref/reload` 与 `pact ref reload`、同事务原子换快照、`dryRun` 影响报告、审计与 ACL 覆盖。
 2. **可见性阶段（已完成，2026-10-27）**：Counter/Archive 返回前过滤 `thing_ref`（FR28/D42）；
    默认 `read-gate`（无条件 `reads`/`consumes`），RefBindings 的 `domain`/`hidden` 显式覆盖；
    daemon `[ref_bindings].paths` 加载 profile，失败 fail-closed；令牌/签名模式下视图要求身份。
@@ -1059,7 +1059,7 @@ spec:
 1. daemon 配置新增可选 `[ref_contracts].paths`，目录展开规则与 `[ref_bindings]` 一致；启动时加载并 `ContractCard::validate`，按 `contract_id()`（即 `metadata.id@version`）建索引，与绑定的 `contract` 引用键一致。
 2. **按数据触发闭环**：只要任一 RefBindings 的有效规则（合并继承后）声明了 `contract`，就必须配置 `[ref_contracts]` 且该 contract 能解析，否则**启动失败**（fail-closed）；完全没有 `contract` 引用的部署无需配置，行为不变。这样 C 在“实际使用契约”的部署上等价于 B 的闭环，但不惩罚未使用契约的部署。
 3. 有效钉版要求 = 绑定 `pinning` **或** 卡片 `reference.pinning.requiredForArchive` / `artifact.digestPolicy: required-at-archive`（单调并集，卡片不放宽绑定）。
-4. 首版只在启动时加载，不支持热更新；卡片变更需重启。这是**首版的激活机制**，不是终身约束；卡片的不可变性与后续显式重载方案见 §13.5。
+4. 首版只在启动时加载，不支持热更新；卡片变更需重启。这是**首版的激活机制**，不是终身约束；B1 已提供显式重载（§13.5），卡片仍按 `id@version` 不可变。
 5. 不把卡片校验塞进引擎；仍在 REST 边界（consume 前）。
 
 **C 是否保留 B 的闭环与可扩展收益**：
@@ -1115,7 +1115,7 @@ spec:
 
 **依赖关系**：13.4.1 与 13.4.2 相互独立；若两者都要做，先卡片加载（纯配置/索引），再摘要（需规范与工具），避免一次性引入两类失败模式。摘要运行期若启用 `enforce`，`[ref_digest].mode` 需先登记配置项与错误码编号。
 
-### 13.5 ContractCard 生命周期：重启、显式重载与版本化（2026-10-29 定案；B0 已实现，B1 待实现）
+### 13.5 ContractCard 生命周期：重启、显式重载与版本化（2026-10-29 定案；B0/B1 已实现）
 
 **问题**：§13.4.1 第 4 条的“首版只在启动时加载、卡片变更需重启”是只约束首版，还是卡片的终身形态？域声明已经有一套靠迁移延续的生命周期（D27 实例创建时快照声明、D39 显式交接与活动实例别名）；卡片能否取得类似效果？
 
@@ -1142,7 +1142,7 @@ spec:
 **推荐 B，分三阶段**：
 
 1. **B0（`FR32` / `D47`，已实现 2026-10-30）**：启动加载；按 `contract_id()` 建索引；重复 `id@version`（无论内容是否相同）→ 启动失败；绑定声明的每张卡必须可解析。此时“变更卡片 = 发新版本 + 重启”，旧版本文件保留，旧绑定仍可解析。
-2. **B1（`FR33` / `D48`，已登记，待实现）**：新增显式重载入口，把 `[ref_contracts]` 与 `[ref_bindings]` 作为**同一事务**：解析并校验全部卡片与绑定 → 校验所有 `contract` 引用可解析 → 原子替换内存索引与规则；任一步失败保持旧状态并返回结构化错误，不做部分生效。审计记录操作者、时刻、每文件 `sha256`；可选预检报告（换绑后会有多少存量未钉版 token 无法归档）。不做文件监听、不做 SIGHUP 隐式重载。
+2. **B1（`FR33` / `D48`，已实现 2026-10-30）**：新增显式重载入口，把 `[ref_contracts]` 与 `[ref_bindings]` 作为**同一事务**：解析并校验全部卡片与绑定 → 校验所有 `contract` 引用可解析 → 原子替换内存索引与规则；任一步失败保持旧状态并返回结构化错误，不做部分生效。审计记录操作者、时刻、每文件 `sha256`；`dryRun` 预检报告换绑后会有多少存量未钉版 token 无法归档。不做文件监听、不做 SIGHUP 隐式重载。实现为 `POST /ref/reload` 与 `pact ref reload [--dry-run] [--json]`；索引以 `RwLock<Arc<VisibilityProfiles>>` 原子换快照，在途请求持旧快照；审计写 `<data_dir>/ref-reload.jsonl`（append+fsync），ACL 要求覆盖当前与新索引中的全部绑定域（`{domain}/*`）。测试：`ref_reload_e2e` 7 项 + `pact-http` 单测 3 项 + CLI e2e 1 项。
 3. **B2（按需，未登记编号）**：只有出现“必须证明某 token 产生时适用哪版卡”的审计需求时，才评估选项 D；那会改动基线/控制面，必须单独登记编号。
 
 **关于回溯性加严**：D46 已定“归档钉版在 consume 时按当前有效规则判定”，所以把绑定切到更严的新卡版本，存量的未钉版 token 会变得不可归档——这是策略选择，不是重载机制的缺陷。缓解方式是把“预检报告 + 发布说明”作为 B1 的验收项；若要“只影响切换后产生的 token”，就必须记录 token 产生时的规则版本（即选项 D 的一类），不在 B1 范围内。
@@ -1151,7 +1151,7 @@ spec:
 
 1. “仅启动加载”是**首版激活机制**，不是卡片终身形态；
 2. 采纳 **B0 的同版本不可变**（运行期重复 `id@version` 即启动失败），编号 `FR32` / `D47`，随 §13.4.1 一起实现；
-3. **B1 显式重载**已单独立项并登记编号 `FR33` / `D48`，排在 B0 之后实现；
+3. **B1 显式重载**已单独立项并登记编号 `FR33` / `D48`，排在 B0 之后实现（2026-10-30 已实现）；
 4. 接受**不做文件监听自动热加载**；
 5. B2（按实例冻结）暂不立项，出现“按 token 追责到卡版本”的审计需求时再登记。
 

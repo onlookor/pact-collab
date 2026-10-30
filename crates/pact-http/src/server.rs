@@ -7,10 +7,13 @@ use crate::dto::{
     conflicts_detail, problem_detail, rule_error_detail, ActivateReq, ActiveResp, CompactReq,
     ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledOption, EnabledResp, EntryResp,
     ErrorBody, ErrorDetail, FreezeReq, GatesResp, HandoffReq, InstantiateReq, LoadDomainReq,
-    ParticipantReq, ProduceReq, ReadAuditResp, SeedReq, ThingRefField, TokenResp, ValidateReq,
-    ValidateResp,
+    ParticipantReq, ProduceReq, ReadAuditResp, RefReloadReq, RefReloadResp, SeedReq, ThingRefField,
+    TokenResp, ValidateReq, ValidateResp,
 };
-use crate::visibility::RefEntryError;
+use crate::reload::{
+    append_audit, newly_blocked_tokens, now_iso8601, RefReloadAudit, RefReloadConfig,
+};
+use crate::visibility::{RefEntryError, RefSourceFile, VisibilityProfiles};
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Query, Request, State};
@@ -49,7 +52,12 @@ pub struct ServerState {
     /// D36：对外基址（RFC 9728 元数据）。
     public_url: Option<String>,
     /// D42：Counter/Archive 的票面可见性 profile（RefBindings）。
-    visibility: crate::visibility::VisibilityProfiles,
+    /// D48：重载时原子替换整个快照；在途请求继续持有旧快照。
+    visibility: std::sync::RwLock<Arc<crate::visibility::VisibilityProfiles>>,
+    /// D48：重载配置源（启动时注入一次；未注入则重载不可用）。
+    reload: std::sync::OnceLock<RefReloadConfig>,
+    /// D48：并发重载单飞（`try_lock` 失败 → 409）。
+    reload_lock: tokio::sync::Mutex<()>,
     /// D35：进程内能力令牌（MCP → 本地 REST）。
     internal_token: [u8; 32],
     /// D34：nonce 防重放缓存。
@@ -108,11 +116,26 @@ impl ServerState {
             acl,
             oidc,
             public_url,
-            visibility,
+            visibility: std::sync::RwLock::new(Arc::new(visibility)),
+            reload: std::sync::OnceLock::new(),
+            reload_lock: tokio::sync::Mutex::new(()),
             internal_token: random_internal_token(),
             nonces: tokio::sync::Mutex::new(crate::sign::NonceCache::default()),
             started_at: std::time::Instant::now(),
         })
+    }
+
+    /// D48：注入重载配置源（daemon 启动时调用一次；重复注入忽略）。
+    pub fn configure_reload(&self, config: RefReloadConfig) {
+        let _ = self.reload.set(config);
+    }
+
+    /// D48：读取当前 profile 快照；请求处理期间保持同一快照。
+    fn profiles(&self) -> Arc<VisibilityProfiles> {
+        self.visibility
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     fn acl_enabled(&self) -> bool {
@@ -276,14 +299,15 @@ impl ServerState {
     /// 只在该域加载了 RefBindings 时查票面；token 不存在时不拦截，交给引擎
     /// 返回既有的 not-found / 幂等结果。引擎仍不感知票面内容。
     async fn enforce_archive_pinning(&self, key: &InstanceKey, id: &str) -> Result<(), ApiError> {
-        if !self.visibility.has_domain(&key.domain) {
+        let profiles = self.profiles();
+        if !profiles.has_domain(&key.domain) {
             return Ok(());
         }
         let view = self.engine.counter(key.clone(), None).await?;
         let Some(token) = view.tokens.iter().find(|token| token.id.0 == id) else {
             return Ok(());
         };
-        self.visibility
+        profiles
             .validate_archive_thing_ref(
                 &key.domain,
                 &key.instance,
@@ -446,6 +470,201 @@ impl ServerState {
             return Err(Self::forbidden(domain, "*"));
         }
         Ok(())
+    }
+
+    /// D48：重载要求对当前与新索引中的**每个**绑定域持有 `{domain}/*`。
+    fn check_reload_domains<'a>(
+        &self,
+        principal: Option<&str>,
+        domains: impl Iterator<Item = &'a str>,
+    ) -> Result<(), ApiError> {
+        if !self.acl_enabled() {
+            return Ok(());
+        }
+        let Some(p) = principal else {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "ACL 已启用但未配置身份（配置非法）".to_owned(),
+            ));
+        };
+        for domain in domains {
+            if !acl_allows_wildcard(&self.acl, p, domain) {
+                return Err(Self::forbidden(domain, "*"));
+            }
+        }
+        Ok(())
+    }
+
+    /// D48：拒绝路径的控制面审计；写失败返回 `500`（调用方不再返回原错误）。
+    #[allow(clippy::too_many_arguments)]
+    fn audit_reload_rejection(
+        &self,
+        config: &RefReloadConfig,
+        principal: Option<&str>,
+        dry_run: bool,
+        files: &[RefSourceFile],
+        bindings: usize,
+        contracts: usize,
+        error: &str,
+    ) -> Result<(), ApiError> {
+        let record = RefReloadAudit {
+            ts: now_iso8601(),
+            by: principal,
+            dry_run,
+            outcome: "rejected",
+            files,
+            bindings,
+            contracts,
+            blocked_tokens: &[],
+            error: Some(error),
+        };
+        append_audit(&config.audit_path, &record).map_err(|audit| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "RefReloadAuditFailed",
+                format!("控制面审计写入失败（{audit}）；重载未生效；原始错误：{error}"),
+            )
+        })
+    }
+
+    /// D48：卡片与绑定同事务重载。
+    ///
+    /// 顺序固定为：认证 → 当前域授权 → 加载校验 → 新域授权 → 影响预检 →
+    /// 审计 → 原子替换。任一步失败保持旧快照；`dryRun` 在审计后停止。
+    async fn reload_refs(
+        &self,
+        dry_run: bool,
+        headers: &HeaderMap,
+    ) -> Result<RefReloadResp, ApiError> {
+        let principal = self.control_principal(headers)?;
+        let Some(config) = self.reload.get() else {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "RefReloadUnavailable",
+                "未配置 RefBindings/ContractCard 重载源".to_owned(),
+            ));
+        };
+        let _guard = match self.reload_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "RefReloadBusy",
+                    "已有重载正在进行".to_owned(),
+                ))
+            }
+        };
+
+        let current = self.profiles();
+        if let Err(error) = self.check_reload_domains(principal.as_deref(), current.domain_names())
+        {
+            let message = error.detail.message.clone();
+            self.audit_reload_rejection(
+                config,
+                principal.as_deref(),
+                dry_run,
+                &[],
+                0,
+                0,
+                &message,
+            )?;
+            return Err(error);
+        }
+
+        let loaded = match VisibilityProfiles::load_with_contracts(
+            &config.binding_paths,
+            &config.contract_paths,
+        ) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                let message = error.to_string();
+                self.audit_reload_rejection(
+                    config,
+                    principal.as_deref(),
+                    dry_run,
+                    &[],
+                    0,
+                    0,
+                    &message,
+                )?;
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "RefReloadInvalid",
+                    message,
+                ));
+            }
+        };
+
+        if let Err(error) = self.check_reload_domains(principal.as_deref(), loaded.domain_names()) {
+            let message = error.detail.message.clone();
+            self.audit_reload_rejection(
+                config,
+                principal.as_deref(),
+                dry_run,
+                loaded.sources(),
+                loaded.len(),
+                loaded.contract_len(),
+                &message,
+            )?;
+            return Err(error);
+        }
+
+        let blocked = match newly_blocked_tokens(&self.engine, &current, &loaded).await {
+            Ok(blocked) => blocked,
+            Err(error) => {
+                let message = format!("影响预检失败：{error}");
+                self.audit_reload_rejection(
+                    config,
+                    principal.as_deref(),
+                    dry_run,
+                    loaded.sources(),
+                    loaded.len(),
+                    loaded.contract_len(),
+                    &message,
+                )?;
+                return Err(ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "RefReloadFailed",
+                    message,
+                ));
+            }
+        };
+        let blocked_total = blocked.iter().map(|group| group.tokens).sum();
+        let bindings = loaded.len();
+        let contracts = loaded.contract_len();
+        let record = RefReloadAudit {
+            ts: now_iso8601(),
+            by: principal.as_deref(),
+            dry_run,
+            outcome: "applied",
+            files: loaded.sources(),
+            bindings,
+            contracts,
+            blocked_tokens: &blocked,
+            error: None,
+        };
+        if let Err(audit) = append_audit(&config.audit_path, &record) {
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "RefReloadAuditFailed",
+                format!("控制面审计写入失败，重载未生效：{audit}"),
+            ));
+        }
+        if !dry_run {
+            *self
+                .visibility
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(loaded);
+        }
+        Ok(RefReloadResp {
+            dry_run,
+            applied: !dry_run,
+            bindings,
+            contracts,
+            blocked_tokens: blocked,
+            blocked_total,
+        })
     }
 }
 
@@ -681,6 +900,8 @@ pub fn router(state: Arc<ServerState>) -> Router {
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/metrics", get(metrics))
+        // D48：物引控制面显式重载（RefBindings + ContractCard 同事务）。
+        .route("/ref/reload", post(ref_reload))
         .route("/domains", post(load_domain).get(list_domains))
         .route("/validate", post(validate_declaration))
         .route("/domains/{d}", any(domain_entry))
@@ -1010,6 +1231,15 @@ fn not_found_path(path: &str) -> axum::response::Response {
 }
 
 // ============ 处理器 ============
+
+/// D48：`POST /ref/reload`（body `{"dryRun": bool}`，缺省 false）。
+async fn ref_reload(
+    State(st): State<Arc<ServerState>>,
+    headers: HeaderMap,
+    JsonReq(req): JsonReq<RefReloadReq>,
+) -> Result<Json<RefReloadResp>, ApiError> {
+    st.reload_refs(req.dry_run, &headers).await.map(Json)
+}
 
 async fn load_domain(
     State(st): State<Arc<ServerState>>,
@@ -1403,7 +1633,8 @@ async fn counter_inner(
     } else {
         BTreeSet::new()
     };
-    let audit_types = apply_visibility(&st.visibility, &key, view.tokens.iter_mut(), &readable);
+    let profiles = st.profiles();
+    let audit_types = apply_visibility(&profiles, &key, view.tokens.iter_mut(), &readable);
     st.record_view_audit(&key, principal, ViewName::Counter, type_filter, audit_types)
         .await?;
     Ok(Json(view))
@@ -1446,8 +1677,9 @@ async fn archive_inner(
     } else {
         BTreeSet::new()
     };
+    let profiles = st.profiles();
     let audit_types = apply_visibility(
-        &st.visibility,
+        &profiles,
         &key,
         view.entries.iter_mut().map(|entry| &mut entry.token),
         &readable,
@@ -1769,8 +2001,8 @@ fn validate_entry_thing_ref(
     ty: &str,
     field: &ThingRefField,
 ) -> Result<ThingRef, ApiError> {
-    let validated = st
-        .visibility
+    let profiles = st.profiles();
+    let validated = profiles
         .validate_thing_ref(&key.domain, &key.instance, ty, field.as_input())
         .map_err(|error| {
             let code = match &error {
@@ -1935,5 +2167,42 @@ mod tests {
         assert!(!ct_eq("tok-abc123", "")); // 空串不等
         assert!(!ct_eq("", "tok-abc123"));
         assert!(ct_eq("", "")); // 空表信任模式下不会走到此处，仅锁定语义
+    }
+
+    /// D48：并发重载单飞——锁被占用时立即返回 `409 RefReloadBusy`，不读写索引。
+    #[tokio::test]
+    async fn reload_returns_conflict_when_lock_is_held() {
+        use pact_engine::{Engine, EngineConfig, LogicalClock, SequentialIdGen};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = pact_store::Store::open(dir.path().join("data"))
+            .await
+            .unwrap();
+        let engine = Engine::spawn_with_config(
+            store,
+            Arc::new(LogicalClock::new()),
+            Arc::new(SequentialIdGen::new()),
+            EngineConfig::default(),
+        );
+        let state = super::ServerState::with_identity(
+            engine,
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+        );
+        state.configure_reload(super::RefReloadConfig::new(
+            Vec::new(),
+            Vec::new(),
+            dir.path().join("data"),
+        ));
+        let _guard = state.reload_lock.try_lock().expect("测试内可先占锁");
+        let error = state
+            .reload_refs(false, &axum::http::HeaderMap::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.detail.code, "RefReloadBusy");
     }
 }

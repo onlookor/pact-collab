@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-30（第 42 轮，B1 显式重载实现）
+
+- 架构正文“票面写入校验在接口层”更新：卡片/绑定显式重载（FR33/D48）已实现，经控制面 `POST /ref/reload` 原子替换 `pact-http` 的规则快照；不进入引擎、存储或事件日志。
+- 新增 `pact-http::reload` 模块（配置、审计、影响预检）；`ServerState` 的规则快照改为可原子替换的 `RwLock<Arc<VisibilityProfiles>>`，请求级持同一快照。依赖方向不变（`pact-http → pact-ref-spec`），未新增组件或依赖。
+- 审计落点 `<data_dir>/ref-reload.jsonl` 属控制面旁路文件，不进入 `seq`/重放；引擎与 `pact-core` 仍不感知票面与卡片。
+- 文档：`docs/design.md` §9.15 与 D48 状态、`docs/manual.md` §7.12/§8/§9、治理 §13.5 同步。
+
 ## 2026-10-30（第 41 轮，B0 契约卡加载实现）
 
 - 架构正文“票面写入校验在接口层”更新：ContractCard 运行期加载与版本不可变（FR32/D47）已实现，仍在 `pact-http` 接口层；卡片/绑定显式重载（FR33/D48）尚未实现。

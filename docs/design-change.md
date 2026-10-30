@@ -2,6 +2,18 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-30（第 84 轮，B1 显式重载实现）
+
+- **实现（FR33/D48）**：新增 `pact-http::reload` 模块与 `POST /ref/reload`；daemon 启动注入 `RefReloadConfig`（绑定/卡片路径 + `<data_dir>/ref-reload.jsonl`）。事务顺序固定为认证 → 当前域 ACL → 加载校验 → 新域 ACL → 影响预检 → 审计 → 原子替换；`dryRun` 在审计后停止。
+- **原子快照**：`ServerState.visibility` 改为 `RwLock<Arc<VisibilityProfiles>>`，请求入口取一次快照并全程复用；替换只换 `Arc`，在途请求持旧规则。`counter`/`archive`/`consume`/入口校验均改用该快照。
+- **审计摘要同源**：`VisibilityProfiles` 记录本次加载实际读取文件的 `path`/`sha256`/`kind`，审计直接写该清单，避免二次读取造成 TOCTOU；审计写失败拒绝替换（含拒绝路径）。
+- **影响预检**：`newly_blocked_tokens` 只统计“旧规则通过、新规则因 `PinningRequired { at_archive: true }` 阻断”的存量 Counter token，按 `(domain, instance, type)` 聚合计数，不输出票面值。
+- **CLI/client**：`Client::reload`、`pact ref reload [--dry-run]`；JSON 输出 `RefReloadResp`，人类输出含逐组阻断计数。
+- **测试**：`pact-http` 单测 3 项（审计 JSONL/fsync、审计目标为目录、锁占用 `409`）；`ref_reload_e2e` 7 项；CLI e2e 1 项；全量 **349 passed / 0 failed**；`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` 通过。
+- **文档**：`requirements.md` FR33/FR32 状态与边界、`manual.md` §2.2/§7.11/§7.12/§8.1/§8.2/§9.4、`architecture.md` 正文、治理 §8.1/§13.1/§13.4.1/§13.5、`todo.md`。
+- **未变更**：`pact-ref-spec` 与 `pact-ref` 未改动，无需 vendored 快照同步；不做文件监听/SIGHUP/自动回滚/按域灰度；不提供 MCP 工具。
+- **安全审视**：无新增依赖；新增文件读写限于配置源与 `<data_dir>/ref-reload.jsonl`（append+fsync），无 `unsafe`、网络或进程副作用；控制面端点要求认证与 ACL 通配授权，审计失败 fail-closed；`cargo audit` 结论沿用。
+
 ## 2026-10-30（第 83 轮，B0 契约卡加载实现）
 
 - **实现（FR32/D47）**：`pact-http` 新增 `[ref_contracts].paths` 配置与 `VisibilityProfiles::load_with_contracts`；启动时解析并 `ContractCard::validate`，按 `contract_id()` 索引；重复 `contract_id()`（无论内容）即启动失败。加载绑定后扫描原始规则中的 `contract` 引用，未配置 `[ref_contracts]` 或引用缺失均拒绝启动；无 `contract` 引用的部署仍免配置。

@@ -370,6 +370,12 @@ enum RefCmd {
         #[arg(long)]
         strict: bool,
     },
+    /// 显式重载 daemon 的 RefBindings 与 ContractCard（在线，D48）
+    Reload {
+        /// 只校验并预检影响，不替换 daemon 内存索引
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -876,25 +882,42 @@ async fn run(cli: Cli) -> ExitCode {
             instance,
             bounds,
         } => offline_cpn(json, &file, &out, &instance, &bounds),
-        Command::Ref {
-            cmd:
-                RefCmd::Lint {
-                    bindings,
-                    contracts,
-                    tombstones,
-                    declaration,
-                    name,
-                    strict,
-                },
-        } => offline_ref_lint(
-            json,
-            &bindings,
-            &contracts,
-            &tombstones,
-            declaration.as_deref(),
-            name,
-            strict,
-        ),
+        Command::Ref { cmd } => match cmd {
+            RefCmd::Lint {
+                bindings,
+                contracts,
+                tombstones,
+                declaration,
+                name,
+                strict,
+            } => offline_ref_lint(
+                json,
+                &bindings,
+                &contracts,
+                &tombstones,
+                declaration.as_deref(),
+                name,
+                strict,
+            ),
+            RefCmd::Reload { dry_run } => {
+                let c = online!(conn, json);
+                done(json, c.reload(dry_run).await, |r| {
+                    println!(
+                        "{}: bindings={} contracts={} blocked={}",
+                        if r.dry_run { "dry-run" } else { "reloaded" },
+                        r.bindings,
+                        r.contracts,
+                        r.blocked_total
+                    );
+                    for g in &r.blocked_tokens {
+                        println!(
+                            "  {}/{} type={} tokens={}",
+                            g.domain, g.instance, g.ty, g.tokens
+                        );
+                    }
+                })
+            }
+        },
     }
 }
 

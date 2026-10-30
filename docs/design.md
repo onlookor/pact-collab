@@ -53,7 +53,7 @@
 | D45 | ThingRef 入口校验边界与策略（FR30，2026-10-28，入口阶段） | 校验放在 **REST 写入边界**：`pact-http` 在 `seed_inner`/`produce_inner` 调引擎前执行 `VisibilityProfiles::validate_thing_ref`；三态由 `ThingRefField` 保留（缺失/显式 `null`/字符串），结构规则与 RefBindings 策略（`required`/`allowIdentifier`/`schemes`/`maxLength`）在写入时强制，成功写规范化值。错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef` 均为 `400`。 | 引擎与 `pact-core` 必须保持不透明、不得依赖治理 crate，否则「引擎不解析票面」的隔离被打破；放 REST 边界使 CLI、MCP、`pact-runtime` 经同一 client 自动继承，避免多套真源。三态必须在反序列化层保留，serde 的 `Option` 会折叠「没说」与「确认没有」。策略校验复用规范层匹配，保证 lint 与运行期同一套语义；WASM 本地宿主不在 REST 边界内，单列事项。 |
 | D46 | 形态、未知 scheme 与钉版策略的执行点（FR31，2026-10-29，入口/归档阶段） | `value`、`onUnknownScheme`、`pinning` 在 REST 边界执行：写入时（seed/produce）与归档前（consume 调引擎前）。`onUnknownScheme` 的“未知”= 有效 `schemes` 非空且不含 `*` 时不在白名单；`treat-as-identifier` 重分类后仍须 `allowIdentifier`。`pinning: required` 写入即拦，`required-at-archive` 仅在 consume 拦；钉版=URI 含 `sha256:<64 小写 hex>`（fragment 或 OCI 形式），`∅` 豁免。consume 只读 `merged_rule` 的 `pinning`，不重跑写入期规则。失败 `ThingRefUnpinned`（`400`）。 | 规范层早已声明三类策略，但只在 lint 生效会让“检查通过”与“运行期行为”脱节；执行点继续放 REST 边界以保持引擎不透明。`required-at-archive` 必须在进入 Archive 的唯一转换（consume）上拦，否则归档后无法补救；归档检查只读钉版字段，避免规则收紧后历史 token 永久无法归档（fail-open 于写入规则、fail-closed 于钉版）。ContractCard 的等价字段需要先解决“卡片从哪加载”，故不并入本轮。 |
 | D47 | 物引契约卡运行期加载与版本不可变（FR32，2026-10-29 定案；2026-10-30 已实现） | daemon 新增可选 `[ref_contracts].paths`（文件或目录，可重复；目录展开 `.yaml`/`.yml`/`.json`，规则同 `[ref_bindings]`）；启动时用 `pact-ref-spec::ContractCard::validate` 校验，并以 `contract_id()`（`metadata.id@version`）建索引。**按数据触发**：任一 RefBindings 有效规则声明 `contract` ⇒ 必须配置且每个引用可解析，否则启动失败；无 `contract` 引用 ⇒ 不要求配置。**同版本不可变**：同一 `contract_id()` 出现两次（无论内容是否相同）⇒ 启动失败。**只加严**：consume 的有效钉版要求 = 绑定 `pinning` ∪ 卡片 `reference.pinning.requiredForArchive` / `artifact.digestPolicy: required-at-archive`，卡片不得放宽绑定；判定与错误码沿用 D46（`ThingRefUnpinned`）。首版不读 `artifact.kind`/`mediaType`、不做 `lifecycle` 运行期检查，也不做热更新（D48）。 | 卡片已被绑定声明、被 lint 检查，运行期不读会让“检查通过”与“归档行为”脱节；索引键必须与绑定 `contract` 的 `id@version` 一致，否则同一引用在不同层指向不同版本。按数据触发让不使用契约的部署零迁移，同时保证一旦使用就 fail-closed。同版本不可变比“重启/重载”更底层：否则同一部署在不同时刻对同一 token 给出不同判定且不留痕迹。卡片只加严，避免“卡片与绑定谁优先”的歧义；artifact/mediaType 需要票面携带 media type，当前不推断，避免把不可判定的事做成检查。 |
-| D48 | 物引契约卡与绑定显式重载（FR33，2026-10-29，控制面阶段） | 新增 `POST /ref/reload`（body `{"dryRun": bool}`，缺省 false）与 CLI `pact ref reload [--dry-run] [--json]`；不提供 MCP 工具。重载把 `[ref_contracts]` 与 `[ref_bindings]` 作为**同一事务**：读取配置源 → 解析/规范校验 → 校验所有 `contract` 引用可解析 → 计算影响报告 → 写控制面审计 → 原子替换内存索引与规则；任一步失败保持旧状态，不做部分生效。并发重载单飞，冲突 `409 RefReloadBusy`；校验失败 `400 RefReloadInvalid`；审计写失败 `500`。`dryRun=true` 完成校验与影响报告但不替换；报告按 `(domain,instance,type)` 统计换绑后因缺摘要而无法归档的存量 Counter token 数，不输出票面值。审计写 `<data_dir>/ref-reload.jsonl`（append+fsync）：`ts`/`by`（无身份为 null）/`dryRun`/`outcome`/`files[{path,sha256,kind}]`/卡片与绑定计数/可选 `error`。认证：配置任何身份后必须认证；ACL 启用时调用者须对当前与新的绑定索引中每个域持有 `{domain}/*`，索引为空时只需认证；信任声明模式放行匿名。不做文件监听、SIGHUP、自动回滚与按域灰度。 | 卡片不含状态、不进事件日志，不能照搬 D39 的交接；版本化 + 显式激活即可获得“新版本服务新工作、旧版本仍可解析”的效果，而无需迁移状态。卡片与绑定必须同事务，否则中间态会出现“绑定引用了尚未加载的新版本”或反之。原子换指针（在途请求持旧快照）避免读到半套规则。默认不监听文件，避免半写文件、跨文件依赖竞态与不可审计的版本漂移；`dryRun` 让“收紧钉版会阻断存量归档”在生效前可见。审计先于替换写盘，保证每次行为变化都有可追溯记录。 |
+| D48 | 物引契约卡与绑定显式重载（FR33，2026-10-29 定案；2026-10-30 已实现） | 新增 `POST /ref/reload`（body `{"dryRun": bool}`，缺省 false）与 CLI `pact ref reload [--dry-run] [--json]`；不提供 MCP 工具。重载把 `[ref_contracts]` 与 `[ref_bindings]` 作为**同一事务**：读取配置源 → 解析/规范校验 → 校验所有 `contract` 引用可解析 → 计算影响报告 → 写控制面审计 → 原子替换内存索引与规则；任一步失败保持旧状态，不做部分生效。并发重载单飞，冲突 `409 RefReloadBusy`；校验失败 `400 RefReloadInvalid`；审计写失败 `500`。`dryRun=true` 完成校验与影响报告但不替换；报告按 `(domain,instance,type)` 统计换绑后因缺摘要而无法归档的存量 Counter token 数，不输出票面值。审计写 `<data_dir>/ref-reload.jsonl`（append+fsync）：`ts`/`by`（无身份为 null）/`dryRun`/`outcome`/`files[{path,sha256,kind}]`/卡片与绑定计数/可选 `error`。认证：配置任何身份后必须认证；ACL 启用时调用者须对当前与新的绑定索引中每个域持有 `{domain}/*`，索引为空时只需认证；信任声明模式放行匿名。实现上 daemon 启动注入 `RefReloadConfig`（绑定/卡片路径与审计路径），每次重载**重新读取**配置源，`VisibilityProfiles` 记录本次实际读取文件的 `sha256`（审计摘要与生效内容同源）；索引以 `RwLock<Arc<VisibilityProfiles>>` 原子换指针，请求处理期间取同一快照。未注入配置 → `500 RefReloadUnavailable`；影响预检引擎错误 → `500 RefReloadFailed`；审计写失败统一 `500 RefReloadAuditFailed`（覆盖原错误）；认证失败与并发冲突不写审计。不做文件监听、SIGHUP、自动回滚与按域灰度。 | 卡片不含状态、不进事件日志，不能照搬 D39 的交接；版本化 + 显式激活即可获得“新版本服务新工作、旧版本仍可解析”的效果，而无需迁移状态。卡片与绑定必须同事务，否则中间态会出现“绑定引用了尚未加载的新版本”或反之。原子换指针（在途请求持旧快照）避免读到半套规则。默认不监听文件，避免半写文件、跨文件依赖竞态与不可审计的版本漂移；`dryRun` 让“收紧钉版会阻断存量归档”在生效前可见。审计先于替换写盘，保证每次行为变化都有可追溯记录。 |
 
 ## 1. 总体结构
 
@@ -1024,7 +1024,7 @@ spec:
 
 **错误码**：`pinning` 失败 → `400 ThingRefUnpinned`（`message` 区分写入/归档）；`value`/`onUnknownScheme` 失败 → `400 InvalidThingRef`；配置矛盾 → daemon 启动失败（`RefBindings` 校验）。
 
-**边界**：ContractCard 的运行期加载与归档钉版并集由 §9.14（D47）承接，已在 REST 边界实现；`artifact.kind`/`mediaType`、`lifecycle` 运行期检查与显式重载（D48）不在本层。`pact-wasm` 本地宿主不在 REST 边界内。
+**边界**：ContractCard 的运行期加载与归档钉版并集由 §9.14（D47）承接，显式重载由 §9.15（D48）承接，均已在 REST 边界实现；`artifact.kind`/`mediaType`、`lifecycle` 运行期检查不在本层。`pact-wasm` 本地宿主不在 REST 边界内。
 
 **测试**：`pact-ref-spec`（`pinned_digest`、未知 scheme 三分支、`merged_rule` 跳过入口校验、`required+value=none` 拒绝）；`pact-http` 单测（形态、未知 scheme、写入/归档钉版）；`visibility_e2e` 端到端（`ThingRefUnpinned` 写入与 consume、钉版引用成功归档）。
 
@@ -1038,18 +1038,34 @@ spec:
 
 **错误面**：启动阶段使用 `VisibilityError` 的 `ContractIo` / `ContractParse` / `ContractInvalid` / `DuplicateContract` / `ContractsNotConfigured` / `MissingContract`，信息指名文件与契约；运行期仍映射为 `400 ThingRefUnpinned` / `400 InvalidThingRef`。
 
-**未生效**：`artifact.kind`/`mediaType`（票面不携带 media type）、`lifecycle` 运行期计时/删除、显式重载与 `dryRun`（D48）。
+**未生效**：`artifact.kind`/`mediaType`（票面不携带 media type）、`lifecycle` 运行期计时/删除。显式重载见 §9.15（D48）。
 
 **测试**：`pact-http` 单测（卡片加载与引用闭环、无引用时不要求配置、缺失/重复拒绝、卡片钉版阻断归档、卡片不放宽绑定、索引缺失 fail-closed）；`visibility_e2e`（卡片要求归档钉版时 `ThingRefUnpinned`、钉版可归档、重复版本拒绝启动）；`config` 单测（`[ref_contracts]` 空 paths 拒绝）。
+
+### 9.15 契约卡与绑定的显式重载（D48，已实现）
+
+**入口与配置注入**：daemon 启动时在 `ServerState` 注入 `RefReloadConfig { binding_paths, contract_paths, audit_path }`（`audit_path = <data_dir>/ref-reload.jsonl`）；未注入则 `POST /ref/reload` 返回 `500 RefReloadUnavailable`，不静默成功。验证入口是 `POST /ref/reload`（`{"dryRun": bool}`）与 CLI `pact ref reload [--dry-run] [--json]`；不提供 MCP 工具。
+
+**事务顺序**（固定，任一步失败保持旧快照）：认证（`control_principal`）→ 当前索引域 ACL（每域 `{domain}/*`）→ 重新读取并校验全部绑定与卡片（含 `contract_id()` 索引与引用闭环）→ 新索引域 ACL → 影响预检 → 控制面审计 → 原子替换。`dryRun=true` 在审计后停止，`applied=false`，响应仍返回完整计数与阻断报告。
+
+**原子快照**：索引持有 `RwLock<Arc<VisibilityProfiles>>`；请求入口取一次 `Arc` 快照并在整个处理期间复用，替换只换 `Arc` 指针。在途请求持旧快照完成，新请求读新索引；绑定与卡片永远同批生效，不出现“绑定引用未加载版本”的中间态。
+
+**审计摘要同源**：`VisibilityProfiles` 在加载时记录每个实际读取文件的 `path`、`sha256` 与 `kind`（`bindings`/`contract`），审计直接写该清单，避免重载后二次读取导致“审计摘要 ≠ 生效内容”的 TOCTOU。审计为 append+fsync；写失败一律 `500 RefReloadAuditFailed` 且不替换索引（包括 ACL/校验拒绝路径）。认证失败（`401`）与并发冲突（`409`）不写审计，因为前者无可信操作者、后者未进入事务。
+
+**影响预检**：遍历全部域实例的 Counter token，只有“旧规则归档判定通过、新规则因 `PinningRequired { at_archive: true }` 阻断”的 token 计入新增影响；按 `(domain, instance, type)` 聚合计数，不输出票面值。旧规则已阻断的存量不计入本次变更。预检引擎错误 → `500 RefReloadFailed` 并写 `rejected` 审计。
+
+**错误面**：`400 RefReloadInvalid`（解析/校验/重复 `contract_id()`/引用不可解析，信息含文件）、`409 RefReloadBusy`（`try_lock` 失败）、`403`（ACL 未覆盖当前或新域）、`401`（配置身份后未认证）、`500 RefReloadUnavailable` / `RefReloadFailed` / `RefReloadAuditFailed`。审计 `outcome` 只有 `applied`（含 dryRun 的“将会生效”）与 `rejected`。
+
+**测试**：`pact-http` 单测（审计 JSONL 与 fsync、审计目标为目录时失败、锁被占时 `409`）；`ref_reload_e2e`（dryRun 报告与确认后生效、非法绑定保持旧快照、审计失败保持旧快照、令牌模式匿名 `401`、信任模式匿名放行、ACL 覆盖当前与新域、未注入配置 `500`）；CLI e2e（真实二进制 `pact ref reload --dry-run` → 应用 → 新规则阻断写入）。
 
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
 | 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）** | crates/tests |
-| 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码** | 阶段 4/5 的 e2e 测试 |
+| 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码**；**D47 卡片钉版归档与重复版本拒绝**；**D48 显式重载（dryRun 报告、失败保持旧状态、审计/ACL/认证）与真实二进制 `pact ref reload`** | 阶段 4/5 的 e2e 测试 |
 | v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
 | WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试 | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |
 | 依赖安全审计 | `cargo audit --file Cargo.lock`：RustSec 漏洞（vulnerability）即失败；unmaintained/unsound 仅告警，保持可见不阻断；`cargo-audit` 版本固定并缓存 | `.github/workflows/ci.yml` 的 `audit` job |

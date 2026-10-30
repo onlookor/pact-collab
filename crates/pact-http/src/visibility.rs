@@ -33,12 +33,30 @@ pub struct VisibilityProfiles {
     bindings: BTreeMap<String, LoadedBindings>,
     /// D47：`contract_id()`（`metadata.id@version`）→ 卡片；同版本不可变。
     contracts: BTreeMap<String, ContractCard>,
+    /// D48：本次加载实际读取的文件与内容摘要（控制面审计用）。
+    sources: Vec<RefSourceFile>,
 }
 
 #[derive(Debug, Clone)]
 struct LoadedBindings {
     path: PathBuf,
     bindings: RefBindings,
+}
+
+/// D48：控制面审计中的一个配置源文件。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RefSourceFile {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub kind: RefSourceKind,
+}
+
+/// D48：配置源类别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RefSourceKind {
+    Bindings,
+    Contract,
 }
 
 impl VisibilityProfiles {
@@ -60,8 +78,9 @@ impl VisibilityProfiles {
         binding_paths: &[PathBuf],
         contract_paths: &[PathBuf],
     ) -> Result<Self, VisibilityError> {
-        let contracts = load_contracts(contract_paths)?;
+        let (contracts, contract_sources) = load_contracts(contract_paths)?;
         let mut bindings: BTreeMap<String, LoadedBindings> = BTreeMap::new();
+        let mut binding_sources = Vec::new();
         for path in expand(binding_paths)? {
             let text = std::fs::read_to_string(&path).map_err(|source| VisibilityError::Io {
                 path: path.clone(),
@@ -86,6 +105,11 @@ impl VisibilityProfiles {
                     second: path,
                 });
             }
+            binding_sources.push(RefSourceFile {
+                sha256: sha256_hex(text.as_bytes()),
+                path: path.clone(),
+                kind: RefSourceKind::Bindings,
+            });
             bindings.insert(
                 domain,
                 LoadedBindings {
@@ -95,14 +119,27 @@ impl VisibilityProfiles {
             );
         }
         verify_contract_references(&bindings, &contracts, !contract_paths.is_empty())?;
+        let mut sources = binding_sources;
+        sources.extend(contract_sources);
         Ok(Self {
             bindings,
             contracts,
+            sources,
         })
     }
 
     pub fn len(&self) -> usize {
         self.bindings.len()
+    }
+
+    /// 已加载的绑定域名（D48：重载授权需覆盖当前与新的全部绑定域）。
+    pub fn domain_names(&self) -> impl Iterator<Item = &str> {
+        self.bindings.keys().map(String::as_str)
+    }
+
+    /// D48：本次加载读取的源文件（路径 + 内容摘要 + 类别）。
+    pub fn sources(&self) -> &[RefSourceFile] {
+        &self.sources
     }
 
     /// 已加载的契约卡数量（D47）。
@@ -344,9 +381,12 @@ fn card_requires_archive_pinning(card: &ContractCard) -> bool {
 }
 
 /// D47：读取并校验契约卡；重复 `contract_id()`（无论内容）即拒绝。
-fn load_contracts(paths: &[PathBuf]) -> Result<BTreeMap<String, ContractCard>, VisibilityError> {
+fn load_contracts(
+    paths: &[PathBuf],
+) -> Result<(BTreeMap<String, ContractCard>, Vec<RefSourceFile>), VisibilityError> {
     let mut cards: BTreeMap<String, ContractCard> = BTreeMap::new();
     let mut sources: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut files = Vec::new();
     for path in expand_paths(paths)
         .map_err(|(path, source)| VisibilityError::ContractIo { path, source })?
     {
@@ -374,10 +414,27 @@ fn load_contracts(paths: &[PathBuf]) -> Result<BTreeMap<String, ContractCard>, V
                 second: path,
             });
         }
+        files.push(RefSourceFile {
+            sha256: sha256_hex(text.as_bytes()),
+            path: path.clone(),
+            kind: RefSourceKind::Contract,
+        });
         sources.insert(contract_id.clone(), path);
         cards.insert(contract_id, card);
     }
-    Ok(cards)
+    Ok((cards, files))
+}
+
+/// D48：文件内容摘要（小写十六进制 SHA-256）。
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// D47：按数据触发闭环。只扫描声明了 `contract` 的规则；未声明则不要求配置。

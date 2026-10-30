@@ -6,8 +6,8 @@
 use crate::dto::{
     ActivateReq, ActiveResp, CompactReq, ComposeReq, ConsumeReq, DomainInfo, DomainsResp,
     EnabledResp, EntryResp, ErrorBody, ErrorDetail, FreezeReq, GatesResp, HandoffReq,
-    InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, ReadAuditResp, SeedReq,
-    ThingRefField, TokenResp, ValidateReq, ValidateResp,
+    InstantiateReq, LoadDomainReq, ParticipantReq, ProduceReq, ReadAuditResp, RefReloadReq,
+    RefReloadResp, SeedReq, ThingRefField, TokenResp, ValidateReq, ValidateResp,
 };
 use crate::sign::SigningIdentity;
 use axum::Router;
@@ -380,6 +380,15 @@ impl Client {
             &format!("/domains/{name}:compose"),
             Some(&ComposeReq { fragments }),
         )?;
+        decode(self.dispatch(req).await?).await
+    }
+
+    /// `POST /ref/reload`：显式重载 RefBindings 与 ContractCard（D48）。
+    ///
+    /// `dry_run = true` 只校验与预检，不替换 daemon 内存索引。
+    pub async fn reload(&self, dry_run: bool) -> Result<RefReloadResp, ClientError> {
+        let req =
+            self.json_request(Method::POST, "/ref/reload", Some(&RefReloadReq { dry_run }))?;
         decode(self.dispatch(req).await?).await
     }
 
