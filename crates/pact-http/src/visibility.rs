@@ -11,8 +11,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use pact_ref_spec::{
-    classify_identifier, pinned_digest, PinningRequirement, RefBindings, ReferenceForm, SpecError,
-    UnknownSchemePolicy, Visibility, DEFAULT_MAX_REFERENCE_LENGTH, HARD_MAX_REFERENCE_LENGTH,
+    classify_identifier, pinned_digest, ContractCard, DigestPolicy, PinningRequirement,
+    RefBindings, RefRule, ReferenceForm, SpecError, UnknownSchemePolicy, Visibility,
+    DEFAULT_MAX_REFERENCE_LENGTH, HARD_MAX_REFERENCE_LENGTH,
 };
 
 /// 单个 token 的票面暴露级别。
@@ -26,10 +27,12 @@ pub enum RefExposure {
     Hidden,
 }
 
-/// 已加载的 RefBindings 集合（按域索引）。
+/// 已加载的 RefBindings 与 ContractCard 集合（按域 / 契约 ID 索引）。
 #[derive(Debug, Clone, Default)]
 pub struct VisibilityProfiles {
     bindings: BTreeMap<String, LoadedBindings>,
+    /// D47：`contract_id()`（`metadata.id@version`）→ 卡片；同版本不可变。
+    contracts: BTreeMap<String, ContractCard>,
 }
 
 #[derive(Debug, Clone)]
@@ -46,9 +49,20 @@ impl VisibilityProfiles {
 
     /// 读取文件/目录并校验；任一文件失败即拒绝启动（fail-closed）。
     pub fn load(paths: &[PathBuf]) -> Result<Self, VisibilityError> {
-        let files = expand(paths)?;
+        Self::load_with_contracts(paths, &[])
+    }
+
+    /// D47：加载 RefBindings 与 ContractCard，并校验“按数据触发”的引用闭环。
+    ///
+    /// 任一生效规则声明了 `contract` 时，必须配置 `[ref_contracts]` 且该契约可解析；
+    /// 没有 `contract` 引用的部署不要求配置。重复 `contract_id()` 一律拒绝。
+    pub fn load_with_contracts(
+        binding_paths: &[PathBuf],
+        contract_paths: &[PathBuf],
+    ) -> Result<Self, VisibilityError> {
+        let contracts = load_contracts(contract_paths)?;
         let mut bindings: BTreeMap<String, LoadedBindings> = BTreeMap::new();
-        for path in files {
+        for path in expand(binding_paths)? {
             let text = std::fs::read_to_string(&path).map_err(|source| VisibilityError::Io {
                 path: path.clone(),
                 source,
@@ -80,11 +94,20 @@ impl VisibilityProfiles {
                 },
             );
         }
-        Ok(Self { bindings })
+        verify_contract_references(&bindings, &contracts, !contract_paths.is_empty())?;
+        Ok(Self {
+            bindings,
+            contracts,
+        })
     }
 
     pub fn len(&self) -> usize {
         self.bindings.len()
+    }
+
+    /// 已加载的契约卡数量（D47）。
+    pub fn contract_len(&self) -> usize {
+        self.contracts.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -214,10 +237,12 @@ impl VisibilityProfiles {
         Ok(effective.as_str().map(str::to_owned))
     }
 
-    /// D46：进入 Archive（consume）前的钉版检查。
+    /// D46/D47：进入 Archive（consume）前的钉版检查。
     ///
-    /// 只读取继承出的 `pinning`，不重复执行写入期策略：历史票面可能已经不符合
-    /// 收紧后的入口规则，但归档要求仍按当前绑定生效。`∅` 不受钉版约束。
+    /// 只读取继承出的 `pinning` 与绑定引用的 ContractCard，不重复执行写入期策略：
+    /// 历史票面可能已经不符合收紧后的入口规则，但归档要求仍按当前绑定/卡片生效。
+    /// 卡片只能加严（`reference.pinning.requiredForArchive` 或
+    /// `artifact.digestPolicy: required-at-archive`），不能放宽绑定。`∅` 不受约束。
     pub fn validate_archive_thing_ref(
         &self,
         domain: &str,
@@ -238,10 +263,23 @@ impl VisibilityProfiles {
         let reference = ReferenceForm::classify_with_limit(Some(raw), HARD_MAX_REFERENCE_LENGTH)
             .unwrap_or_else(|_| ReferenceForm::Identifier(raw.to_owned()));
         let rule = loaded.bindings.merged_rule(Some(instance), ty, &reference);
-        if matches!(
+        let binding_requires = matches!(
             rule.pinning,
             Some(PinningRequirement::Required | PinningRequirement::RequiredAtArchive)
-        ) {
+        );
+        let card_requires = match rule.contract.as_deref() {
+            Some(contract_id) => {
+                let Some(card) = self.contracts.get(contract_id) else {
+                    // 启动/重载校验应保证引用可解析；运行期仍 fail-closed。
+                    return Err(RefEntryError::Invalid(SpecError::InvalidContract(format!(
+                        "contract {contract_id} not loaded"
+                    ))));
+                };
+                card_requires_archive_pinning(card)
+            }
+            None => false,
+        };
+        if binding_requires || card_requires {
             return Err(RefEntryError::Invalid(SpecError::PinningRequired {
                 type_name: ty.to_owned(),
                 at_archive: true,
@@ -287,6 +325,117 @@ impl VisibilityProfiles {
             Visibility::ReadGate => RefExposure::ReadGate,
         }
     }
+}
+
+/// 卡片是否要求归档钉版（只加严，不检查 `accepted`）。
+fn card_requires_archive_pinning(card: &ContractCard) -> bool {
+    let pinning = card
+        .spec
+        .reference
+        .pinning
+        .as_ref()
+        .is_some_and(|pinning| pinning.required_for_archive);
+    let digest_policy = card
+        .spec
+        .artifact
+        .as_ref()
+        .is_some_and(|artifact| artifact.digest_policy == DigestPolicy::RequiredAtArchive);
+    pinning || digest_policy
+}
+
+/// D47：读取并校验契约卡；重复 `contract_id()`（无论内容）即拒绝。
+fn load_contracts(paths: &[PathBuf]) -> Result<BTreeMap<String, ContractCard>, VisibilityError> {
+    let mut cards: BTreeMap<String, ContractCard> = BTreeMap::new();
+    let mut sources: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for path in expand_paths(paths)
+        .map_err(|(path, source)| VisibilityError::ContractIo { path, source })?
+    {
+        let text =
+            std::fs::read_to_string(&path).map_err(|source| VisibilityError::ContractIo {
+                path: path.clone(),
+                source,
+            })?;
+        let card: ContractCard =
+            serde_yaml::from_str(&text).map_err(|error| VisibilityError::ContractParse {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
+        card.validate()
+            .map_err(|error| VisibilityError::ContractInvalid {
+                path: path.clone(),
+                message: error.to_string(),
+            })?;
+        let contract_id = card.contract_id();
+        if let Some(first) = sources.get(&contract_id) {
+            // 同版本不可变：即使内容相同也拒绝，避免“哪份文件生效”依赖加载顺序。
+            return Err(VisibilityError::DuplicateContract {
+                contract_id,
+                first: first.clone(),
+                second: path,
+            });
+        }
+        sources.insert(contract_id.clone(), path);
+        cards.insert(contract_id, card);
+    }
+    Ok(cards)
+}
+
+/// D47：按数据触发闭环。只扫描声明了 `contract` 的规则；未声明则不要求配置。
+fn verify_contract_references(
+    bindings: &BTreeMap<String, LoadedBindings>,
+    contracts: &BTreeMap<String, ContractCard>,
+    contracts_configured: bool,
+) -> Result<(), VisibilityError> {
+    let mut missing: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (domain, loaded) in bindings {
+        for contract_id in contract_references(&loaded.bindings) {
+            if !contracts.contains_key(&contract_id) {
+                missing.entry(domain.clone()).or_default().push(contract_id);
+            }
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    if !contracts_configured {
+        let references = missing
+            .into_values()
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>();
+        return Err(VisibilityError::ContractsNotConfigured {
+            references: references.into_iter().collect(),
+        });
+    }
+    let (domain, contract_ids) = missing.into_iter().next().expect("非空");
+    Err(VisibilityError::MissingContract {
+        domain,
+        contract_ids,
+    })
+}
+
+/// 合并继承前的原始规则集合中出现过的 `contract` 引用（去重、排序）。
+fn contract_references(bindings: &RefBindings) -> Vec<String> {
+    let mut references = std::collections::BTreeSet::new();
+    let mut push = |rule: &RefRule| {
+        if let Some(contract) = &rule.contract {
+            references.insert(contract.clone());
+        }
+    };
+    if let Some(defaults) = &bindings.spec.defaults {
+        push(&defaults.rule);
+    }
+    for binding in bindings.spec.types.values() {
+        push(&binding.rule);
+    }
+    for rule in bindings.spec.schemes.values() {
+        push(&rule.rule);
+    }
+    for instance in bindings.spec.instances.values() {
+        for binding in instance.types.values() {
+            push(&binding.rule);
+        }
+    }
+    references.into_iter().collect()
 }
 
 /// 有效 `schemes` 非空且不含 `*` 时，不在白名单内的 scheme 视为“未知”。
@@ -364,6 +513,36 @@ pub enum VisibilityError {
         first: PathBuf,
         second: PathBuf,
     },
+    /// D47：契约卡读取失败。
+    ContractIo {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    /// D47：契约卡解析失败。
+    ContractParse {
+        path: PathBuf,
+        message: String,
+    },
+    /// D47：契约卡规范校验失败。
+    ContractInvalid {
+        path: PathBuf,
+        message: String,
+    },
+    /// D47：同版本不可变——`contract_id()` 重复。
+    DuplicateContract {
+        contract_id: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
+    /// D47：绑定声明了 `contract` 但未配置 `[ref_contracts]`。
+    ContractsNotConfigured {
+        references: Vec<String>,
+    },
+    /// D47：绑定引用的契约未加载。
+    MissingContract {
+        domain: String,
+        contract_ids: Vec<String>,
+    },
 }
 
 impl fmt::Display for VisibilityError {
@@ -388,6 +567,38 @@ impl fmt::Display for VisibilityError {
                 first.display(),
                 second.display()
             ),
+            Self::ContractIo { path, source } => {
+                write!(f, "读取 ContractCard {} 失败：{source}", path.display())
+            }
+            Self::ContractParse { path, message } => {
+                write!(f, "解析 ContractCard {} 失败：{message}", path.display())
+            }
+            Self::ContractInvalid { path, message } => {
+                write!(f, "ContractCard {} 校验失败：{message}", path.display())
+            }
+            Self::DuplicateContract {
+                contract_id,
+                first,
+                second,
+            } => write!(
+                f,
+                "契约 {contract_id} 在 {} 与 {} 中重复；同版本内容不可变，请提升 version",
+                first.display(),
+                second.display()
+            ),
+            Self::ContractsNotConfigured { references } => write!(
+                f,
+                "RefBindings 声明了契约 {}，但未配置 [ref_contracts].paths",
+                references.join(", ")
+            ),
+            Self::MissingContract {
+                domain,
+                contract_ids,
+            } => write!(
+                f,
+                "域 {domain} 引用的契约未加载：{}",
+                contract_ids.join(", ")
+            ),
         }
     }
 }
@@ -395,29 +606,25 @@ impl fmt::Display for VisibilityError {
 impl std::error::Error for VisibilityError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io { source, .. } => Some(source),
+            Self::Io { source, .. } | Self::ContractIo { source, .. } => Some(source),
             _ => None,
         }
     }
 }
 
 fn expand(paths: &[PathBuf]) -> Result<Vec<PathBuf>, VisibilityError> {
+    expand_paths(paths).map_err(|(path, source)| VisibilityError::Io { path, source })
+}
+
+/// 展开文件/目录；错误返回路径与 IO 原因，由调用方决定归属（绑定或卡片）。
+fn expand_paths(paths: &[PathBuf]) -> Result<Vec<PathBuf>, (PathBuf, std::io::Error)> {
     let mut files = std::collections::BTreeSet::new();
     for path in paths {
-        let metadata = std::fs::metadata(path).map_err(|source| VisibilityError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        let metadata = std::fs::metadata(path).map_err(|source| (path.clone(), source))?;
         if metadata.is_dir() {
-            let entries = std::fs::read_dir(path).map_err(|source| VisibilityError::Io {
-                path: path.clone(),
-                source,
-            })?;
+            let entries = std::fs::read_dir(path).map_err(|source| (path.clone(), source))?;
             for entry in entries {
-                let entry = entry.map_err(|source| VisibilityError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
+                let entry = entry.map_err(|source| (path.clone(), source))?;
                 let candidate = entry.path();
                 if candidate.is_file() && is_yaml_or_json(&candidate) {
                     files.insert(candidate);
@@ -426,13 +633,10 @@ fn expand(paths: &[PathBuf]) -> Result<Vec<PathBuf>, VisibilityError> {
         } else if metadata.is_file() {
             files.insert(path.clone());
         } else {
-            return Err(VisibilityError::Io {
-                path: path.clone(),
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "既不是普通文件也不是目录",
-                ),
-            });
+            return Err((
+                path.clone(),
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "既不是普通文件也不是目录"),
+            ));
         }
     }
     Ok(files.into_iter().collect())
@@ -849,6 +1053,208 @@ spec:
             None,
             "∅ 不受钉版约束"
         );
+    }
+
+    const CONTRACT_BINDINGS: &str = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  types:
+    design:
+      ref:
+        contract: proj/design-contract@1
+"#;
+
+    const ARCHIVE_CARD: &str = r#"
+apiVersion: pact.ref/v1
+kind: ContractCard
+metadata:
+  id: proj/design-contract
+  version: "1"
+  owner: se
+spec:
+  artifact:
+    kind: design
+    mediaType: application/json
+    digestPolicy: optional
+  reference:
+    schemes: ["https"]
+    pinning:
+      requiredForArchive: true
+"#;
+
+    const PLAIN_CARD: &str = r#"
+apiVersion: pact.ref/v1
+kind: ContractCard
+metadata:
+  id: proj/design-contract
+  version: "2"
+  owner: se
+spec:
+  artifact:
+    kind: design
+    mediaType: application/json
+    digestPolicy: optional
+  reference:
+    schemes: ["https"]
+"#;
+
+    fn load_with_cards(
+        bindings_text: &str,
+        cards: &[(&str, &str)],
+    ) -> (tempfile::TempDir, VisibilityProfiles) {
+        let dir = tempfile::tempdir().unwrap();
+        let binding_path = dir.path().join("refs.yaml");
+        std::fs::write(&binding_path, bindings_text).unwrap();
+        let mut card_paths = Vec::new();
+        for (name, text) in cards {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            card_paths.push(path);
+        }
+        let profiles =
+            VisibilityProfiles::load_with_contracts(&[binding_path], &card_paths).unwrap();
+        (dir, profiles)
+    }
+
+    #[test]
+    fn contracts_load_and_resolve_binding_references() {
+        let (_dir, profiles) = load_with_cards(CONTRACT_BINDINGS, &[("card.yaml", ARCHIVE_CARD)]);
+        assert_eq!(profiles.contract_len(), 1);
+        profiles
+            .validate_archive_thing_ref("proj", "default", "design", Some(&pinned_uri()))
+            .expect("pinned");
+    }
+
+    #[test]
+    fn binding_contract_requires_ref_contracts_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("refs.yaml");
+        std::fs::write(&path, CONTRACT_BINDINGS).unwrap();
+        let error = VisibilityProfiles::load(&[path]).unwrap_err();
+        assert!(
+            error.to_string().contains("未配置 [ref_contracts]"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn unreferenced_contracts_are_optional() {
+        let (_dir, profiles) = load_with_cards(BINDINGS, &[]);
+        assert_eq!(profiles.contract_len(), 0);
+    }
+
+    #[test]
+    fn missing_referenced_contract_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let binding_path = dir.path().join("refs.yaml");
+        let card_path = dir.path().join("card.yaml");
+        std::fs::write(&binding_path, CONTRACT_BINDINGS).unwrap();
+        std::fs::write(&card_path, PLAIN_CARD).unwrap();
+        let error =
+            VisibilityProfiles::load_with_contracts(&[binding_path], &[card_path]).unwrap_err();
+        assert!(error.to_string().contains("未加载"), "{error}");
+    }
+
+    #[test]
+    fn duplicate_contract_version_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let binding_path = dir.path().join("refs.yaml");
+        let first = dir.path().join("a.yaml");
+        let second = dir.path().join("b.yaml");
+        std::fs::write(&binding_path, CONTRACT_BINDINGS).unwrap();
+        std::fs::write(&first, ARCHIVE_CARD).unwrap();
+        std::fs::write(&second, ARCHIVE_CARD).unwrap();
+        let error =
+            VisibilityProfiles::load_with_contracts(&[binding_path], &[first, second]).unwrap_err();
+        assert!(error.to_string().contains("重复"), "{error}");
+    }
+
+    #[test]
+    fn card_pinning_blocks_unpinned_archive() {
+        use super::RefEntryError;
+        use pact_ref_spec::SpecError;
+
+        let (_dir, profiles) = load_with_cards(CONTRACT_BINDINGS, &[("card.yaml", ARCHIVE_CARD)]);
+        assert!(matches!(
+            profiles.validate_archive_thing_ref(
+                "proj",
+                "default",
+                "design",
+                Some("https://example.com/design")
+            ),
+            Err(RefEntryError::Invalid(SpecError::PinningRequired {
+                at_archive: true,
+                ..
+            }))
+        ));
+        profiles
+            .validate_archive_thing_ref("proj", "default", "design", Some(&pinned_uri()))
+            .expect("钉版可归档");
+        profiles
+            .validate_archive_thing_ref("proj", "default", "design", None)
+            .expect("∅ 可归档");
+    }
+
+    #[test]
+    fn card_pinning_only_tightens_binding() {
+        use super::RefEntryError;
+        use pact_ref_spec::SpecError;
+
+        let bindings = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  types:
+    design:
+      ref:
+        contract: proj/design-contract@2
+        pinning: required-at-archive
+"#;
+        let (_dir, profiles) = load_with_cards(bindings, &[("card.yaml", PLAIN_CARD)]);
+        assert!(matches!(
+            profiles.validate_archive_thing_ref(
+                "proj",
+                "default",
+                "design",
+                Some("https://example.com/design")
+            ),
+            Err(RefEntryError::Invalid(SpecError::PinningRequired {
+                at_archive: true,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn missing_contract_at_archive_fails_closed() {
+        use super::{LoadedBindings, RefEntryError};
+        use pact_ref_spec::RefBindings;
+
+        // 绕过启动校验，模拟“绑定引用契约但索引缺失”的防御路径。
+        let parsed: RefBindings = serde_yaml::from_str(CONTRACT_BINDINGS).unwrap();
+        parsed.validate().unwrap();
+        let mut profiles = VisibilityProfiles::empty();
+        profiles.bindings.insert(
+            "proj".to_owned(),
+            LoadedBindings {
+                path: std::path::PathBuf::from("refs.yaml"),
+                bindings: parsed,
+            },
+        );
+        let error = profiles
+            .validate_archive_thing_ref(
+                "proj",
+                "default",
+                "design",
+                Some("https://example.com/design"),
+            )
+            .unwrap_err();
+        assert!(matches!(error, RefEntryError::Invalid(_)));
     }
 
     #[test]

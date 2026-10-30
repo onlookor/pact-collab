@@ -194,6 +194,10 @@ listen_unix = "./pact.sock"       # 默认监听；单机安全
 # [ref_bindings]
 # paths = ["/etc/pact/refs/", "se_lifecycle.refs.yaml"]  # 文件或目录；目录展开 .yaml/.yml/.json
 
+# D47：ContractCard（可选；绑定声明了 contract 时必须配置，否则 daemon 拒绝启动）
+# [ref_contracts]
+# paths = ["/etc/pact/contracts/", "se_design.contract.yaml"]  # 文件或目录；目录展开 .yaml/.yml/.json
+
 # NFR6 v2：TLS / mTLS（可选；仅对 listen_tcp 生效）
 # [tls]
 # certificate = "/etc/pact/server-chain.pem"   # PEM 证书链
@@ -232,13 +236,14 @@ architect = "sekret"              # 参与者 → 令牌，请求头 Authorizati
 缺省语义（文件不存在或字段缺省时）：`data_dir = "./data"`、`listen_unix = "./pact.sock"`、
 无 TCP、无 TLS、无签名公钥表、无令牌表、无 ACL、无 PID 文件、不自动压缩（`compact_on_start = false`、`compact_keep_last = 0`）、
 不写读审计（`read_audit = false`）、`[mcp].enabled = false`、无 OIDC、无 RefBindings（所有票面走默认
-`read-gate`）。三个易踩点：
+`read-gate`）、无 ContractCard（未声明 `contract` 的部署无需配置）。几个易踩点：
 
 - 配置用 `deny_unknown_fields`，**写错键名会直接报错**，不会静默忽略。
 - `listen_unix = ""`（空串）= 禁用 unix socket；只写 `listen_tcp` 而不写 `listen_unix`，
   unix socket 也一并禁用。
 - `[tls]` 必须同时给 `certificate` 与 `private_key`，且必须配置 `listen_tcp`；只配其中一个会拒绝启动。
 - `[ref_bindings]` 一旦出现，`paths` 不能为空；任一 RefBindings 读取/解析/校验失败或同域重复声明，daemon 拒绝启动（fail-closed）。
+- `[ref_contracts]` 一旦出现，`paths` 不能为空；卡片读取/解析/校验失败或同一 `id@version` 重复，daemon 拒绝启动。绑定声明了 `contract` 却未配置或引用不可解析，同样拒绝启动（D47）。
 
 ### 2.3 启动与停止 daemon
 
@@ -1136,11 +1141,17 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 - `pinning`：`required` 要求写入时即带摘要；`required-at-archive` 只在 consume（归档）前要求；`optional`（缺省）不要求。
 - `maxLength`：覆盖默认长度。
 
-**钉版与归档**：钉版 = URI 携带 `sha256:<64 位小写十六进制>`，如 `https://artifacts.example.com/d#sha256=…` 或 `oci://registry/team/image@sha256:…`。`∅` 不受钉版约束，Identifier 不算钉版。`pinning: required-at-archive` 的类型在 `pact consume` 时若票面未钉版 → `400 ThingRefUnpinned`，token 留在 Counter；补一个带摘要的新 token 后再消费即可。
+**契约卡策略**（daemon 已加载 `[ref_contracts]` 且绑定规则声明了 `contract` 时）：
+
+- 卡片按 `metadata.id@version` 精确引用；同一版本出现两次（即使内容相同）→ daemon 拒绝启动，卡片变更必须提升 `version`。
+- 卡片只能**加严**：`reference.pinning.requiredForArchive: true` 或 `artifact.digestPolicy: required-at-archive` 会让该类型的 consume 也要求钉版；绑定已要求的不会被卡片放宽。写入（seed/produce）不受卡片钉版影响。
+- 绑定声明了 `contract` 却没有配置 `[ref_contracts]` 或卡片不可解析 → daemon 拒绝启动。没有 `contract` 引用的部署不需要配置。
+
+**钉版与归档**：钉版 = URI 携带 `sha256:<64 位小写十六进制>`，如 `https://artifacts.example.com/d#sha256=…` 或 `oci://registry/team/image@sha256:…`。`∅` 不受钉版约束，Identifier 不算钉版。`pinning: required-at-archive` 或卡片要求归档钉版的类型，在 `pact consume` 时若票面未钉版 → `400 ThingRefUnpinned`，token 留在 Counter；补一个带摘要的新 token 后再消费即可。
 
 **错误码**：`ThingRefMissing` / `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`，均为 `400`，错误体同 §6.3（`error.code` + `error.detail` + `error.message`）。
 
-**未生效**：`declarationDigest` 漂移检测与 ContractCard 的 `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载尚未实现；WASM 本地宿主不经过 REST，尚无该校验。
+**未生效**：`declarationDigest` 漂移检测、卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除与显式重载（FR33）尚未实现；WASM 本地宿主不经过 REST，尚无该校验。
 
 ---
 
@@ -1241,7 +1252,7 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 
 **票面可见性（D42）**：`GET /counter` 与 `GET /archive` 的 `thing_ref` 默认 `read-gate`，按调用者的无条件 `reads`/`consumes` 子句返回；`[ref_bindings]` 可显式声明 `domain`/`hidden`。token 存在性、类型与计数不变；`GET /tokens/{id}` 仍由 Rule-R 授权。详见 §7.9。
 
-**票面写入校验（D45/D46）**：`POST .../seeds` 与 `POST .../tokens` 的 `thing_ref` 支持三态——字段缺失 → `400 ThingRefMissing`、显式 `null` → `∅`、字符串 → 校验后写入规范化值；URI profile、RefBindings 形态/未知 scheme/钉版策略在引擎调用前强制执行。`POST .../consume` 对声明 `pinning: required-at-archive` 的类型要求票面已钉版。详见 §7.11。
+**票面写入校验（D45/D46/D47）**：`POST .../seeds` 与 `POST .../tokens` 的 `thing_ref` 支持三态——字段缺失 → `400 ThingRefMissing`、显式 `null` → `∅`、字符串 → 校验后写入规范化值；URI profile、RefBindings 形态/未知 scheme/钉版策略在引擎调用前强制执行。`POST .../consume` 对声明 `pinning: required-at-archive` 的类型、以及绑定引用的 ContractCard 要求归档钉版的类型，要求票面已钉版。详见 §7.11。
 
 **运维端点（D25，免身份）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验身份**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不做域级授权（但启用签名时仍需签名；破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
 

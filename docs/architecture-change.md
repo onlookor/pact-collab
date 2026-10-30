@@ -2,6 +2,12 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-30（第 41 轮，B0 契约卡加载实现）
+
+- 架构正文“票面写入校验在接口层”更新：ContractCard 运行期加载与版本不可变（FR32/D47）已实现，仍在 `pact-http` 接口层；卡片/绑定显式重载（FR33/D48）尚未实现。
+- daemon 启动期新增 `[ref_contracts].paths` 的加载与引用闭环校验；卡片只用于 REST 边界的归档钉版并集，引擎、存储与 `pact-core` 仍不读取卡片，依赖方向与数据流不变。
+- 未新增组件或依赖；`pact-ref-spec` 仍是唯一卡片解析/校验实现。
+
 ## 2026-10-29（第 40 轮，ContractCard 加载与重载编号登记）
 
 - 附录 A 登记 `FR32` / `D47`（ContractCard 运行期加载与版本不可变，B0）与 `FR33` / `D48`（ContractCard 与 RefBindings 显式重载，B1），权威定义分别在 `docs/requirements.md` §4 与 `docs/design.md` §0。

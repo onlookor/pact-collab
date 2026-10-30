@@ -120,13 +120,6 @@ async fn spawn_with_config(
     bindings: Option<&str>,
     config: EngineConfig,
 ) -> (PathBuf, Engine) {
-    let store = Store::open(dir.join("data")).await.unwrap();
-    let engine = Engine::spawn_with_config(
-        store,
-        Arc::new(LogicalClock::new()),
-        Arc::new(SequentialIdGen::new()),
-        config,
-    );
     let profiles = match bindings {
         Some(text) => {
             let path = dir.join("refs.yaml");
@@ -135,6 +128,40 @@ async fn spawn_with_config(
         }
         None => VisibilityProfiles::empty(),
     };
+    spawn_with_profiles(dir, tokens, profiles, config).await
+}
+
+async fn spawn_with_contracts(
+    dir: &Path,
+    tokens: BTreeMap<String, String>,
+    bindings: &str,
+    cards: &[(&str, &str)],
+) -> (PathBuf, Engine) {
+    let binding_path = dir.join("refs.yaml");
+    std::fs::write(&binding_path, bindings).unwrap();
+    let mut card_paths = Vec::new();
+    for (name, text) in cards {
+        let path = dir.join(name);
+        std::fs::write(&path, text).unwrap();
+        card_paths.push(path);
+    }
+    let profiles = VisibilityProfiles::load_with_contracts(&[binding_path], &card_paths).unwrap();
+    spawn_with_profiles(dir, tokens, profiles, EngineConfig::default()).await
+}
+
+async fn spawn_with_profiles(
+    dir: &Path,
+    tokens: BTreeMap<String, String>,
+    profiles: VisibilityProfiles,
+    config: EngineConfig,
+) -> (PathBuf, Engine) {
+    let store = Store::open(dir.join("data")).await.unwrap();
+    let engine = Engine::spawn_with_config(
+        store,
+        Arc::new(LogicalClock::new()),
+        Arc::new(SequentialIdGen::new()),
+        config,
+    );
     let state = ServerState::with_identity_and_visibility(
         engine.clone(),
         tokens,
@@ -702,4 +729,131 @@ async fn entry_pinning_blocks_unpinned_produce() {
         )
         .await
         .unwrap();
+}
+
+const CARD_ARCHIVE_BINDINGS: &str = r#"
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: proj
+spec:
+  types:
+    design:
+      ref:
+        contract: proj/design-contract@1
+"#;
+
+const ARCHIVE_CARD: &str = r#"
+apiVersion: pact.ref/v1
+kind: ContractCard
+metadata:
+  id: proj/design-contract
+  version: "1"
+  owner: se
+spec:
+  artifact:
+    kind: design
+    mediaType: application/json
+    digestPolicy: optional
+  reference:
+    schemes: ["https"]
+    pinning:
+      requiredForArchive: true
+"#;
+
+const PLAIN_CARD: &str = r#"
+apiVersion: pact.ref/v1
+kind: ContractCard
+metadata:
+  id: proj/design-contract
+  version: "1"
+  owner: se
+spec:
+  artifact:
+    kind: design
+    mediaType: application/json
+    digestPolicy: optional
+  reference:
+    schemes: ["https"]
+"#;
+
+/// D47：绑定引用卡片，卡片要求归档钉版；写入不拦，consume 拦。
+#[tokio::test]
+async fn contract_card_pinning_blocks_unpinned_consume() {
+    let dir = tempfile::tempdir().unwrap();
+    let (sock, _engine) = spawn_with_contracts(
+        dir.path(),
+        tokens(),
+        CARD_ARCHIVE_BINDINGS,
+        &[("design-card.yaml", ARCHIVE_CARD)],
+    )
+    .await;
+    let external = Client::unix(&sock).with_bearer("ext-token");
+    let architect = Client::unix(&sock).with_bearer("arch-token");
+    let developer = Client::unix(&sock).with_bearer("dev-token");
+    external
+        .load_domain("proj", DECL, None, false)
+        .await
+        .unwrap();
+    let requirement = external
+        .seed(
+            "proj",
+            None,
+            "external",
+            "requirement",
+            Some("https://example.com/req"),
+        )
+        .await
+        .unwrap();
+    let design = architect
+        .produce(
+            "proj",
+            None,
+            "architect",
+            "design",
+            vec![requirement.token.id.0.clone()],
+            Some("https://example.com/design"),
+        )
+        .await
+        .unwrap();
+
+    match developer
+        .consume("proj", None, "developer", &design.token.id.0, None)
+        .await
+    {
+        Err(ClientError::Api(detail)) => assert_eq!(detail.code, "ThingRefUnpinned"),
+        other => panic!("卡片要求归档钉版，实际 {other:?}"),
+    }
+
+    let pinned_ref = pinned("https://example.com/design");
+    let design = architect
+        .produce(
+            "proj",
+            None,
+            "architect",
+            "design",
+            vec![requirement.token.id.0.clone()],
+            Some(&pinned_ref),
+        )
+        .await
+        .unwrap();
+    developer
+        .consume("proj", None, "developer", &design.token.id.0, None)
+        .await
+        .unwrap();
+}
+
+/// D47：同版本 `contract_id()` 重复（内容不同）必须拒绝启动。
+#[tokio::test]
+async fn duplicate_contract_version_fails_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let binding_path = dir.path().join("refs.yaml");
+    let first = dir.path().join("a.yaml");
+    let second = dir.path().join("b.yaml");
+    std::fs::write(&binding_path, CARD_ARCHIVE_BINDINGS).unwrap();
+    std::fs::write(&first, ARCHIVE_CARD).unwrap();
+    std::fs::write(&second, PLAIN_CARD).unwrap();
+    let error =
+        VisibilityProfiles::load_with_contracts(&[binding_path], &[first, second]).unwrap_err();
+    assert!(error.to_string().contains("重复"), "{error}");
 }

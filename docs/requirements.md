@@ -287,7 +287,7 @@
 - **有效钉版（只加严）**：consume 进入 Archive 前的钉版要求 = 绑定 `pinning` **并集** 卡片 `reference.pinning.requiredForArchive` 或 `artifact.digestPolicy: required-at-archive`；卡片不得放宽绑定。判定与错误码沿用 FR31（`400 ThingRefUnpinned`）。
 - **未生效项**：`artifact.kind` / `mediaType` 检查（票面不携带 media type，当前无法判定）、`lifecycle` 的运行期计时/删除、热更新与显式重载（FR33）；均不在 FR32 范围。
 - **失败语义**：加载失败、卡片规范校验失败、重复 `contract_id()`、绑定引用的契约缺失 ⇒ 启动失败，错误信息指名文件与契约；无部分加载。
-- **实现状态**：未实现（2026-10-29 登记，作为 D47 的 B0 阶段；待随 ContractCard 运行期加载落地）。
+- **实现状态**：已实现（2026-10-30，B0）。`pact-http` 单测覆盖加载/索引、按数据触发、重复 `id@version`、卡片钉版并集；`visibility_e2e` 覆盖卡片要求归档钉版时的 `ThingRefUnpinned` 与重复版本拒绝启动。显式重载仍待 FR33。
 
 ### FR33 ContractCard 与 RefBindings 显式重载（D48）
 

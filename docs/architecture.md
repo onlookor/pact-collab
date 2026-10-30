@@ -63,7 +63,7 @@
 
 - **物引规范层（非引擎依赖）**：`pact-ref-spec` 是纯 crate，定义 URI/Identifier/`∅` 票面校验、RefBindings 匹配、ContractCard 校验与 Tombstone 校验；不依赖 `pact-core`/`pact-engine`/`pact-store`，可编译到 wasm32。治理平面 `pact-ref` 通过 re-export 消费它；引导阶段用 vendored 只读快照（D40），发布后改为纯版本依赖。`pact-cli` 的离线 `ref lint` 直接消费该 crate（D41），校验绑定、契约卡、Tombstone 与 `.pact` 声明的一致性，不经 daemon。ContractCard `lifecycle` 的 retention/deletionPolicy 与 `Tombstone` 记录在规范层做静态校验；保留计时、内容删除与 tombstone 发布属于治理平面/制品域，PACT 引擎仍不解析 ThingRef，也不进入 Rule-P/GateExpr。
 - **票面可见性在接口层过滤**：`pact-http` 在 `GET /counter` 与 `GET /archive` 返回前，按 daemon `[ref_bindings]` 加载的 profile 与调用者 gate 决定是否保留 `thing_ref`（D42）。默认 `read-gate`，`domain` 公开、`hidden` 隐藏；token 存在性、事件日志与 Rule-P/GateExpr 不受影响。视图身份在令牌/签名模式下要求认证，匿名请求返回 `401`。
-- **票面写入校验在接口层**：`pact-http` 在 `POST /seeds` 与 `POST /tokens` 进入引擎前完成 `thing_ref` 三态判定（缺失/显式 `null`/字符串）、URI profile 结构校验与 RefBindings 策略（FR30/D45）；形态（`value`）、未知 scheme 与写入钉版（`pinning: required`）同层执行，`pinning: required-at-archive` 在 `POST /consume` 进入引擎前判定（FR31/D46）。成功时写入规范化值；引擎、存储与 `pact-core` 仍把票面当作不透明 `ThingRef`，GateExpr/Rule-P/Rule-T 不读取其值。CLI 与 MCP 经 REST 继承同一套校验；`pact-wasm` 本地宿主不在该边界内。ContractCard 的运行期加载与版本不可变（FR32/D47）及卡片/绑定显式重载（FR33/D48）已定案但尚未实现，实现后仍在同一接口层。
+- **票面写入校验在接口层**：`pact-http` 在 `POST /seeds` 与 `POST /tokens` 进入引擎前完成 `thing_ref` 三态判定（缺失/显式 `null`/字符串）、URI profile 结构校验与 RefBindings 策略（FR30/D45）；形态（`value`）、未知 scheme 与写入钉版（`pinning: required`）同层执行，`pinning: required-at-archive` 在 `POST /consume` 进入引擎前判定（FR31/D46）。成功时写入规范化值；引擎、存储与 `pact-core` 仍把票面当作不透明 `ThingRef`，GateExpr/Rule-P/Rule-T 不读取其值。CLI 与 MCP 经 REST 继承同一套校验；`pact-wasm` 本地宿主不在该边界内。ContractCard 的运行期加载与版本不可变（FR32/D47）已实现，仍在同一接口层；卡片/绑定显式重载（FR33/D48）已定案但尚未实现。
 
 ## 2. 关键数据流
 

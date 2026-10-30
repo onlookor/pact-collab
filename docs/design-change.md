@@ -2,6 +2,17 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-30（第 83 轮，B0 契约卡加载实现）
+
+- **实现（FR32/D47）**：`pact-http` 新增 `[ref_contracts].paths` 配置与 `VisibilityProfiles::load_with_contracts`；启动时解析并 `ContractCard::validate`，按 `contract_id()` 索引；重复 `contract_id()`（无论内容）即启动失败。加载绑定后扫描原始规则中的 `contract` 引用，未配置 `[ref_contracts]` 或引用缺失均拒绝启动；无 `contract` 引用的部署仍免配置。
+- **归档判定**：`validate_archive_thing_ref` 在绑定 `pinning` 基础上并入卡片 `reference.pinning.requiredForArchive` / `artifact.digestPolicy: required-at-archive`，只加严、不放宽；卡片索引缺失时 `InvalidThingRef` fail-closed。写入路径不受卡片钉版影响；`∅` 与已钉版快速放行。
+- **配置校验**：`[ref_contracts]` 已配置但 `paths` 为空 → `ConfigError::Invalid`；daemon 启动日志输出 RefBindings/ContractCard 计数。
+- **测试**：新增 `pact-http` 单测 9 项（卡片加载与引用闭环、无引用免配置、缺失/重复拒绝、卡片钉版阻断归档、卡片不放宽绑定、索引缺失 fail-closed、配置空 paths）+ `visibility_e2e` 2 项（卡片钉版阻断未钉版 consume、重复版本拒绝启动）；全量 **338 passed / 0 failed**；`cargo fmt --all -- --check` 与 `cargo clippy -p pact-http --all-targets --locked -- -D warnings` 通过。
+- **安全审视**：无新增依赖；仅新增配置路径读取与 YAML 解析，无 `unsafe`、网络、进程或写入副作用；`cargo audit` 结论沿用。
+- **跨仓库**：未改动 `pact-ref-spec`，故无需同步 vendored 快照；`pact-ref` 侧无改动。
+- **未实现**：B1 显式重载（FR33/D48）仍待实现；`declarationDigest` 仍待决策；`artifact.kind`/`mediaType`、`lifecycle` 运行期检查不在 B0。
+- **文档同步**：`requirements.md` FR32 状态、`design.md` §9.14 与 D47、`manual.md` §2.2/§7.11、`architecture.md` 正文、治理 §8.1/§13.1/§13.4.1/§13.5、`todo.md`。
+
 ## 2026-10-29（第 82 轮，ContractCard 加载与重载编号登记，无实现变更）
 
 - **触发**：用户确认 §13.5 方案，要求先登记 B1 的 FR/D 编号。

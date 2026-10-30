@@ -19,12 +19,22 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
     // 配置语义校验：ACL 非空但无令牌 → 启动失败（无法确定调用者身份）。
     cfg.validate()?;
-    // D42：票面可见性 profile（RefBindings）。任一文件解析/校验失败即拒绝启动。
-    let visibility = crate::visibility::VisibilityProfiles::load(cfg.ref_binding_paths())?;
+    // D42/D47：票面可见性 profile（RefBindings）与契约卡（ContractCard）。
+    // 任一文件解析/校验失败、绑定引用的契约缺失或重复 `id@version` 即拒绝启动。
+    let visibility = crate::visibility::VisibilityProfiles::load_with_contracts(
+        cfg.ref_binding_paths(),
+        cfg.ref_contract_paths(),
+    )?;
     if !visibility.is_empty() {
         println!(
-            "pactd: 已加载 {} 份 RefBindings 用于票面可见性",
-            visibility.len()
+            "pactd: 已加载 {} 份 RefBindings、{} 份 ContractCard",
+            visibility.len(),
+            visibility.contract_len()
+        );
+    } else if visibility.contract_len() > 0 {
+        println!(
+            "pactd: 已加载 {} 份 ContractCard（无 RefBindings）",
+            visibility.contract_len()
         );
     }
     // data_dir 独占锁（D27）：单权威是**进程级**保证，两进程共用同一 data_dir

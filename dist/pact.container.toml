@@ -16,6 +16,10 @@ listen_tcp = "0.0.0.0:8787"
 # [ref_bindings]
 # paths = ["/etc/pact/refs/"]      # 文件或目录；目录展开 .yaml/.yml/.json
 
+# D47：ContractCard（可选；绑定声明了 contract 时必须配置，否则拒绝启动）
+# [ref_contracts]
+# paths = ["/etc/pact/contracts/"]  # 文件或目录；目录展开 .yaml/.yml/.json
+
 # [auth]
 # [auth.tokens]
 # architect = "…"

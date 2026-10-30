@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-29，第 82 轮）：P0 入口校验与 P1 的 `pinning` / `onUnknownScheme` / `value` 已落地并全量回归通过；ContractCard 方案已确认并登记编号——B0 卡片加载与版本不可变（FR32/D47）、B1 显式重载（FR33/D48），均待实现；`declarationDigest`（推荐语义接口摘要 + 首版默认 `warn`）仍待确认。WASM 入口、`refd` 与动态阶段未开始。下一轮按 B0 → B1 → P2 → P3 顺序推进。
+当前状态（2026-10-30，第 83 轮）：P0 入口校验、P1 的 `pinning` / `onUnknownScheme` / `value` 与 B0 卡片加载（FR32/D47）已落地并回归通过；剩余 B1 显式重载（FR33/D48，依赖 B0，待实现）与 `declarationDigest`（待确认摘要对象）。WASM 入口、`refd` 与动态阶段未开始。下一轮按 B1 → P2 → P3 顺序推进。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -41,7 +41,7 @@
 | [x] | `pinning` 运行期强制：`required` 在写入时、`required-at-archive` 在 consume 进入 Archive 前要求钉版摘要（FR31/D46） | FR31 / D46 / `uri-profile.md` §4 | 单测 + e2e：写入/consume 缺摘要 → `400 ThingRefUnpinned`；钉版可归档 |
 | [x] | `onUnknownScheme` 运行期生效（`reject` / `treat-as-identifier` / `allow`） | FR31 / D46 / `uri-profile.md` | 单测三分支 + `treat-as-identifier` 未放行 Identifier 被拒 |
 | [x] | `RefRule.value`（`none`/`uri`/`identifier`）语义落地 | FR31 / D46 / `ref-bindings.schema.json` | 入口强校验 + 单测；`required=true` 与 `value=none` 由绑定校验拒绝 |
-| [ ] | B0：ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载；daemon 新增 `[ref_contracts].paths`，按 `contract_id()` 建索引；声明 `contract` 的部署缺卡即拒绝启动；重复 `id@version` 即拒绝启动 | FR32 / D47 | 单测：加载/索引、按数据触发、重复 `id@version`、钉版并集只加严；e2e：缺卡启动失败、卡片钉版阻断未钉版 consume（`ThingRefUnpinned`） |
+| [x] | B0：ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载；daemon 新增 `[ref_contracts].paths`，按 `contract_id()` 建索引；声明 `contract` 的部署缺卡即拒绝启动；重复 `id@version` 即拒绝启动 | FR32 / D47 | 单测：加载/索引、按数据触发、重复 `id@version`、钉版并集只加严；e2e：卡片钉版阻断未钉版 consume（`ThingRefUnpinned`）、重复版本拒绝启动；`pact-http` 全绿，全量 338 passed |
 | [ ] | B1：显式重载 `POST /ref/reload` + `pact ref reload`；卡片与绑定同事务、原子换索引、`dryRun` 影响报告、`ref-reload.jsonl` 审计、ACL 覆盖绑定域；不做文件监听 | FR33 / D48 | 单测：事务失败不生效、并发 `409 RefReloadBusy`、审计失败拒绝、ACL；e2e：`dryRun` 报告、成功重载后新规则生效、失败保持旧状态 |
 | [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 方案与收益/代价见治理 §13.4.2；推荐语义接口摘要（C）+ 工具/lint 先行，运行期首版默认 `warn`、`enforce` 可选（误算不直接阻塞 `load_domain`，见 §13.4.3）；**待用户确认**摘要对象、是否分两步、摘要字符串格式 |
 
@@ -75,6 +75,7 @@
 | [x] | 第 80 轮：治理 §13.4.1 选项 C 改为“按数据触发闭环”，新增 §13.4.3“摘要误算是否阻塞域加载”；`design-change.md` 第 80 轮；无代码变更 | 与 §13.4 方案一致；仅文档，无需回归；提交 `0115315` |
 | [x] | 第 81 轮：治理新增 §13.5“ContractCard 生命周期：重启、显式重载与版本化”，并标注 §13.4.1 第 4 条为首版激活机制；`design-change.md` 第 81 轮；无代码变更 | 与 D27/D39 及卡片 `id@version` 语义逐条对照；仅文档，无需回归；提交 `246d4a8` |
 | [x] | 第 82 轮：登记 `FR32`/`D47`（B0）与 `FR33`/`D48`（B1）；`requirements.md` 新增两节、`requirements-change.md` 第 40 轮；`design.md` §0 新增 D47/D48；治理 §13.4.1/§13.5 标注已确认与编号；`architecture.md` 附录 A 登记；`architecture-change.md` 第 40 轮 | 编号先登记后引用；仅文档，无需回归；提交 `f98c698` |
+| [x] | 第 83 轮：B0 实现同步——`requirements.md` FR32 状态、`design.md` §9.14 与 D47、`manual.md` §2.2/§7.11、治理 §8.1/§13.1/§13.4.1/§13.5、`architecture.md` 正文；`design-change.md` 第 83 轮、`architecture-change.md` 第 41 轮 | 与代码及测试逐条对照；全量 338 passed |
 
 ### 验证与交付
 
@@ -84,13 +85,15 @@
 | [x] | 第 78 轮全量回归 `cargo test --workspace --locked` | **327 passed / 0 failed**（新增 10 项：`pact-ref-spec` 4、`pact-http` 4、e2e 2） |
 | [x] | 第 77/78 轮 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` | 均通过（退出码 0） |
 | [x] | 推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增依赖；生产代码无 `unsafe`/网络/进程/文件写；`cargo audit` 0 vulnerability / 2 unmaintained（沿用）；结论写入 `design-change.md` 第 77/78 轮 |
-| [x] | 第 78 轮提交与推送，回填提交哈希 | `pact` `f2c939f`（main）；`pact-ref` `8442c2d`；均已推送 |
+| [x] | 第 83 轮全量回归 `cargo test --workspace --locked` | **338 passed / 0 failed**（新增 11 项：`pact-http` 单测 9、e2e 2；含 `config` 空 paths 拒绝） |
+| [x] | 第 83 轮 `cargo fmt --all -- --check`、`cargo clippy -p pact-http --all-targets --locked -- -D warnings` | 均通过（退出码 0） |
+| [x] | 推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增依赖；新增代码只读配置路径并解析 YAML，无 `unsafe`/网络/进程写；`cargo audit` 结论沿用 |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
-| 2026-10-29 | `value` / `onUnknownScheme` / `pinning`（写入与归档）运行期强制 | FR31 / D46 | `pact` `f2c939f`；327 passed；`pact-ref` `8442c2d` 50 passed |
+| 2026-10-30 | B0：ContractCard 运行期加载、版本不可变与归档钉版并集 | FR32 / D47 | `pact-http` 单测 + e2e；338 passed；`fmt`/`clippy` 通过 |
 | 2026-10-28 | ThingRef 写入路径校验（三态、URI profile、RefBindings 策略） | FR30 / D45 | `pact` `9893541`；317 passed；`pact-ref` `b8e759c` 46 passed |
 | 2026-10-28 | 进度台账纪律（`todo.md` + `AGENTS.md`） | `AGENTS.md` | `9893541` |
 | 2026-10-28 | 可发现性 lint（5 个 warning code）与真实二进制 e2e | FR29 / D44 | `eb86654`；309 passed |
