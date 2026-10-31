@@ -124,12 +124,13 @@
 | [x] | 第 91 轮真实二进制冒烟（`/tmp/refd-smoke`，端口 18080） | `/healthz`、`/readyz` 均 200；`/v1/resolve` 返回 `contractId`/`version`/`mediaType`/`digest`/`expiresAt`/`handle`；`/v1/describe` 不含 owner 且含 lifecycle；无凭据 401；审计文件落 2 行（`resolve:read` 与 `describe`） |
 | [x] | 第 91 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 新增 `axum` 0.7 / `tokio` 1 / `http-body-util` 0.1 / `toml` 0.8 / `ureq` 2（rustls），`tower` 仅测试；生产代码无 `unsafe`；`file` adapter 只读 canonicalize 后根内文件，`https` 不取正文、不跟随重定向；审计不记录 handle/凭据/请求体/内部 endpoint；`refd` 不访问 PACT 存储；`cargo audit` 0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有） |
 | [x] | 第 91 轮本仓库回归基线：`pact` 无服务代码改动（仅 OpenAPI required 放宽与状态文档） | 沿用第 88 轮全量 **373 passed / 0 failed**；OpenAPI `ContractDescriptor.required` 去掉 `lifecycle` 以匹配可选 `ContractCard.spec.lifecycle` |
+| [x] | 第 91 轮提交：`pact-ref` `d98d2f5`（`ref-core`/`ref-auth`/`ref-audit`/adapters/`refd` + `docs/architecture.md`）；`pact` `d08190b`（OpenAPI 放宽、治理状态、`design-change.md`、台账） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
-| 2026-10-31 | `refd` resolve/describe 实现（跨仓库 `pact-ref`）：`ref-core` 契约对齐、`ref-auth` 静态令牌 + scope + ACL、`ref-audit` append-only + fail-closed、`refd` axum 路由与传输约束、`file`/`https` adapter | `thingref-governance.md` §13.6 / `spec/ref/v1/reference-plane.openapi.yaml` | `refd` 集成测试 14 项；`pact-ref` **87 passed / 0 failed**；`fmt`/`clippy` 通过；真实二进制冒烟通过；`cargo audit` 0 vulnerability / 1 unmaintained；`design-change.md` 第 91 轮 |
+| 2026-10-31 | `refd` resolve/describe 实现（跨仓库 `pact-ref`）：`ref-core` 契约对齐、`ref-auth` 静态令牌 + scope + ACL、`ref-audit` append-only + fail-closed、`refd` axum 路由与传输约束、`file`/`https` adapter | `thingref-governance.md` §13.6 / `spec/ref/v1/reference-plane.openapi.yaml` | `refd` 集成测试 14 项；`pact-ref` **87 passed / 0 failed**；`fmt`/`clippy` 通过；真实二进制冒烟通过；`cargo audit` 0 vulnerability / 1 unmaintained；`design-change.md` 第 91 轮；`pact-ref` `d98d2f5` |
 | 2026-10-31 | 物引治理 SKILL：六主题使用者流程（绑定/卡片/tombstone/可见性/摘要/reload）、适用闸门、不变量、lint/digest 闭环、输出模板与边界 | FR27–FR34 / 治理 §13 / `manual.md` §7.8–§7.14 | `skills/pact-thingref-governance/SKILL.md`；真实二进制 digest golden 一致、lint 0/0、`--strict` 0、漂移 exit 1；`ref_lint_e2e` 3 passed；`design-change.md` 第 89 轮 |
 | 2026-10-31 | WASM 本地入口校验与绑定注入：入口语义抽为 `pact-ref-spec::validate_entry`，REST 委托、WASM 复用；宿主 JSON 注入 RefBindings | FR30 / D50 | `pact-ref-spec` 7 单测、`pact-wasm` 3 单测、Node 8 项、wasm32 clippy、`ci-smoke`；373 passed；`pact-ref` 57 passed；提交 `3934999`（跨仓库 `9be7cbd`，CI 成功）；CI `41166320702` 成功 |
 | 2026-10-31 | `declarationDigest` v1 第二步：`[ref_digest] mode = off/warn/enforce` 运行期比对（`POST /domains` 进入引擎前；`enforce` → `400 DeclarationDigestMismatch`） | FR34 / D49 第二步 / `spec/ref/v1/declaration-digest.md` | `pact-http` 单测 2（三模式/边界、配置解析）；`ref_digest_e2e` 5；363 passed；`fmt`/`clippy` 通过；CI `41163741023` 成功；提交 `505e81d` |
