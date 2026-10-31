@@ -2,6 +2,17 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 50 轮，治理平面 `git`/`oci` adapter，FR38/D54）
+
+- 附录 A 已登记 `FR38`、`D54`、`[adapter.git]`/`[adapter.oci]` 及子项（权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0 / §9.21）；`[adapter.git]`/`[adapter.oci]` 的权威位置由 `docs/manual.md` §2.2 更正为 `docs/design.md` §9.21（`manual.md` 只描述 `pact.toml`，不含 `refd` 配置）。
+- 架构正文新增 §2.10「治理平面 git / oci adapter（FR38/D54）」：给出 `resolve` 内 scheme 分派（`Registry::resolve` → `git`/`oci` adapter → `Resolution`），并明确四条边界——纯解析与受限取回、`git+ssh` 注册但显式不支持、`git+file` 不实现、未配置 scheme 落 `UnknownScheme`。
+- §2.9 标题去掉“契约已定案、实现待做”，更正为「治理平面动态写调用（FR37/D53）」，与第 96 轮已实现状态一致。
+- 组件视图：`pact-ref` 的 `adapters/git`、`adapters/oci` 由骨架变为可运行实现；`refd` 配置增加 `[adapter.git]`（`allowed_hosts`/`timeout_ms`/`allow_plaintext`）与 `[adapter.oci]`（`registries`/`timeout_ms`/`allow_plaintext`），仅在配置存在时注册。依赖方向不变：`refd → adapters/{git,oci} → ref-core`。
+- 质量属性：出站请求有单次总超时（缺省 10s、上限 30s）与响应体积上限（git 广告 2 MiB、OCI manifest 1 MiB）；host allowlist 精确匹配、不跟随重定向、明文仅回环可选；引用本身拒绝 userinfo 与非法段。
+- 无其他结构性变更：引擎层、存储层、接口层与 `pactd` / `refd` 的进程边界不变；`pactd` 仍不调用 `refd`；治理平面仍不访问 PACT 存储。
+- 跨仓库：代码全部在 `pact-ref`；本仓库为编号登记、架构正文与文档。`docs/requirements-change.md` 第 51 轮、`docs/design-change.md` 第 98 轮、`docs/thingref-governance.md` §13.1/§13.6.9、`pact-ref/docs/architecture.md` 同轮更新。
+- 验证：`pact-ref` `fmt`/`clippy`/`test`/`audit` 通过，**172 passed / 0 failed**（基线 154）；本仓库文档改动，`pact` 回归基线 **384 passed / 0 failed** 待跑确认。
+
 ## 2026-10-31（第 49 轮，治理平面动态写调用契约，FR37/D53）
 
 - 附录 A 已登记 `FR37`、`D53`、`ref:mutate`、`mutate`、`[mutate]` 及子项、`IdempotencyConflict`/`IdempotencyInDoubt`/`JournalUnavailable`/`JournalFull`（权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0 / §9.20）。

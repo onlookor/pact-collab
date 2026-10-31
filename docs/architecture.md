@@ -201,7 +201,7 @@ ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；
 - 启动 fail-closed：存在只读能力 profile 时，`capability.server.id` 必须在 `[[mcp_servers]]` 登记，且必须配置 `[materialize]`；`[[mcp_servers]].endpoint` 默认只允许 `https://`，仅回环主机可显式开启明文。
 - 动态写阶段（`mcp-mutating`）不在本层；`refd` 不为写操作提供执行路径。
 
-### 2.9 治理平面动态写调用（FR37/D53，契约已定案、实现待做）
+### 2.9 治理平面动态写调用（FR37/D53）
 
 ```
 参与者（持 PACT token）──POST /v1/mutate（ref:mutate）──► refd
@@ -218,6 +218,24 @@ ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；
 - 审计沿用 `ref-audit` 边车，写操作每 attempt 记 `intent` 与 `result` 两条；`intent` 写失败即拒绝且不触达上游，`result` 写失败返回 `500 AuditUnavailable` 且台账保留可核对结果。
 - `resultRef` 仍是新的静态引用；witness token 由参与者以正常 `seed`/`produce` 产生。compensation 不做自动 saga：补偿是另一张 `mutating` 卡片加域内规则，`refd` 只执行被显式调用的能力。
 - 启动 fail-closed：存在 `mutating` 能力 profile 时，必须配置 `[mutate].journal` 与 `[materialize]`，服务已登记于 `[[mcp_servers]]`，卡片满足 `mcp-mutating` 必填字段，台账可解析且条目数不超过 `max_entries`。
+
+### 2.10 治理平面 git / oci adapter（FR38/D54）
+
+```
+/v1/resolve（scheme = git+https | oci）──► refd → ResolverRegistry
+  git+https → GET {authority}/{repo}/info/refs?service=git-upload-pack
+            → pkt-line 通告 → rev 解析（HEAD / refs/heads / refs/tags^{} / commit）
+            → handle = git+https://{authority}/{repo}@{commit}
+  oci       → HEAD {registry}/v2/{repo}/manifests/{tag|digest|latest}
+            → Docker-Content-Digest 归一化
+            → handle = oci://{registry}/{repo}@sha256:<64hex>
+```
+
+- 纯解析：不 clone、不下载 blob、不取回制品正文；git commit 只进 `handle`，不进 `digest`（`digest` 仍只允许 `sha256:`）。
+- `git+ssh` 注册但恒返回 `UnsupportedIdentifier`（`400`），以便与未配置 scheme 的 `UnknownScheme` 区分；`git+file` 不实现。
+- 防护：allowlist 非空且精确匹配（`host`/`host:port`）、拒绝 userinfo/控制字符/`..`、不跟随重定向、总超时 ≤ 30s、响应上限 git 2 MiB / OCI 1 MiB、明文仅回环且需显式 `allow_plaintext`。
+- 未配置 `[adapter.git]` / `[adapter.oci]` 时对应 scheme 不注册；配置非法（allowlist 为空、条目含 scheme/userinfo/path、超时越界）拒绝启动。
+
 
 ## 3. 进程与部署视图
 
@@ -496,6 +514,21 @@ DSH 宿主进程
 | `IdempotencyInDoubt` | 同上 | 同键存在 `intent` 无 `result`、上游超时或物化结果缺失；HTTP `409`，需人工核对 |
 | `JournalUnavailable` | 同上 | 台账追加或 fsync 失败；HTTP `500`，不触达上游 |
 | `JournalFull` | 同上 | 台账达到 `max_entries`，拒绝新键；HTTP `503` |
+
+2026-10-31（第 98 轮）新增的具体编号与配置项：
+
+| 名称 | 权威定义位置 | 含义 |
+|---|---|---|
+| `FR38` | `docs/requirements.md` §4 | `refd` 的 `git`/`oci` scheme adapter：`git+https` 引用解析与 `oci` manifest 解析，含 SSRF/大小/超时防护 |
+| `D54` | `docs/design.md` §0 / §9.21 | `git`/`oci` adapter v1 边界：`git+https` smart HTTP、`git+ssh` 显式不支持、commit 入 `handle` 不进 `digest`、OCI manifest `HEAD` 与摘要归一化 |
+| `[adapter.git]` | `docs/design.md` §9.21、`pact-ref/docs/architecture.md` | `git+https` adapter 配置表；缺省不注册该 scheme |
+| `[adapter.git].allowed_hosts` | 同上 | 主机 allowlist，非空；每项为 `host` 或 `host:port`，不含 scheme/userinfo/path |
+| `[adapter.git].timeout_ms` | 同上 | 总超时，缺省 10000，必须 > 0 且 ≤ 30000 |
+| `[adapter.git].allow_plaintext` | 同上 | 仅回环主机允许明文 `http://`；缺省 false |
+| `[adapter.oci]` | 同上 | `oci` adapter 配置表；缺省不注册该 scheme |
+| `[adapter.oci].registries` | 同上 | registry allowlist，非空；每项为 `host` 或 `host:port`，不含 scheme/userinfo/path |
+| `[adapter.oci].timeout_ms` | 同上 | 总超时，缺省 10000，必须 > 0 且 ≤ 30000 |
+| `[adapter.oci].allow_plaintext` | 同上 | 仅回环 registry 允许明文 `http://`；缺省 false |
 
 约定：
 

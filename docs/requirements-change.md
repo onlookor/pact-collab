@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 51 轮，git/oci adapter，FR38/D54）
+
+- **新增 FR38（D54）**：`refd` 的 `git+https` 与 `oci` scheme adapter 落地。`git+https` 走 smart HTTP `info/refs?service=git-upload-pack`，按 pkt-line 解析引用通告并解析 `HEAD`/分支/标签/commit；`oci` 走 `HEAD /v2/<repo>/manifests/<tag|digest>` 并读取 `Docker-Content-Digest`。两者均返回可钉版 `handle`，不取回正文。
+- **边界**：`git+ssh` 显式不支持但已注册（返回 `400 UnsupportedIdentifier` 而非 `UnknownScheme`）；`git+file` 不实现；git commit 只入 `handle`、不入 `digest`（`digest` 仍只允许 `sha256:`）；OCI 已钉版与响应不一致返回 `409 DigestMismatch`。
+- **防护**：主机 allowlist 精确匹配（`host`/`host:port`）、拒绝 userinfo/控制字符/`..`、不跟随重定向、总超时 ≤ 30s、响应上限（git 2 MiB / OCI 1 MiB）、明文仅回环且需显式 `allow_plaintext`。
+- **配置**：新增可选 `[adapter.git]` 与 `[adapter.oci]`；未配置的 scheme 不注册。配置非法拒绝启动。
+- **编号登记**：`FR38`/`D54`/`[adapter.git]`/`[adapter.oci]` 及子项已于本轮先登记到 `docs/architecture.md` 附录 A 再引用。
+- 其余 FR1–FR37、NFR1–NFR7 不变。
+
 ## 2026-10-31（第 50 轮，FR37 witness/compensation 示例）
 
 - **FR37 实现状态补齐（无需求语义变更）**：`pact-ref/examples/witness-compensation/` 提供可运行示例——`release/deploy@1` 与补偿 `release/rollback@1` 两张 `mcp-mutating` 卡片、`release` 域声明、RefBindings（含 `declarationDigest`）、`refd.toml` 与 `README.md`。

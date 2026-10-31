@@ -349,6 +349,18 @@
 - **边界**：不做自动重试、轮询、后台任务、跨服务路由、自动 saga/compensation 或结果缓存清理；`revoke`、可选注册表与 conformance runner 不在本需求。
 - **实现状态**：已实现（2026-10-31）。规范层 `pact-ref-spec` 强制 `mcp-mutating` **卡片级**必填字段（`tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`），单测 6 项；`pact-ref` 已落地 `ref-core` `MutateRequest`/`Mutation`、`ref-auth` `ref:mutate` scope、`refd` 幂等台账（intent/result、重启恢复、半行截断、满额）、`POST /v1/mutate` handler（请求级严格归属与 `operation` 校验、两阶段审计、错误映射）与启动 fail-closed；台账单测 8 项、`refd` 集成测试 12 项。witness/compensation 可运行示例见 `pact-ref/examples/witness-compensation/`（`README.md` 两条路径 + `services/refd/tests/witness_compensation.rs` 4 项离线回归）；FR37 不要求自动补偿。
 
+### FR38 refd 的 git / oci scheme adapter（D54）
+
+- **定位**：`refd` 补齐 `git+https` 与 `oci` 两类 scheme 的只读解析，使 `/v1/resolve` 能对代码提交与容器镜像给出可钉版句柄；仍只做静态解析，不取回正文、不执行构建或拉取镜像。
+- **`git+https` 解析**：引用形如 `git+https://<authority>/<path>[@<rev>]`，`rev` 缺省 `HEAD`。adapter 请求 smart HTTP 的 `info/refs?service=git-upload-pack`，按 pkt-line 解析引用通告，支持 40/64 位十六进制 commit、`refs/...` 全名、`refs/heads/<rev>`、`refs/tags/<rev>`（peeled `^{}` 优先）。解析成功返回 `handle = git+https://<authority>/<path>@<commit>`，`media_type` 留空由 profile 回填。
+- **`git+ssh` 与 `git+file`**：`git+ssh` 在 v1 显式不支持，但 scheme 已注册，请求返回 `400`（`UnsupportedIdentifier`）而非 `UnknownScheme`；`git+file` 不实现。SSH 用户名（`git@`）属合法 authority，密码型 userinfo 一律拒绝。
+- **`oci` 解析**：引用形如 `oci://<registry>/<repository>[:tag][@sha256:<hex>]`，缺省 tag `latest`。adapter 以 `HEAD /v2/<repository>/manifests/<tag|digest>` 携带 OCI/Docker manifest `Accept` 头取 `Docker-Content-Digest`，归一化为 `sha256:<64 位小写 hex>`；引用已钉版且与响应不一致返回 `409`（`DigestMismatch`）。成功返回 `handle = oci://<registry>/<repository>@<digest>` 与非空 `digest`。
+- **git 摘要边界**：git commit 只写入 `handle`，不填入 `digest`——`uri-profile.md` §4 的 `digest` 固定为 `sha256:` 形式，commit 哈希不是内容摘要，混用会破坏钉版语义。
+- **防护（fail-closed）**：主机 allowlist 非空且精确匹配（`host` 或 `host:port`，不含 scheme/userinfo/path）；拒绝控制字符、空白、`?`、`#`、userinfo 与 `.`/`..` 路径段；HTTP 不跟随重定向；单次总超时上限 30s；响应大小上限为 git 引用通告 2 MiB、OCI manifest 头 1 MiB；`http://` 仅在 `allow_plaintext` 显式开启且目标为回环主机时允许。
+- **配置**：可选 `[adapter.git]`（`allowed_hosts`、`timeout_ms` 缺省 10000、`allow_plaintext`）与 `[adapter.oci]`（`registries`、`timeout_ms` 缺省 10000、`allow_plaintext`）；未配置的 scheme 不注册，请求返回 `UnknownScheme`。配置非法（allowlist 为空、条目含 scheme/userinfo/path、超时越界）拒绝启动。
+- **错误语义**：`408`/`504` → `Timeout`；`404`/`410` → `NotFound`；`401`/`403` → `Unauthorized`；其他上游状态与传输失败 → `Upstream`；钉版不一致 → `DigestMismatch`；引用语法或 scheme 不支持 → `UnsupportedIdentifier`。
+- **实现状态**：已实现（2026-10-31，跨仓库 `pact-ref`）。`adapters/git` 单测 8 项（引用解析、非法引用、通告解析、HEAD/分支/标签/commit 解析、未知 rev 与未列主机、状态映射、畸形通告、`git+ssh` 显式拒绝）；`adapters/oci` 单测 7 项（引用解析、非法引用、allowlist 无网络、假 registry 钉 handle、钉版不一致/缺 digest、状态映射、无 `Docker-Content-Digest` 回退钉版）；`refd` 配置单测 3 项；`pact-ref` 全量 **172 passed / 0 failed**，`fmt`/`clippy`/`cargo audit` 通过。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。

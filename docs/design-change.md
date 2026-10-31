@@ -2,6 +2,18 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 98 轮，`git`/`oci` adapter 实现，FR38/D54）
+
+- **决策 D54 / 新增 §9.21**：`refd` 在 v1 支持四个取回 scheme——`file`、`https`（既有）、`git+https`、`oci`。`git+ssh` 注册但恒返回 `UnsupportedIdentifier`（显式“不支持”而非 `UnknownScheme`）；`git+file` 不实现（本机路径对下游无意义，且与 §4.1 的裸路径禁令冲突）。
+- **`git+https` 解析**：按 smart HTTP 取 `<authority>/<repo>/info/refs?service=git-upload-pack`，解析 pkt-line 广告（首条必须是 `# service=git-upload-pack`，OID 支持 40/64 hex）；rev 缺省 `HEAD`，解析顺序 `HEAD → refs/... 精确 → refs/heads/<rev> → refs/tags/<rev>^{}（peeled 优先）→ refs/tags/<rev>`；未命中 `NotFound`。响应上限 2 MiB。
+- **摘要边界**：git commit 不是 `sha256:<64hex>`，按 `uri-profile.md` §4 不能写入 `digest`；commit 只进 `handle`（`git+https://<authority>/<repo>@<commit>`），`digest=None`、`media_type` 空串由 `refd` 用 profile 回填。
+- **`oci` 解析**：`oci://<registry>/<repository>[:tag][@sha256:<hex>]`；`HEAD /v2/<repo>/manifests/<digest|tag|latest>` 携带 OCI index/manifest/artifact 与 Docker v2 的 `Accept`；以 `Docker-Content-Digest` 归一化（小写）为准，钉版不一致 `DigestMismatch`，缺失视为 `Upstream`；`Content-Type` 去参数作为 `media_type`；`handle = oci://<registry>/<repo>@<digest>`；manifest 响应上限 1 MiB。
+- **共同防护**：host/registry 精确 allowlist（支持 `host` 与 `host:port`），拒绝含 scheme/userinfo/path 的条目与空表；`redirects(0)`；总超时缺省 10s、上限 30s；明文 `http://` 仅回环且需 `allow_plaintext = true`；引用本身拒绝 userinfo、`?`、`#`、控制字符、空白与非法仓库/标签/版本段。
+- **注册条件**：仅在存在 `[adapter.git]` / `[adapter.oci]` 时注册对应 resolver，未配置的 scheme 落到 `UnknownScheme`；`git+ssh` 随 `[adapter.git]` 一起注册。
+- **测试**：`oci` 7 项单测（合法解析、拒绝 userinfo/控制字符/非法仓库段、allowlist、摘要归一化与钉版不一致、错误映射）；`git` 8 项（pkt-line 广告解析、rev 解析顺序与 peeled tag、非法 rev、allowlist、体积上限、超时/状态映射、`git+ssh` 不支持）；`refd` 配置 3 项（带端口 allowlist 接受、空/畸形 allowlist 与非法超时拒绝启动）。`pact-ref` **172 passed / 0 failed**（基线 154）。
+- **跨仓库**：adapter 代码、`refd` 配置与注册全部在 `pact-ref`（`adapters/git`、`adapters/oci`、`services/refd/src/{config,state}.rs`）；本仓库改动为 `docs/requirements.md` FR38、`docs/requirements-change.md` 第 51 轮、`docs/design.md` D54/§9.21/§10、`docs/architecture.md` 附录 A 与 §2.9–§2.10、本文件与 `architecture-change.md` 第 50 轮、`docs/thingref-governance.md` §13.1/§13.6.9、台账。
+- **未实现**：`git+ssh` 传输、`git+file`、OCI 分层内容拉取与签名/证明校验、conformance runner、可选注册表；母本未改动。
+
 ## 2026-10-31（第 97 轮，witness/compensation 示例，FR37/D53）
 
 - **§9.20 补齐可运行示例**：新增 `pact-ref/examples/witness-compensation/`——`release/deploy@1`（`mcp-mutating`，`failure` 带保留键 `compensation`）与补偿卡片 `release/rollback@1`、`release` 域声明（`release_request → deployment → release_receipt`、`incident → rollback`，`auditor` 只读回取）、RefBindings（`declarationDigest` + 类型 → scheme/contract）、`refd.toml`（两个 profile、`[[mcp_servers]]`、`[materialize]`、`[mutate]`）与 `README.md`。

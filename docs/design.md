@@ -58,7 +58,8 @@
 | D50 | WASM 本地入口票面校验与绑定注入（FR30，2026-10-31，用户要求继续推进） | 把 `pact-http` 已有的入口校验语义抽为 `pact-ref-spec::validate_entry` 纯函数（三态输入、URI profile、`required`/`allowIdentifier`/`schemes`/`onUnknownScheme`/`value`/`maxLength`/`pinning: required`），REST 与 WASM 共用，避免两套规范化。`PactHost` 新增 `set_ref_bindings` / `remove_ref_bindings` / `clear_ref_bindings`：宿主以 **JSON 字符串**注入 RefBindings（解析后立即 `validate`，按 `metadata.domain` 累积），不在 WASM 内读文件；`prepare_seed` / `prepare_produce` 在进入 kernel 前校验，成功写规范化票面。JS `thing_ref` 省略与 `null` 都表示 `∅`（无“字段缺失”态），因此不产生 `ThingRefMissing`；错误码沿用 `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`。绑定注入是可选能力：未注入时只做结构校验，行为与本轮之前一致。ContractCard 运行期钉版与 Archive 检查不在本轮范围（仍只在 REST 边界）。 | 入口校验必须与 REST 同一语义，否则同一 `.pact` + 同一绑定在两种分发形态下判定不同；抽纯函数是最小共享面。绑定由宿主注入而非 WASM 读文件，守住“WASM 无 IO、持久化归宿主”的既有边界，也避免把 YAML 解析器拉进 wasm。JS 无法表达“缺失”三态，强行区分只会在宿主层制造假语义，故省略即 `∅`，与 MCP 省略语义一致。绑定缺省时保持旧行为，避免要求所有嵌入部署先配绑定。 |
 | D51 | `refd` OIDC 验证器分层（FR35，2026-10-31，用户要求继续推进） | `ref-auth` 定义 `JwksSource`（`fetch() -> Result<Vec<u8>, String>`）与 `OidcAuthenticator`：只做 JWT 验签、声明校验、`sub`→actor 与 `scope` claim 解析，持有有界缓存（≤ 64 密钥、按 `cache_ttl_seconds` 复用）；未知 `kid` 触发一次强制刷新，30s 窗口内限频并复用当前缓存。`refd` 注入 `FileJwksSource`（常规文件、≤ 1 MiB）或 `HttpJwksSource`（`ureq` + rustls、超时、不跟随重定向、2xx、响应 ≤ 1 MiB），网络 IO 不进认证库。算法白名单 `RS256`/`ES256`/`EdDSA`（白名单外含 `none`/`HS*` 拒绝），`crit` 非空拒绝，无 `kid` 仅唯一可用密钥接受；`iss`/`aud`/`exp`/`nbf` 由 `jsonwebtoken` 校验（`leeway ≤ 60`）。认证调用在 `spawn_blocking` 执行；任何失败一律 `AuthError::Invalid` → `401` + `WWW-Authenticate: Bearer realm="pact-ref"`。 | OIDC 只做验证不做签发/discovery，避免把 `refd` 变成 IdP 代理；JWKS 来源由 `refd` 注入，让认证库保持无网络、可用假源做单测。未知 `kid` 必须可刷新（IdP 轮换密钥），但不能每个请求都拉取（放大型 SSRF/DoS），故限频并复用缓存。算法白名单与“无 `kid` 需唯一密钥”封住算法混淆；`crit` 一律拒绝，因为当前没有可协商的扩展。失败原因不细分且统一 `401`，避免给令牌探测提供侧信道；阻塞线程池防止网络 JWKS 卡住异步运行时。 |
 | D52 | `refd` 动态只读调用与物化分层（FR36，2026-10-31，用户要求继续推进） | 新增 `POST /v1/invoke`：端点 scope `ref:invoke`，对象 ACL operation `invoke`，仅接受 `capability.sideEffect = read-only`；`reference` 必须以 `capability.server.id + "/"` 开头且工具路径非空。`refd` 引入 `InvokerRegistry` 与 `mcp` adapter：JSON-RPC 2.0 `tools/call`，上游失败映射 `502 UpstreamFailure` 且审计 `status=failed`；成功结果按内容寻址写入 `[materialize].dir/<sha256>.json`（`.tmp` + rename 原子写），返回 `resultRef`（`file://`）与 `resultDigest`。启动 fail-closed：只读能力 profile 的 `server.id` 必须登记于 `[[mcp_servers]]` 且必须配置 `[materialize]`；`endpoint` 默认只允许 `https://`，仅回环主机可经 `allow_plaintext` 放宽；`bearer_token_env` 缺失或为空拒绝启动。调用走 `spawn_blocking`，总上限 30s。 | 动态调用必须落成静态引用才能进入 PACT 证据链：治理平面不写 PACT 状态，物化 + 现有 `/v1/resolve` 让参与者用正常 `seed`/`produce` 产生 witness token，避免在治理面引入第二套状态。只读闸门与引用归属校验把“调用任意工具”收窄为“调用卡片声明的工具”。上游失败不细分并统一 502，避免泄露上游详情；不重试、不轮询，保持确定性。`allow_plaintext` 仅回环且显式开启，既让本地假 MCP 服务可测，又不放宽生产默认。结果内容寻址使重复调用天然幂等，且可直接被 `resolve` 消费。 |
-| D53 | `refd` 动态写调用与幂等台账分层（FR37，2026-10-31 定案；实现待做） | 新增 `POST /v1/mutate`：端点 scope `ref:mutate`、对象 ACL operation `mutate`，仅接受 `capability.sideEffect = mutating`；`/v1/invoke` 与 `/v1/mutate` 互不接受对方的 `sideEffect`，只读授权不自动升级为写授权。`refd` 新增 `mcp-mutating` profile 校验（`tool.inputSchemaDigest`、`idempotency`、`result.materialization`、`auth.audience`、非空 `failure` 必填）与 `[mutate].journal` append-only 幂等台账：先写 `intent`（键 + 请求摘要）fsync，调用后写 `result`（`succeeded`/`failed`/`in-doubt`）fsync；同键同摘要成功重放、失败重放、`in-doubt` 返回 `409 IdempotencyInDoubt`，同键异摘要 `409 IdempotencyConflict`，台账满 `503 JournalFull`。审计边车改为每次写 attempt 两条：`intent` 失败即拒绝且不触达上游，`result` 失败返回 `500 AuditUnavailable` 但台账保留结果。`reference` 必须严格等于 `<server.id>/<tool.name>`，`operation` 必须等于 `tool.name`；补偿不做自动 saga，`failure.compensation` 只是保留键，实际补偿由另一张 `mutating` 卡片加域内规则显式调用。 | 写操作的风险与只读不同，复用 `/v1/invoke` 会让既有 `ref:invoke` 授权静默获得写能力；独立端点、scope 与 ACL operation 把最小权限落到实处。mutating 上游可能已执行而响应丢失，因此必须有本地两阶段台账：`intent` 先于上游、`result` 后于上游，崩溃窗口一律标为 `in-doubt` 并阻断同键重试，宁可人工核对也不猜测性重试。审计与台账分离：审计面向可观测与追责（fail-closed），台账面向幂等与崩溃恢复；两者都不进入 PACT 事件日志，witness 仍由参与者正常 `seed`/`produce` 产生。补偿属于领域语义，治理平面只执行被显式调用的能力，避免在治理层引入第二套编排状态。 |
+| D53 | `refd` 动态写调用与幂等台账分层（FR37，2026-10-31 定案；实现待做） | `refd` 新增 `POST /v1/mutate`：端点 scope `ref:mutate`、对象 ACL operation `mutate`，仅接受 `capability.sideEffect = mutating`；`/v1/invoke` 与 `/v1/mutate` 互不接受对方的 `sideEffect`，只读授权不自动升级为写授权。`refd` 新增 `mcp-mutating` profile 校验（`tool.inputSchemaDigest`、`idempotency`、`result.materialization`、`auth.audience`、非空 `failure` 必填）与 `[mutate].journal` append-only 幂等台账：先写 `intent`（键 + 请求摘要）fsync，调用后写 `result`（`succeeded`/`failed`/`in-doubt`）fsync；同键同摘要成功重放、失败重放、`in-doubt` 返回 `409 IdempotencyInDoubt`，同键异摘要 `409 IdempotencyConflict`，台账满 `503 JournalFull`。审计边车改为每次写 attempt 两条：`intent` 失败即拒绝且不触达上游，`result` 失败返回 `500 AuditUnavailable` 但台账保留结果。`reference` 必须严格等于 `<server.id>/<tool.name>`，`operation` 必须等于 `tool.name`；补偿不做自动 saga，`failure.compensation` 只是保留键，实际补偿由另一张 `mutating` 卡片加域内规则显式调用。 | 写操作的风险与只读不同，复用 `/v1/invoke` 会让既有 `ref:invoke` 授权静默获得写能力；独立端点、scope 与 ACL operation 把最小权限落到实处。mutating 上游可能已执行而响应丢失，因此必须有本地两阶段台账：`intent` 先于上游、`result` 后于上游，崩溃窗口一律标为 `in-doubt` 并阻断同键重试，宁可人工核对也不猜测性重试。审计与台账分离：审计面向可观测与追责（fail-closed），台账面向幂等与崩溃恢复；两者都不进入 PACT 事件日志，witness 仍由参与者正常 `seed`/`produce` 产生。补偿属于领域语义，治理平面只执行被显式调用的能力，避免在治理层引入第二套编排状态。 |
+| D54 | `git` / `oci` scheme adapter 的 v1 边界（FR38，2026-10-31，用户要求按 P3 推进） | `adapters/git`：仅 `git+https` 走 smart HTTP `GET {scheme}://{authority}/{repo}/info/refs?service=git-upload-pack`，按 pkt-line 解析通告（首个 payload 必须 `# service=git-upload-pack`），`rev` 缺省 `HEAD`，解析顺序为 40/64 hex → `refs/...` 精确 → `refs/heads/<rev>` → peeled `refs/tags/<rev>^{}` → `refs/tags/<rev>`；成功返回 `handle = git+https://{authority}/{repo}@{commit}`，**commit 只入 `handle` 不入 `digest`**（`digest` 仍只允许 `sha256:`），`media_type` 留空由 profile 回填。`git+ssh` 注册但恒 `UnsupportedIdentifier`；`git+file` 不实现。`adapters/oci`：`HEAD {scheme}://{registry}/v2/{repo}/manifests/{digest|tag|latest}` 带 OCI/Docker manifest `Accept`，取 `Docker-Content-Digest` 归一化为 `sha256:<64 小写 hex>`，引用已钉版且不一致 → `DigestMismatch`，成功返回 `handle = oci://{registry}/{repo}@{digest}` 与 `digest`。共同防护：allowlist 非空且精确匹配（`host`/`host:port`）、拒绝 userinfo/控制字符/空白/`?`/`#`/`.`/`..`、`redirects(0)`、总超时 1..=30000 ms、响应上限（git 通告 2 MiB、OCI manifest 1 MiB）、`http://` 仅在 `allow_plaintext` 且回环主机。`refd` 仅在配置 `[adapter.git]`/`[adapter.oci]` 时注册对应 scheme（`git+ssh` 随 `[adapter.git]` 一并注册）。 | `git+https` smart HTTP 只读、无凭据、无 clone，能在不引入 git 二进制与工作区的前提下把引用钉到具体 commit；`git+ssh` 需要私钥管理与主机密钥校验，v1 不做但仍注册，使错误是明确的“不支持”而非“未知 scheme”，便于调用方区分。commit 不是内容摘要，混入 `digest` 会破坏 `uri-profile.md` §4 的钉版语义，故只钉在 handle。OCI 用 `HEAD` 读 manifest 头即可拿到 registry 计算的摘要，避免下载 manifest 正文与 blob；归一化与钉版比对把“标签漂移”变成显式失败而不是静默换内容。allowlist 支持 `host:port` 既覆盖自托管 registry/git 服务与本地假服务，又不放宽到任意主机；明文仅回环显式开启，保持生产默认 TLS。响应上限与不跟随重定向收紧 SSRF 与内存放大面。 |
 
 ## 1. 总体结构
 
@@ -1318,13 +1319,72 @@ max_entries = 10000                            # 1..=1000000
 
 **测试**：台账单测覆盖 intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断恢复与非法行拒绝启动；`refd` 集成测试覆盖 mutate 成功 → `file://` → `/v1/resolve` 闭环、同键重放 `replayed=true` 且上游仅被调用一次、只读授权访问 `/v1/mutate` `403`、`mcp-read` 卡片 `403`、intent 审计失败时上游未被调用、result 审计失败返回 `500` 但重放可得结论、缺 `[mutate].journal`/缺必填 profile 字段启动或请求失败。
 
+### 9.21 git / oci adapter 边界（D54，已实现）
+
+**目标**：让 `/v1/resolve` 能对代码提交与容器镜像给出可钉版句柄，同时不取回正文、不引入 git 二进制、不拉取镜像层。
+
+**分层**：
+
+| 位置 | 职责 |
+|---|---|
+| `adapters/git` | `git+https` 引用解析与 smart HTTP 通告解析；`SshAdapter` 对 `git+ssh` 恒返回 `UnsupportedIdentifier` |
+| `adapters/oci` | `oci` 引用解析与 manifest `HEAD` 探测；摘要归一化与钉版比对 |
+| `refd` 配置 | `[adapter.git]` / `[adapter.oci]` 的 allowlist 与超时校验，非法即拒绝启动 |
+| `refd` 装配 | 仅在配置存在时把对应 adapter 注册进 `ResolverRegistry`；`git+ssh` 随 `[adapter.git]` 一并注册 |
+
+**`git+https` 流程**：
+
+1. 解析 `git+https://<authority>/<path>[@<rev>]`，`rev` 缺省 `HEAD`；拒绝 userinfo、控制字符、空白、`?`、`#` 与 `.`/`..` 段。
+2. 校验 authority 在 `allowed_hosts` 内（`host` 或 `host:port` 精确匹配）。
+3. `GET {scheme}://{authority}/{repo}/info/refs?service=git-upload-pack`，`redirects(0)`，总超时受 `timeout_ms` 约束，读取上限 2 MiB。
+4. 按 pkt-line（4 位十六进制长度）解析通告：首条 payload 必须是 `# service=git-upload-pack`；后续每行 `<oid> <ref>`，可选 `\0` 能力段；`oid` 支持 40/64 hex。
+5. 解析 rev：40/64 hex 直接接受 → `refs/...` 精确 → `refs/heads/<rev>` → peeled `refs/tags/<rev>^{}` → `refs/tags/<rev>`；找不到 → `NotFound`。
+6. 返回 `handle = git+https://{authority}/{repo}@{commit}`；`digest = None`，`media_type` 为空，由 profile 回填 `contract_id`/`version`/`media_type`。
+
+**`oci` 流程**：
+
+1. 解析 `oci://<registry>/<repository>[:tag][@sha256:<hex>]`，缺省 tag `latest`；repository 段小写、`[a-z0-9._-]`、无空段与 `.`/`..`。
+2. 校验 registry 在 `registries` 内；`HEAD {scheme}://{registry}/v2/{repo}/manifests/{digest|tag|latest}`，携带 OCI index/manifest/artifact 与 Docker v2 的 `Accept`。
+3. 读取 `Content-Length`（若声明则上限 1 MiB）与 `Docker-Content-Digest`，归一化为 `sha256:<64 位小写 hex>`；无法归一化 → `Upstream`。
+4. 引用已钉版且与响应不一致 → `DigestMismatch`（HTTP `409`）。
+5. 返回 `handle = oci://{registry}/{repo}@{digest}` 与非空 `digest`；`contract_id`/`version`/`media_type` 由 profile 回填。
+
+**防护**：
+
+- 主机 allowlist 非空，条目仅 `host`、`host:port`、`[v6]`、`[v6]:port`，不含 scheme/userinfo/path，端口 1..=65535。
+- `allow_plaintext` 缺省 false；为 true 时也只允许回环主机使用 `http://`。
+- 不跟随重定向；总超时 `timeout_ms` 缺省 10000，范围 1..=30000。
+- 响应大小上限：git 通告 2 MiB，OCI manifest 头 1 MiB。
+
+**配置**：
+
+```toml
+[adapter.git]
+allowed_hosts = ["git.example.com", "127.0.0.1:18080"]
+timeout_ms = 10000
+allow_plaintext = false
+
+[adapter.oci]
+registries = ["registry.example.com", "127.0.0.1:18081"]
+timeout_ms = 10000
+allow_plaintext = false
+```
+
+**错误映射**：`408`/`504` → `Timeout`（HTTP `504`）；`404`/`410` → `NotFound`（`404`）；`401`/`403` → `Unauthorized`（`403`）；其他上游状态与传输失败 → `Upstream`（`502`）；钉版不一致 → `DigestMismatch`（`409`）；语法错误或 `git+ssh` → `UnsupportedIdentifier`（`400`）；未配置 scheme → `UnknownScheme`（`400`）。
+
+**边界**：v1 不实现 `git+file`，不提供凭据/代理配置，不 clone、不下载 blob；`git+ssh` 只注册不实现；git commit 只进 `handle`，不进 `digest`；不做标签/分支缓存，每次 resolve 重新探测。
+
+**实现状态（第 98 轮）**：`adapters/git` 8 项单测、`adapters/oci` 7 项单测、`refd` 配置 3 项单测；`pact-ref` 全量 **172 passed / 0 failed**，`fmt`/`clippy`/`cargo audit` 通过。
+
+**测试**：git 覆盖引用解析、非法引用、通告解析、`HEAD`/分支/标签/commit 解析、未知 rev 与未列主机、状态映射、畸形通告与 `git+ssh` 显式拒绝；oci 覆盖引用解析、非法引用、allowlist 无网络、假 registry 钉 handle、钉版不一致/缺 digest、状态映射与无 `Docker-Content-Digest` 回退钉版；`refd` 配置覆盖带端口 allowlist、空/畸形 allowlist 与非法超时。
+
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验**；**D51 OIDC 算法白名单、`crit` 拒绝、`kid` 选键、未知 `kid` 限频刷新与 JWKS 失败**；**D52 mcp adapter `tools/call` 请求形状、错误分类与内容寻址物化**；**D53 规范层 `mcp-mutating` 卡片必填字段（缺 `inputSchemaDigest`/`idempotency`/`result`/`audience`/`failure` 及 `materialization=forbidden` 均拒绝，`optional` 放行）与幂等台账（intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断与非法行拒绝启动）** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验**；**D51 OIDC 算法白名单、`crit` 拒绝、`kid` 选键、未知 `kid` 限频刷新与 JWKS 失败**；**D52 mcp adapter `tools/call` 请求形状、错误分类与内容寻址物化**；**D53 规范层 `mcp-mutating` 卡片必填字段（缺 `inputSchemaDigest`/`idempotency`/`result`/`audience`/`failure` 及 `materialization=forbidden` 均拒绝，`optional` 放行）与幂等台账（intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断与非法行拒绝启动）**；**D54 git 引用与 pkt-line 通告解析、rev 解析（`HEAD`/分支/标签/commit）、oci 引用解析与摘要归一化、allowlist 精确匹配与错误映射** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
-| 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）**、**D51 `refd` OIDC（有效令牌 200、过期/错误 `aud`/`iss` 401 带 `WWW-Authenticate`、无端点 scope 403）**；**D52 `refd` invoke（成功→`file://`→resolve 闭环、mutating/ACL 403、上游失败 502 审计 failed、启动 fail-closed）**；**D53 `refd` mutate（成功→resolve 闭环、同键重放 `replayed=true` 且上游仅调用一次、只读授权 403、`mcp-read` 卡片 403、intent 审计失败时上游未被调用、result 审计失败 500 但重放可得结论、缺 `[mutate].journal` 启动失败）** | crates/tests |
+| 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）**、**D51 `refd` OIDC（有效令牌 200、过期/错误 `aud`/`iss` 401 带 `WWW-Authenticate`、无端点 scope 403）**；**D52 `refd` invoke（成功→`file://`→resolve 闭环、mutating/ACL 403、上游失败 502 审计 failed、启动 fail-closed）**；**D53 `refd` mutate（成功→resolve 闭环、同键重放 `replayed=true` 且上游仅调用一次、只读授权 403、`mcp-read` 卡片 403、intent 审计失败时上游未被调用、result 审计失败 500 但重放可得结论、缺 `[mutate].journal` 启动失败）**；**D54 `refd` 配置校验（带端口 allowlist 接受、空/畸形 allowlist 与非法超时拒绝启动）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码**；**D47 卡片钉版归档与重复版本拒绝**；**D48 显式重载（dryRun 报告、失败保持旧状态、审计/ACL/认证）与真实二进制 `pact ref reload`**；**D49 运行期摘要比对（`off`/`warn`/`enforce`、未记录摘要与无绑定不比较、`enforce` 拒绝且不加载）** | 阶段 4/5 的 e2e 测试 |
 | v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
 | WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试（含 D50 绑定注入与写入前校验） | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |

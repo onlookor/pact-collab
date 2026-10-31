@@ -511,7 +511,7 @@ Counter/Archive 可见性已实现（FR28/D42）：daemon `[ref_bindings]` 加�
 可发现性 lint 落地与推送前安全审视：`pact` `eb86654`（2026-10-28），`pact-ref` 无新改动；
 `scripts/sync-spec.sh --check` 通过。记录见 `docs/design-change.md` 第 74–75 轮。
 `pact-ref` 远端：<https://github.com/onlookor/pact-ref>（公开）。
-`refd` 的 resolve/describe 端点已按 §13.6 在 `pact-ref` 实现（2026-10-31）；下一步是动态只读阶段。
+`refd` 的 resolve/describe 端点已按 §13.6 在 `pact-ref` 实现（2026-10-31）；动态只读、动态写与 `git`/`oci` adapter 亦已实现；下一步是 conformance runner 与可选注册表。
 
 ### 9.3 `pact-ref` 仓库结构
 
@@ -1018,6 +1018,7 @@ spec:
    **已完成**：可发现性 lint——对 `required=true` 检查 hidden、视图读取路径、Rule-R/consume 路径、保留证据与删除可区分性（5 个 warning code，`--strict` 视为失败）。
 4. **动态只读阶段（已完成，2026-10-31）**：`mcp-read` profile 校验、`refd` 的 `POST /v1/invoke`、`mcp` adapter（JSON-RPC `tools/call`）与内容寻址物化（FR36/D52）；结果经 `file://` 引用回到 `/v1/resolve`，参与者以正常 `seed`/`produce` 产生 witness token。动态写见下一阶段；`revoke` 仍未开始。
 5. **动态写阶段（已完成，2026-10-31）**：`pact-ref-spec` 强制 `mcp-mutating` 卡片级必填字段（§13.8.2）；`refd` 已落地 `POST /v1/mutate`、幂等台账（intent/result 两阶段、重启恢复、半行截断、满额）、请求级严格归属与 `operation` 校验、两阶段审计与启动 fail-closed（FR37/D53，§13.8）。witness/compensation 可运行示例见 `pact-ref/examples/witness-compensation/`（§13.8.7）。
+   **已完成（2026-10-31）**：`git`/`oci` scheme adapter（FR38/D54）——`git+https` 走 smart HTTP 解析 `info/refs` 广告并把 commit 钉进 `handle`（不进 `digest`）；`git+ssh` 注册但显式不支持，`git+file` 不实现；`oci` 以 `HEAD /v2/<repo>/manifests/<ref>` 取 `Docker-Content-Digest` 并归一化。两者共用 host/registry allowlist、`redirects(0)`、超时（≤30s）与响应体积上限（2 MiB / 1 MiB）；仅在配置 `[adapter.git]`/`[adapter.oci]` 时注册。
 6. **可选注册表**：只做发现，不做真相源。
 
 ### 13.2 测试
@@ -1364,7 +1365,7 @@ operations = ["resolve:read", "resolve:verify", "describe", "invoke"]
 | `ref-auth` | 新增 OIDC 验证器、静态令牌验证器、ACL 求值器；`DenyAllAuthorizer` 作为缺省 |
 | `ref-audit` | 落地 append-only sink 与 fail-closed 包装；现有 `MemoryAuditSink` 保留给测试 |
 | `refd` | 引入 HTTP 栈（建议 `axum` + `tokio`，须单独做依赖与安全审视）；按 13.6.4 的顺序装配 |
-| adapters | v1 至少实现 `file` 与 `https`；其余 adapter 按 §13.1 顺序推进 |
+| adapters | v1 已实现 `file`、`https`、`git+https`、`oci`；`git+ssh` 注册但显式不支持，`git+file` 不实现（FR38/D54）；其余动态 adapter 按 §13.1 顺序推进 |
 
 上述改动已于 2026-10-31 在 `pact-ref` 落地，含 `ref-auth` 的 OIDC 验证器（`[auth] mode = oidc`，见 FR35/D51）：
 JWT/JWKS 验签、声明校验、`scope` 映射与统一 `401`；JWKS 文件/HTTPS 来源由 `refd` 注入，网络 IO 不进认证库。
