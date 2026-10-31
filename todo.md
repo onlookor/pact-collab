@@ -150,13 +150,13 @@
 | [x] | 第 95 轮本仓库回归：`pact` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` | 均通过；**384 passed / 0 failed**（基线 378 + 规范层 mutating 卡片校验 6）；`pact-ref-spec` 单包 **51 passed / 0 failed** |
 | [x] | 第 95 轮 vendored 快照同步与跨仓库回归：`pact-ref` `sync-spec.sh --source … [--check]`、`cargo fmt/clippy/test --workspace` | 同步后 `vendored spec is in sync`；`refd` 基线卡片补 `capability.failure` 后全量 **126 passed / 0 failed**；`fmt`/`clippy` 通过 |
 | [x] | 第 95 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖） | 无新增依赖；新增代码为纯校验函数（无 IO/网络/`unsafe`）；仅收紧写能力卡片的加载条件（fail-closed），不改变只读路径；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained） |
-| [x] | 第 95 轮提交（见末行哈希回填）：`pact`（`contract.rs` + 6 单测 + FR37/设计/治理/变更记录/台账）、`pact-ref`（vendored 快照 + `refd` 测试基线卡片） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
+| [x] | 第 95 轮提交：`pact` `62afbea`（`contract.rs` + 6 单测 + FR37/设计/治理/变更记录/台账）、`pact-ref` `d797f6b`（vendored 快照 + `refd` 测试基线卡片） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
-| 2026-10-31 | `mcp-mutating` 规范层卡片校验（第 95 轮）：`pact-ref-spec` 强制 `inputSchemaDigest`、`idempotency`、`materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`；请求级归属/operation/幂等键文法移交实现② | FR37 / D53 / 治理 §13.8.2 / 设计 §9.20 | 新增 6 单测，`pact-ref-spec` **51 passed**、`pact` **384 passed**；vendored 快照 `--check` 通过；`pact-ref` **126 passed**；`design-change.md` 第 95 轮 |
+| 2026-10-31 | `mcp-mutating` 规范层卡片校验（第 95 轮）：`pact-ref-spec` 强制 `inputSchemaDigest`、`idempotency`、`materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`；请求级归属/operation/幂等键文法移交实现② | FR37 / D53 / 治理 §13.8.2 / 设计 §9.20 | 新增 6 单测，`pact-ref-spec` **51 passed**、`pact` **384 passed**；vendored 快照 `--check` 通过；`pact-ref` **126 passed**；`design-change.md` 第 95 轮；`pact` `62afbea` / `pact-ref` `d797f6b` |
 | 2026-10-31 | 动态写契约（契约已定案、实现待做）：`POST /v1/mutate`、`ref:mutate` + ACL `mutate`、`mcp-mutating` 必填 profile、`[mutate].journal` 幂等台账（intent/result）、两阶段审计、witness/compensation 边界 | FR37 / D53 / 治理 §13.8 / 设计 §9.20 | OpenAPI 6 paths / 9 schemas / 14 responses / `$ref` 全解析；无代码变更；`design-change.md` 第 94 轮；`pact` 与 `pact-ref` 双侧文档均更新 |
 | 2026-10-31 | `refd` 动态只读调用（跨仓库 `pact-ref`）：`POST /v1/invoke`（`ref:invoke` + ACL `invoke` + `read-only` 闸门）、引用归属校验、`mcp` adapter（`tools/call`、错误分类、内容寻址物化）、`[materialize]`/`[[mcp_servers]]` 启动 fail-closed、审计 `status=failed` | FR36 / D52 / 治理 §13.1 阶段 4 / §13.7 | `reference_plane` invoke 7 项；`pact-ref` **120 passed / 0 failed**；`pact` **378 passed / 0 failed**；`fmt`/`clippy`/`cargo audit` 通过；`design-change.md` 第 93 轮；`pact-ref` `7751d2f` / `pact` `347c27f` |
 | 2026-10-31 | `refd` OIDC（JWT/JWKS）验证器（跨仓库 `pact-ref`）：`ref-auth` 的 `JwksSource`/`OidcAuthenticator`、算法白名单与声明校验、JWKS 有界缓存与未知 `kid` 限频刷新；`refd` 的 `[auth.oidc]` fail-closed 校验、`FileJwksSource`/`HttpJwksSource`、`spawn_blocking`、统一 401 | FR35 / D51 / 治理 §13.6.3 / §13.6.9 | `ref-auth` 单测 11、`refd` 集成 3；`pact-ref` **101 passed / 0 failed**；`fmt`/`clippy`/`cargo audit` 通过；`design-change.md` 第 92 轮；`pact-ref` `0550a54` |
