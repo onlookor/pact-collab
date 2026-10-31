@@ -180,11 +180,13 @@
 | [x] | 第 100 轮提交：`pact` `f7be0bd`（附录 A 补登记、D53/FR36 状态、治理 §13.1 阶段 6、变更记录、台账）；`pact-ref` `1e9ee06`（`README.md` 状态与 API 更正） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
 | [x] | 第 101 轮回归基线：无 Rust 代码变更（治理 §13.9 与台账） | 沿用 `pact` **384 passed / 0 failed**、`pact-ref` **175 passed / 0 failed**；本轮未重跑全量，无代码路径变化 |
 | [x] | 第 101 轮安全审视：纯文档改动 | 无新增依赖、无代码、无网络/进程/文件写变化；建议中未承诺任何绕过 allowlist/fail-closed 的行为；未推送 |
+| [x] | 第 101 轮提交：`pact` `9436c9a`（治理 §13.9、`design-change.md`、台账）；`pact-ref` 本轮无改动 | 单仓库改动；按用户要求**未推送** |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
+| 2026-10-31 | 三个未启动项（可选注册表 / `revoke` / 数据面 conformance）的立项与设计前置建议（第 101 轮）：治理 §13.9.1–§13.9.3 给出立项闸门、需求问题、设计硬约束、建议拆分（S0–S3 / V0–V2 / C0–C5）与代码落点；§13.1 阶段 6 与阶段外事项加指引 | 治理 §13.1 / §13.6.1 / §13.8.10 / `conformance/` / `architecture.md` 附录 A 编号纪律 | 无代码变更、未新增编号（明确立项时再取号并先登记附录 A）；回归基线沿用 `pact` 384 / `pact-ref` 175；`revoke` 结论为建议不立项（四类对象均有既有承载）；`pact` `9436c9a` |
 | 2026-10-31 | 物引专题 gap 审视与文档补齐（第 100 轮）：附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`；`design.md` D53 状态、`requirements.md` FR36 实现状态；治理 §13.1 阶段 6 触发条件与反向约束、`revoke` 未立项说明；`pact-ref/README.md` 状态更正；台账新增 `revoke` 与 resolve/invoke 用例两个阻塞项 | 治理 §13.1 / `architecture.md` 附录 A / FR36 / FR37 边界 | 无代码变更，回归基线沿用 `pact` 384 / `pact-ref` 175；`pact` `f7be0bd` / `pact-ref` `1e9ee06` |
 | 2026-10-31 | conformance runner 与入口用例（第 99 轮，跨仓库 `pact-ref`）：runner 读取 `conformance/cases/**/*.yaml`、驱动 `pact-ref-spec::validate_entry`、逐条报告并以退出码表示结果；`entry/` 23 例覆盖三态、URI profile、Identifier 文法、RefBindings 策略与安全负例；`conformance/cases/README.md` 记录格式与覆盖边界 | `conformance/` / 设计 §9.12 入口语义 | runner 单测 3 项（全例通过 + 2 项期望不符自检）；`pact-ref` **175 passed / 0 failed**；手工 23 passed / exit 0、错误目录 exit 2；`pact-ref` `f9a127e` / `pact` `b5fa141` |
 | 2026-10-31 | `git`/`oci` scheme adapter（第 98 轮，跨仓库 `pact-ref`）：`git+https` smart HTTP `info/refs` pkt-line 解析与 rev 顺序（`HEAD` → `refs/...` → `refs/heads/` → peeled tag → tag）、commit 只入 `handle`；`git+ssh` 注册但恒 `UnsupportedIdentifier`、`git+file` 不实现；`oci` manifest `HEAD` + `Docker-Content-Digest` 归一化与钉版比对；共同 host/registry allowlist、`redirects(0)`、≤30s 超时、2 MiB / 1 MiB 上限；`refd` 仅在 `[adapter.git]`/`[adapter.oci]` 存在时注册 | FR38 / D54 / `uri-profile.md` §4–§5 / 设计 §9.21 | `oci` 7 + `git` 8 + `refd` 配置 3 单测；`pact-ref` **172 passed / 0 failed**、`pact` **384 passed / 0 failed**；`fmt`/`clippy`/`cargo audit` 通过；`design-change.md` 第 98 轮；`pact-ref` `14bd5f4` / `pact` `3438267` |
