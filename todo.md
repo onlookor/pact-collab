@@ -112,6 +112,7 @@
 | [x] | 第 89 轮定向验收：真实二进制 `pact ref digest` / `ref lint`（含 `--tombstones`、`--strict`）/ 摘要漂移 | `ref digest` 输出 `sha256:19fe1f29…bdcbfb` 与 e2e golden 一致；`ref lint` → `errors=0 warnings=0` exit 0；`--strict` exit 0；篡改摘要后 `ref.bindings.digest_mismatch` exit 1 |
 | [x] | 第 89 轮回归基线 `cargo test -p pact-cli --test ref_lint_e2e --locked` | **3 passed / 0 failed**（无代码变更，全量回归沿用第 88 轮 373 passed） |
 | [x] | 第 89 轮推送前安全审视 | 仅新增 Markdown 技能与文档修改，无代码、无依赖、无网络/进程/文件写变化；`cargo audit` 0 vulnerability / 2 unmaintained（沿用） |
+| [x] | 第 89 轮提交（`e88ee28`） | 4 files changed（新增 SKILL.md 386 行、`design-change.md`、`declaration-digest.md` 纠偏、`todo.md`）；尚未推送 |
 
 ## 已完成归档区
 
