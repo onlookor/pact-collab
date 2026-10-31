@@ -130,7 +130,7 @@
 | [x] | 第 91 轮推送与 CI：`pact-ref` `d98d2f5` → `f48dc12`；`pact` `7f2bf7d..7cf98ad` 推至 `origin` | 推送前凭据扫描无命中；`pact-ref` CI `41179435290`、Security `41179435351` 均 success；`pact` CI `41179249550` success；首轮 `pact-ref` CI `41179227568` 的失败已由 `f48dc12` 修正 |
 | [x] | 第 92 轮跨仓库回归：`pact-ref` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --offline -- -D warnings`、`cargo test --workspace --offline` | 均通过；**101 passed / 0 failed**（`ref-auth` 18，含 OIDC 11；`reference_plane` 17，含 OIDC 3） |
 | [x] | 第 92 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 新增 `jsonwebtoken` 9 / `base64` 0.22（`ref-auth`）、`ring` 0.17（仅测试）；生产代码无 `unsafe`；`ref-auth` 无网络 IO（JWKS 由 `refd` 注入），`HttpJwksSource` 仅 HTTPS + 超时 + 不跟随重定向 + ≤1 MiB，`FileJwksSource` 只读配置路径；算法白名单封住混淆，未知 `kid` 30s 限频防放大；认证失败统一 401 不泄露原因；`cargo audit` 0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有） |
-| [x] | 第 92 轮提交：`pact-ref` `0550a54`（`ref-auth` OIDC + `refd` `[auth.oidc]`/JWKS 源 + 测试 + `docs/architecture.md`）；`pact` 见下一条 | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
+| [x] | 第 92 轮提交：`pact-ref` `0550a54`（`ref-auth` OIDC + `refd` `[auth.oidc]`/JWKS 源 + 测试 + `docs/architecture.md`）；`pact` `1609238`（FR35/D51、需求/设计/架构与变更记录、治理专题、台账） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
 
 ## 已完成归档区
 
