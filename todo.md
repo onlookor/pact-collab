@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 101 轮完成；按用户要求暂不推送）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` scheme adapter（FR38/D54）、conformance runner 与 `entry/` 入口用例均已落地。本轮完成物引专题 gap 审视与文档补齐（附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`、D53 与 FR36 状态、治理 §13.1 阶段 6 触发条件、`pact-ref/README.md` 状态），并显式登记 3 个未启动项：可选注册表、`revoke`、conformance 的 resolve/invoke 用例（均有触发条件，见下表）。第 101 轮为这三项补立项/设计前置建议（治理 §13.9.1–§13.9.3：立项问题、设计硬约束、建议拆分与代码落点），其中 `revoke` 的结论是建议不立项——四类撤销对象均已有既有承载。
+当前状态（2026-10-31，第 101 轮完成并已推送；跨仓库 CI 与 Security 均通过）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` scheme adapter（FR38/D54）、conformance runner 与 `entry/` 入口用例均已落地。本轮完成物引专题 gap 审视与文档补齐（附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`、D53 与 FR36 状态、治理 §13.1 阶段 6 触发条件、`pact-ref/README.md` 状态），并显式登记 3 个未启动项：可选注册表、`revoke`、conformance 的 resolve/invoke 用例（均有触发条件，见下表）。第 101 轮为这三项补立项/设计前置建议（治理 §13.9.1–§13.9.3：立项问题、设计硬约束、建议拆分与代码落点），其中 `revoke` 的结论是建议不立项——四类撤销对象均已有既有承载。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -177,16 +177,18 @@
 | [x] | 第 99 轮提交：`pact-ref` `f9a127e`（runner、`entry/` 23 例、`conformance/cases/README.md`、`docs/architecture.md`、`Cargo.lock`）；`pact` `b5fa141`（`todo.md`、治理 §9.2） | 跨仓库双侧均已改并分别提交；按用户要求**22:00 前未推送** |
 | [x] | 第 100 轮回归基线：无 Rust 代码变更（仅文档与 `pact-ref/README.md`） | 沿用第 99 轮 `pact` **384 passed / 0 failed**、`pact-ref` **175 passed / 0 failed**；本轮未重跑全量，无代码路径变化 |
 | [x] | 第 100 轮安全审视：纯文档改动 | 无新增依赖、无代码、无网络/进程/文件写变化；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained）；未推送 |
-| [x] | 第 100 轮提交：`pact` `f7be0bd`（附录 A 补登记、D53/FR36 状态、治理 §13.1 阶段 6、变更记录、台账）；`pact-ref` `1e9ee06`（`README.md` 状态与 API 更正） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
+| [x] | 第 100 轮提交：`pact` `f7be0bd`（附录 A 补登记、D53/FR36 状态、治理 §13.1 阶段 6、变更记录、台账）；`pact-ref` `1e9ee06`（`README.md` 状态与 API 更正） | 跨仓库双侧均已改并分别提交；当时未推送，已随第 101 轮推送一并推至 `origin/main` |
 | [x] | 第 101 轮回归基线：无 Rust 代码变更（治理 §13.9 与台账） | 沿用 `pact` **384 passed / 0 failed**、`pact-ref` **175 passed / 0 failed**；本轮未重跑全量，无代码路径变化 |
-| [x] | 第 101 轮安全审视：纯文档改动 | 无新增依赖、无代码、无网络/进程/文件写变化；建议中未承诺任何绕过 allowlist/fail-closed 的行为；未推送 |
-| [x] | 第 101 轮提交：`pact` `9436c9a`（治理 §13.9、`design-change.md`、台账）；`pact-ref` 本轮无改动 | 单仓库改动；按用户要求**未推送** |
+| [x] | 第 101 轮安全审视：纯文档改动 | 无新增依赖、无代码、无网络/进程/文件写变化；建议中未承诺任何绕过 allowlist/fail-closed 的行为；推送前复检见下一行 |
+| [x] | 第 101 轮提交：`pact` `9436c9a`（治理 §13.9、`design-change.md`、台账）；`pact-ref` 本轮无改动 | 单仓库改动；已随本轮推送（见下两行） |
+| [x] | 第 101 轮跨仓库推送（推送前安全审视：凭据扫描、`unsafe`、生产代码文件写、新增依赖、`cargo audit`） | 两个仓库 diff 无密钥/令牌命中（`s3cret`、`release-demo-token` 仅测试夹具与示例占位）；`pact` 无新增依赖、无 Rust 代码变更；`pact-ref` 无 `unsafe`，生产写仅 append-only 台账/审计与 `[materialize].dir` 内 `.tmp`+rename；`cargo audit` 两仓库均 0 vulnerability（仅既有 `unsafe-libyaml` unmaintained）；`pact` `7771314..1eb4588`、`pact-ref` `f48dc12..1e9ee06` 已推至 `origin/main` |
+| [x] | 第 101 轮推送后 CI：`pact` CI `41197003160`；`pact-ref` CI `41197008771`、Security `41197008777` | 三个 run 均 **success**（audit / build-test-fmt-clippy / wasm 与 clippy / Security） |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
-| 2026-10-31 | 三个未启动项（可选注册表 / `revoke` / 数据面 conformance）的立项与设计前置建议（第 101 轮）：治理 §13.9.1–§13.9.3 给出立项闸门、需求问题、设计硬约束、建议拆分（S0–S3 / V0–V2 / C0–C5）与代码落点；§13.1 阶段 6 与阶段外事项加指引 | 治理 §13.1 / §13.6.1 / §13.8.10 / `conformance/` / `architecture.md` 附录 A 编号纪律 | 无代码变更、未新增编号（明确立项时再取号并先登记附录 A）；回归基线沿用 `pact` 384 / `pact-ref` 175；`revoke` 结论为建议不立项（四类对象均有既有承载）；`pact` `9436c9a` |
+| 2026-10-31 | 三个未启动项（可选注册表 / `revoke` / 数据面 conformance）的立项与设计前置建议（第 101 轮）：治理 §13.9.1–§13.9.3 给出立项闸门、需求问题、设计硬约束、建议拆分（S0–S3 / V0–V2 / C0–C5）与代码落点；§13.1 阶段 6 与阶段外事项加指引 | 治理 §13.1 / §13.6.1 / §13.8.10 / `conformance/` / `architecture.md` 附录 A 编号纪律 | 无代码变更、未新增编号（明确立项时再取号并先登记附录 A）；回归基线沿用 `pact` 384 / `pact-ref` 175；`revoke` 结论为建议不立项（四类对象均有既有承载）；`pact` `9436c9a`；已推送，CI `41197003160` success |
 | 2026-10-31 | 物引专题 gap 审视与文档补齐（第 100 轮）：附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`；`design.md` D53 状态、`requirements.md` FR36 实现状态；治理 §13.1 阶段 6 触发条件与反向约束、`revoke` 未立项说明；`pact-ref/README.md` 状态更正；台账新增 `revoke` 与 resolve/invoke 用例两个阻塞项 | 治理 §13.1 / `architecture.md` 附录 A / FR36 / FR37 边界 | 无代码变更，回归基线沿用 `pact` 384 / `pact-ref` 175；`pact` `f7be0bd` / `pact-ref` `1e9ee06` |
 | 2026-10-31 | conformance runner 与入口用例（第 99 轮，跨仓库 `pact-ref`）：runner 读取 `conformance/cases/**/*.yaml`、驱动 `pact-ref-spec::validate_entry`、逐条报告并以退出码表示结果；`entry/` 23 例覆盖三态、URI profile、Identifier 文法、RefBindings 策略与安全负例；`conformance/cases/README.md` 记录格式与覆盖边界 | `conformance/` / 设计 §9.12 入口语义 | runner 单测 3 项（全例通过 + 2 项期望不符自检）；`pact-ref` **175 passed / 0 failed**；手工 23 passed / exit 0、错误目录 exit 2；`pact-ref` `f9a127e` / `pact` `b5fa141` |
 | 2026-10-31 | `git`/`oci` scheme adapter（第 98 轮，跨仓库 `pact-ref`）：`git+https` smart HTTP `info/refs` pkt-line 解析与 rev 顺序（`HEAD` → `refs/...` → `refs/heads/` → peeled tag → tag）、commit 只入 `handle`；`git+ssh` 注册但恒 `UnsupportedIdentifier`、`git+file` 不实现；`oci` manifest `HEAD` + `Docker-Content-Digest` 归一化与钉版比对；共同 host/registry allowlist、`redirects(0)`、≤30s 超时、2 MiB / 1 MiB 上限；`refd` 仅在 `[adapter.git]`/`[adapter.oci]` 存在时注册 | FR38 / D54 / `uri-profile.md` §4–§5 / 设计 §9.21 | `oci` 7 + `git` 8 + `refd` 配置 3 单测；`pact-ref` **172 passed / 0 failed**、`pact` **384 passed / 0 failed**；`fmt`/`clippy`/`cargo audit` 通过；`design-change.md` 第 98 轮；`pact-ref` `14bd5f4` / `pact` `3438267` |
