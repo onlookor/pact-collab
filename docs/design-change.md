@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 89 轮，物引治理 skill；规范文档纠偏）
+
+- **新增 `skills/pact-thingref-governance/SKILL.md`**（`name: pact-thingref-governance`，v0.1.0）：面向使用者的物引治理技能，覆盖绑定、契约卡、tombstone、可见性、`declarationDigest` 与显式重载六个主题；含适用闸门（不启用项与去向）、六条不变量、每主题的最小骨架与验收命令、工具探测、采集槽位、lint/digest 闭环、完成标准、输出模板、失败模式与不承诺边界。
+- **技能不引入新编号**：工作流阶段用名称而非 `S*` 编号；`S0`–`S7` 仍专属 `pact-domain-authoring`（`docs/architecture.md` 附录 A），避免同一字母序列两处含义。
+- **验收基于真实二进制**：用 `target/debug/pact` 复跑 `ref digest`（输出与 golden 一致）、`ref lint`（0 error / 0 warning，exit 0）、`--strict`（exit 0），以及篡改摘要后的 `ref.bindings.digest_mismatch`（exit 1）。
+- **规范纠偏**：`spec/ref/v1/declaration-digest.md` §4 原写“运行期比对尚未启用”，与 D49 第二步实现及 `docs/manual.md` §7.14 冲突；改为已实现并注明 `[ref_digest].mode` 三档行为与比较边界。
+- **无代码变更**：不触碰 `crates/`、`spec` schema 与 daemon 配置；跨仓库无改动（`pact-ref` vendored 快照不受影响）。
+- **验证**：文档与技能文件，仅需现有回归作为基线；定向命令见上条。
+
 ## 2026-10-31（第 88 轮，D50：WASM 本地入口校验与绑定注入）
 
 - **D50 定案**：把入口票面语义从 `pact-http::VisibilityProfiles::validate_thing_ref` 抽到 `pact-ref-spec::entry::validate_entry` 纯函数，REST 与 WASM 共用；`EntryRef` 保留三态（`Missing` / `Absent` / `Present`），`EntryError` 由规范层统一。

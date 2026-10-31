@@ -98,8 +98,11 @@ pact --json ref digest se_lifecycle.pact         # {"declarationDigest":…,"alg
 不一致表示声明与绑定对不上，须用 `pact ref digest` 重新生成并更新绑定。
 缺失仍只是 warning：未使用摘要的部署不受影响。
 
-运行期比对（`POST /domains` 的 `load_domain`）**尚未启用**；其启用方式与边界
-见 `docs/design.md` §9.16（D49）。在启用之前，摘要只约束离线检查，不影响域加载。
+运行期比对（`POST /domains` 的 `load_domain`）**已实现**，由 `[ref_digest].mode`
+控制严格程度（`off` 不比较 / `warn` 缺省，只警告 / `enforce` 返回
+`400 DeclarationDigestMismatch` 且不加载域）。只在 `load_domain` 比较，启动恢复与
+显式重载不比较；只比较绑定中确实记录了摘要的域。其边界见 `docs/design.md` §9.16（D49）
+与 `docs/manual.md` §7.14。
 
 ## 5. Golden 向量
 
