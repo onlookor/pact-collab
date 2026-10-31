@@ -511,7 +511,7 @@ Counter/Archive 可见性已实现（FR28/D42）：daemon `[ref_bindings]` 加�
 可发现性 lint 落地与推送前安全审视：`pact` `eb86654`（2026-10-28），`pact-ref` 无新改动；
 `scripts/sync-spec.sh --check` 通过。记录见 `docs/design-change.md` 第 74–75 轮。
 `pact-ref` 远端：<https://github.com/onlookor/pact-ref>（公开）。
-`refd` 的 resolve/describe 端点已按 §13.6 在 `pact-ref` 实现（2026-10-31）；动态只读、动态写与 `git`/`oci` adapter 亦已实现；下一步是 conformance runner 与可选注册表。
+`refd` 的 resolve/describe 端点已按 §13.6 在 `pact-ref` 实现（2026-10-31）；动态只读、动态写与 `git`/`oci` adapter 亦已实现；conformance runner 已实现（`conformance/runner`，`entry/` 23 例随 `cargo test` 回归），resolve/invoke 用例待 adapter 假服务方案后扩展；下一步仅剩可选注册表。
 
 ### 9.3 `pact-ref` 仓库结构
 

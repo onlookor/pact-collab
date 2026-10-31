@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 98 轮）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` scheme adapter（FR38/D54）均已落地。开放项：conformance runner、可选注册表。下一轮按 P3 推进 conformance runner 或按台账处理新增事项。
+当前状态（2026-10-31，第 99 轮完成；按用户要求 22:00 前不推送）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` scheme adapter（FR38/D54）、conformance runner 与 `entry/` 入口用例均已落地。开放项：仅剩可选注册表（按台账“触发条件满足后再开”不启动）；无其他待做事项。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -52,7 +52,7 @@
 |---|---|---|---|
 | [x] | `pact-ref` vendored 快照同步（第 77 轮：`HARD_MAX`、Identifier 文法、userinfo、`InvalidIdentifier`；第 78 轮：`merged_rule`、`pinned_digest`、`classify_identifier`、新错误；第 88 轮：`validate_entry` / `EntryRef` / `EntryError`） | `AGENTS.md` 跨仓库纪律 | 第 88 轮 `scripts/sync-spec.sh --source … --check` 通过（`pact-ref` 工作区仅 vendored 快照变化） |
 | [x] | `pact-ref` 回归：vendored 快照更新后跑 `cargo fmt/clippy/test` | 同上 | 第 88 轮 **57 passed / 0 failed**（`pact-ref-spec` 40，含新增 7 项入口测试），`fmt`/`clippy` 通过；`pact-ref` 提交 `9be7cbd` |
-| [!] | `pact-ref` conformance：补入口校验用例（缺失/`null`、userinfo、Identifier 文法、`maxLength`） | `conformance/` | 阻塞：`conformance/runner` 仍是骨架（不执行用例）；待 runner 落地后补 |
+| [x] | `pact-ref` conformance（第 99 轮，跨仓库 `pact-ref`）：runner 读取 `conformance/cases/**/*.yaml`、驱动 `pact-ref-spec::validate_entry`、逐条输出并以退出码表示结果（通过 0 / 有失败 1 / 参数或解析错误 2）；`entry/` 23 例覆盖缺失/`null`/字符串三态、userinfo、裸路径、Identifier 文法、默认与绑定 `maxLength`、钉版、未知 scheme 三策略、`value`、控制字符 | `conformance/` / 设计 §9.12 入口语义 | 用例随 `cargo test -p pact-ref-conformance-runner` 回归（`entry_cases_pass`）；手工运行 `23 passed, 0 failed` 且 exit 0，错误目录 exit 2；`pact-ref` 全量 **175 passed / 0 failed** |
 
 ### P3 治理平面与动态阶段
 
@@ -96,6 +96,7 @@
 | [x] | 第 95 轮：`requirements.md` FR37 实现状态与 `requirements-change.md` 第 48 轮；`design.md` §9.20 状态/实现进度与 §10 单测行、`design-change.md` 第 95 轮；治理 §13.1 阶段 5 与 §13.8.2 校验分层；跨仓库 vendored 快照同步与 `refd` 测试基线卡片补 `failure` | 卡片级/请求级职责边界与代码逐条对照；无编号新增；`architecture.md` 与 `architecture-change.md` 无结构性变更，未改 |
 | [x] | 第 96 轮：`requirements.md` FR37 实现状态改为已实现、`requirements-change.md` 第 49 轮；`design.md` §9.20 标题与实现进度、`design-change.md` 第 96 轮；治理 §13.1 阶段 5 与 §13.8 标题；OpenAPI 顶部说明与 `/v1/mutate` 描述去掉“实现待做”；跨仓库 `pact-ref/docs/architecture.md` 的 mutate 段落与 API 状态 | 文档与 `refd` 实现/测试逐条对照；无编号新增；`architecture.md` 与 `architecture-change.md` 无结构性变更，未改 |
 | [x] | 第 98 轮：登记 `FR38`/`D54`/`[adapter.git]`/`[adapter.oci]` 及子项（`architecture.md` 附录 A 与 §2.10，§2.9 标题更正）；`requirements.md` FR38、`requirements-change.md` 第 51 轮；`design.md` D54/§9.21/§10、`design-change.md` 第 98 轮；治理 §9.2/§13.1/§13.6.9；`architecture-change.md` 第 50 轮；跨仓库 `pact-ref/docs/architecture.md` 的 `[adapter.git]`/`[adapter.oci]` 配置示例与引导阶段 | 编号先登记后引用；附录 A 中 `[adapter.git]`/`[adapter.oci]` 权威位置由 `manual.md` §2.2 更正为 `design.md` §9.21；文档与 adapter/`refd` 实现及测试逐条对照 |
+| [x] | 第 99 轮：跨仓库 `pact-ref` 落地 conformance runner 与 `entry/` 23 例，更新 `conformance/cases/README.md`（用例格式、运行方式、覆盖/未覆盖）、`pact-ref/docs/architecture.md` 引导阶段；`pact/docs/thingref-governance.md` §9.2 下一步状态 | 无新增编号；runner 的错误码映射与 `pact-http` 入口逐条对照；用例随 `cargo test` 回归 |
 
 ### 验证与交付
 
@@ -167,11 +168,15 @@
 | [x] | 第 98 轮本仓库回归：`pact` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` | 均通过；**384 passed / 0 failed**（本轮无 Rust 代码改动） |
 | [x] | 第 98 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、SSRF/体积上限） | 无新增第三方包（`ureq` 为 workspace 既有，`Cargo.lock` 仅增 4 行内部包引用）；生产代码无 `unsafe`、无 `println!`/`dbg!`；出站仅 allowlist 内的 git/registry，`redirects(0)`、总超时 ≤30s、响应上限 2 MiB / 1 MiB、明文仅回环可选；引用拒绝 userinfo/控制字符/非法段；错误映射不泄露上游细节；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained） |
 | [x] | 第 98 轮提交：`pact-ref` `14bd5f4`（`adapters/git`、`adapters/oci`、`refd` config/state 与 `Cargo.toml`、`Cargo.lock`、`docs/architecture.md`）；`pact` `3438267`（FR38/D54、需求/设计/架构/治理与三份变更记录、台账） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
+| [x] | 第 99 轮跨仓库回归：`pact-ref` `cargo fmt --all`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` | 均通过；**175 passed / 0 failed**（基线 172 + runner 3 项：`entry_cases_pass` 与 2 项自检）；runner 手工运行 23 例全通过、exit 0，错误目录 exit 2 |
+| [x] | 第 99 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖） | 无新增第三方包（`serde`/`serde_yaml` 为 workspace 既有；`Cargo.lock` 仅内部包依赖关系变化）；runner 无 `unsafe`、无网络/进程调用，只读 `conformance/cases` 并写 stdout/stderr；用例均为合成数据，无凭据；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained） |
+| [x] | 第 99 轮提交：`pact-ref` `f9a127e`（runner、`entry/` 23 例、`conformance/cases/README.md`、`docs/architecture.md`、`Cargo.lock`）；`pact` `TBD-PACT`（`todo.md`、治理 §9.2） | 跨仓库双侧均已改并分别提交；按用户要求**22:00 前未推送** |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
+| 2026-10-31 | conformance runner 与入口用例（第 99 轮，跨仓库 `pact-ref`）：runner 读取 `conformance/cases/**/*.yaml`、驱动 `pact-ref-spec::validate_entry`、逐条报告并以退出码表示结果；`entry/` 23 例覆盖三态、URI profile、Identifier 文法、RefBindings 策略与安全负例；`conformance/cases/README.md` 记录格式与覆盖边界 | `conformance/` / 设计 §9.12 入口语义 | runner 单测 3 项（全例通过 + 2 项期望不符自检）；`pact-ref` **175 passed / 0 failed**；手工 23 passed / exit 0、错误目录 exit 2；`pact-ref` `f9a127e` / `pact` `TBD-PACT` |
 | 2026-10-31 | `git`/`oci` scheme adapter（第 98 轮，跨仓库 `pact-ref`）：`git+https` smart HTTP `info/refs` pkt-line 解析与 rev 顺序（`HEAD` → `refs/...` → `refs/heads/` → peeled tag → tag）、commit 只入 `handle`；`git+ssh` 注册但恒 `UnsupportedIdentifier`、`git+file` 不实现；`oci` manifest `HEAD` + `Docker-Content-Digest` 归一化与钉版比对；共同 host/registry allowlist、`redirects(0)`、≤30s 超时、2 MiB / 1 MiB 上限；`refd` 仅在 `[adapter.git]`/`[adapter.oci]` 存在时注册 | FR38 / D54 / `uri-profile.md` §4–§5 / 设计 §9.21 | `oci` 7 + `git` 8 + `refd` 配置 3 单测；`pact-ref` **172 passed / 0 failed**、`pact` **384 passed / 0 failed**；`fmt`/`clippy`/`cargo audit` 通过；`design-change.md` 第 98 轮；`pact-ref` `14bd5f4` / `pact` `3438267` |
 | 2026-10-31 | 动态写 witness/compensation 示例与文档（第 97 轮，跨仓库 `pact-ref`）：`examples/witness-compensation/`（`release` 域声明、`release/deploy@1` 与 `release/rollback@1` 卡片、RefBindings、`refd.toml`、README 两条路径）；离线回归 `services/refd/tests/witness_compensation.rs` 4 项与 `crates/ref-core/tests/examples.rs` 3 项；`pact-ref/docs/architecture.md` 同步 | FR37 / D53 / 治理 §13.8.7 | 示例可跑（fake MCP 驱动真实 `refd`，成功路径经 `/v1/resolve` 取句柄、失败路径锁定不自动补偿）；`pact analyze` 0 违规 / 0 警告；`pact ref lint --strict` 0 error / 0 warning；`pact-ref` **154 passed**、`pact` **384 passed**；`design-change.md` 第 97 轮；`pact-ref` `c891374` / `pact` `68f2801` |
 | 2026-10-31 | 动态写调用实现（第 96 轮）：`ref-core` `MutateRequest`/`Mutation`/`MutationStatus`、`ref-auth` `ref:mutate`、`refd` 幂等台账（intent/result、重启恢复、半行截断、满额）与 `POST /v1/mutate`（请求级严格归属/operation、两阶段审计、错误映射、启动 fail-closed） | FR37 / D53 / 治理 §13.8 / 设计 §9.20 | `Journal` 单测 8 项、`reference_plane` **37 passed**（新增 12 项 mutate）；`pact-ref` 全量 `fmt`/`clippy`/`test`/`audit` 通过；`pact` 基线 **384 passed**；`design-change.md` 第 96 轮；`pact-ref` `0108f08` / `pact` `c26950b` |

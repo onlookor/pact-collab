@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 99 轮，conformance runner 与入口用例）
+
+- **一致性测试阶段落地**：`pact-ref/conformance/runner` 从骨架改为可执行 runner——递归读取 `conformance/cases/**/*.yaml`，按 `apiVersion: conformance.pact-ref/v1` / `kind: EntryCase` 解析，驱动 `pact-ref-spec::validate_entry`，逐条输出 `ok`/`FAIL`；全部通过退出 0，存在失败退出 1，参数/读取/解析错误退出 2。
+- **用例格式**：`spec.type` / 可选 `spec.instance` / `spec.reference.state ∈ {missing, "null", value}` / 可选 `spec.bindings`（`pact.ref/v1` 原样）；`expect.outcome ∈ {ok, error}`，`ok` 用缺省 `reference` 表示 `∅`，`error` 用 `error`（与 `pact-http` 入口错误码对齐）与可选 `reason`（`SpecError` 变体名）区分原因。
+- **覆盖**：`entry/` 23 例——三态与 `required`、scheme 小写归一、裸路径（POSIX/Windows）、密码型 userinfo 拒绝与纯用户名放行、控制字符、空串、默认与绑定 `maxLength`、Identifier 文法与放行策略、`schemes`、`onUnknownScheme` 三策略、`value`、`pinning: required` 与已钉版接受。
+- **边界**：首版只覆盖入口校验；resolve/invoke（含路径穿越、SSRF、物化）与 ContractCard/审计用例待 adapter 假服务方案确定后再补，目录规划保留在 `conformance/cases/README.md`。
+- **验证**：runner 单测 3 项（全例通过 + 2 项期望不符自检）；`pact-ref` **175 passed / 0 failed**（基线 172）；手工运行 `23 passed, 0 failed` exit 0，错误目录 exit 2；`fmt`/`clippy`/`cargo audit` 通过。
+- **跨仓库**：runner、用例与 `pact-ref/docs/architecture.md` 在 `pact-ref`（`f9a127e`）；本仓库改动为 `docs/thingref-governance.md` §9.2 与台账。无新增编号；母本未改动。
+
 ## 2026-10-31（第 98 轮，`git`/`oci` adapter 实现，FR38/D54）
 
 - **决策 D54 / 新增 §9.21**：`refd` 在 v1 支持四个取回 scheme——`file`、`https`（既有）、`git+https`、`oci`。`git+ssh` 注册但恒返回 `UnsupportedIdentifier`（显式“不支持”而非 `UnknownScheme`）；`git+file` 不实现（本机路径对下游无意义，且与 §4.1 的裸路径禁令冲突）。
