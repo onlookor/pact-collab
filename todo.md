@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 91 轮）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL 与 `refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）均已落地并回归通过。开放项：OIDC 验证器（`mode = oidc` 启动即失败）、`git`/`oci` adapter、动态只读/写阶段、conformance runner。下一轮按 P3 在 OIDC 与动态只读中选择一项。
+当前状态（2026-10-31，第 92 轮）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）与 `refd` OIDC 验证器（FR35/D51）均已落地并回归通过。开放项：`git`/`oci` adapter、动态只读/写阶段、conformance runner。下一轮按 P3 在动态只读阶段与 `git`/`oci` adapter 中选择一项。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -60,7 +60,7 @@
 |---|---|---|---|
 | [x] | `refd` resolve/describe 端点契约与鉴权定案（路径、请求/响应、错误模型、身份/ACL/审计、版本） | `thingref-governance.md` §13.6 / `spec/ref/v1/reference-plane.openapi.yaml` | 治理 §13.6 十小节定案；OpenAPI 重写为 `/healthz`、`/readyz`、`/v1/resolve`、`/v1/describe`；`yaml.safe_load` 与全部 `$ref` 校验通过 |
 | [x] | `refd` 实现拆解（第 91 轮，跨仓库 `pact-ref`）：①`ref-core` 契约对齐（`ResolveRequest` 去请求体 actor 来源、`handle: Option`、投影 `ContractDescriptor`、`AuditEvent` 补 `domain`/`type`/`pactTokenId`、`AuditSink` 返回 `Result`）；②`ref-auth` 静态令牌 + scope + ACL 求值器；③`ref-audit` append-only 文件 sink + fail-closed；④`refd` axum 路由、传输约束、错误映射、审计闭环；⑤`file`/`https` adapter（SSRF/路径穿越防护） | 同上 §13.6.9 实现映射 | 端点可按 OpenAPI 契约调用；`refd` 集成测试 14 项覆盖 401/403/400/404/405/409/413/415/200 read/200 verify/describe 投影/健康探针/审计 fail-closed 与 fail-open；真实二进制冒烟通过；`pact-ref` 87 passed / 0 failed |
-| [ ] | OIDC（JWT/JWKS）验证器拆分延后：`[auth] mode=oidc` 启动即失败（fail-closed），需先完成加密/JWKS 依赖安全审视 | §13.6.3 / §13.6.9 | 拆分原因：JWT 验签与 JWKS 拉取引入新加密/网络依赖，需单独依赖审计；本轮先交付 `deny`/`static` 两种模式，不降低默认拒绝 |
+| [x] | OIDC（JWT/JWKS）验证器（第 92 轮，跨仓库 `pact-ref`）：①`ref-auth` 新增 `JwksSource` 抽象与 `OidcAuthenticator`（算法白名单 `RS256`/`ES256`/`EdDSA`、拒绝 `none`/`HS*` 与 `crit`、`iss`/`aud`/`exp`/`nbf` 校验、`sub` 为 actor、`scope` claim 映射）；②JWKS 有界缓存与未知 `kid` 单次限频刷新；③`refd` 新增 `[auth.oidc]`（`issuer`/`audience`/`jwks_uri` 或 `jwks_file`/`algorithms`/`leeway_seconds`/`cache_ttl_seconds`/`timeout_ms`）与启动 fail-closed 校验；④`FileJwksSource`/`HttpJwksSource`（HTTPS、超时、不跟随重定向、响应 ≤ 1 MiB）；⑤认证调用移入 `spawn_blocking`；⑥401 统一带 `WWW-Authenticate` | §13.6.3 / §13.6.9 / FR35 / D51 | `ref-auth` 单测 11 项（有效/过期/`nbf`/`iss`/`aud`/`alg=none`/`HS256`/未知 `kid` 限频刷新/JWKS 失败/缺凭据/scope 解析）；`refd` 集成测试 3 项（有效 200、401+`WWW-Authenticate`、无 scope 403）；`pact-ref` **101 passed / 0 failed**（`ref-auth` 18、`reference_plane` 17）；`fmt`/`clippy`/`cargo audit` 通过；依赖安全审视结论写入 `design-change.md` 第 92 轮 |
 | [ ] | 动态只读阶段（`mcp-read` profile、resolve 适配器、物化结果） | `thingref-governance.md` §13.1 阶段 4 | 端到端：resolve → witness token |
 | [ ] | 动态写阶段（`mcp-mutating` profile、审计边车、witness/compensation） | 同上阶段 5 | 审计边车用例 |
 | [ ] | 可选注册表（只做发现，不做真相源） | 同上阶段 6 | 触发条件满足后再开 |
@@ -86,6 +86,7 @@
 | [x] | 第 88 轮：登记 `D50`（`architecture.md` 附录 A）；`requirements.md` FR21/FR30/FR31、`requirements-change.md` 第 44 轮；`design.md` D50/§9.12/§9.17/§10/§16.4、`design-change.md` 第 88 轮；`manual.md` §2.7/§7.11；治理 §8.1/§8.2/§13.1/§13.2；`architecture.md` 正文、`architecture-change.md` 第 45 轮；README 中英文本地嵌入改为用途视角；`todo.md` 新增 P4 物引治理 SKILL | 编号先登记后引用；文档与代码/测试逐条对照；跨仓库：`pact-ref/vendor/pact-ref-spec` 已同步，`pact-ref` 57 passed |
 | [x] | 第 89 轮：新增 `skills/pact-thingref-governance/SKILL.md`（六主题、适用闸门、不变量、闭环验收、输出模板、边界）；`design-change.md` 第 89 轮；纠偏 `spec/ref/v1/declaration-digest.md` §4“运行期比对尚未启用” | 技能不引入新编号（不占用 `S0`–`S7`）；命令与 `docs/manual.md` §7.8–§7.14 逐条对齐；规范文档与 D49 第二步实现一致 |
 | [x] | 第 90 轮：治理新增 §13.6“refd 的 resolve/describe 端点与鉴权”（十小节）；§9.2/§13.1 状态改为“契约已定案、实现待做”；重写 `spec/ref/v1/reference-plane.openapi.yaml`；`design-change.md` 第 90 轮；跨仓库同步 `pact-ref/docs/architecture.md` 的 API 段落与引导阶段 | 契约与卡片 schema 逐字段对照；`$ref` 全部可解析；跨仓库改动已在 `design-change.md` 标注 |
+| [x] | 第 92 轮：`requirements.md` 新增 FR35、`requirements-change.md` 第 45 轮；`design.md` D51/§9.18/§10 测试表、`design-change.md` 第 92 轮；`architecture.md` 正文“治理平面身份独立于 daemon”、`architecture-change.md` 第 47 轮；治理 §13.6.3/§13.6.9 与 `/readyz` 边界；跨仓库 `pact-ref/docs/architecture.md` 的 `[auth.oidc]` 配置、依赖规则与引导阶段 | 编号 `FR35`/`D51` 先登记（第 92 轮）后引用；文档与 `ref-auth`/`refd` 实现及测试逐条对照 |
 
 ### 验证与交付
 
@@ -127,11 +128,15 @@
 | [x] | 第 91 轮提交：`pact-ref` `d98d2f5`（`ref-core`/`ref-auth`/`ref-audit`/adapters/`refd` + `docs/architecture.md`）；`pact` `d08190b`（OpenAPI 放宽、治理状态、`design-change.md`、台账） | 跨仓库双侧均已改并分别提交 |
 | [x] | 第 91 轮 CI 修正：`pact-ref` `test` job 原 `cargo run -p pact-refd` 因 `refd` 改为必须读配置而失败（run `41179227568`）；改为临时 `refd.toml` + 后台启动 + `/healthz`、`/readyz` 探针 | 本地按同一脚本冒烟通过（18091 端口，两探针 200）；提交 `f48dc12` |
 | [x] | 第 91 轮推送与 CI：`pact-ref` `d98d2f5` → `f48dc12`；`pact` `7f2bf7d..7cf98ad` 推至 `origin` | 推送前凭据扫描无命中；`pact-ref` CI `41179435290`、Security `41179435351` 均 success；`pact` CI `41179249550` success；首轮 `pact-ref` CI `41179227568` 的失败已由 `f48dc12` 修正 |
+| [x] | 第 92 轮跨仓库回归：`pact-ref` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --offline -- -D warnings`、`cargo test --workspace --offline` | 均通过；**101 passed / 0 failed**（`ref-auth` 18，含 OIDC 11；`reference_plane` 17，含 OIDC 3） |
+| [x] | 第 92 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 新增 `jsonwebtoken` 9 / `base64` 0.22（`ref-auth`）、`ring` 0.17（仅测试）；生产代码无 `unsafe`；`ref-auth` 无网络 IO（JWKS 由 `refd` 注入），`HttpJwksSource` 仅 HTTPS + 超时 + 不跟随重定向 + ≤1 MiB，`FileJwksSource` 只读配置路径；算法白名单封住混淆，未知 `kid` 30s 限频防放大；认证失败统一 401 不泄露原因；`cargo audit` 0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有） |
+| [x] | 第 92 轮提交：`pact-ref` `0550a54`（`ref-auth` OIDC + `refd` `[auth.oidc]`/JWKS 源 + 测试 + `docs/architecture.md`）；`pact` 见下一条 | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
+| 2026-10-31 | `refd` OIDC（JWT/JWKS）验证器（跨仓库 `pact-ref`）：`ref-auth` 的 `JwksSource`/`OidcAuthenticator`、算法白名单与声明校验、JWKS 有界缓存与未知 `kid` 限频刷新；`refd` 的 `[auth.oidc]` fail-closed 校验、`FileJwksSource`/`HttpJwksSource`、`spawn_blocking`、统一 401 | FR35 / D51 / 治理 §13.6.3 / §13.6.9 | `ref-auth` 单测 11、`refd` 集成 3；`pact-ref` **101 passed / 0 failed**；`fmt`/`clippy`/`cargo audit` 通过；`design-change.md` 第 92 轮；`pact-ref` `0550a54` |
 | 2026-10-31 | `refd` resolve/describe 实现（跨仓库 `pact-ref`）：`ref-core` 契约对齐、`ref-auth` 静态令牌 + scope + ACL、`ref-audit` append-only + fail-closed、`refd` axum 路由与传输约束、`file`/`https` adapter | `thingref-governance.md` §13.6 / `spec/ref/v1/reference-plane.openapi.yaml` | `refd` 集成测试 14 项；`pact-ref` **87 passed / 0 failed**；`fmt`/`clippy` 通过；真实二进制冒烟通过；`cargo audit` 0 vulnerability / 1 unmaintained；`design-change.md` 第 91 轮；`pact-ref` `d98d2f5` |
 | 2026-10-31 | 物引治理 SKILL：六主题使用者流程（绑定/卡片/tombstone/可见性/摘要/reload）、适用闸门、不变量、lint/digest 闭环、输出模板与边界 | FR27–FR34 / 治理 §13 / `manual.md` §7.8–§7.14 | `skills/pact-thingref-governance/SKILL.md`；真实二进制 digest golden 一致、lint 0/0、`--strict` 0、漂移 exit 1；`ref_lint_e2e` 3 passed；`design-change.md` 第 89 轮 |
 | 2026-10-31 | WASM 本地入口校验与绑定注入：入口语义抽为 `pact-ref-spec::validate_entry`，REST 委托、WASM 复用；宿主 JSON 注入 RefBindings | FR30 / D50 | `pact-ref-spec` 7 单测、`pact-wasm` 3 单测、Node 8 项、wasm32 clippy、`ci-smoke`；373 passed；`pact-ref` 57 passed；提交 `3934999`（跨仓库 `9be7cbd`，CI 成功）；CI `41166320702` 成功 |

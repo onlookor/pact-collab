@@ -64,6 +64,7 @@
 - **物引规范层（非引擎依赖）**：`pact-ref-spec` 是纯 crate，定义 URI/Identifier/`∅` 票面校验、RefBindings 匹配、ContractCard 校验与 Tombstone 校验；不依赖 `pact-core`/`pact-engine`/`pact-store`，可编译到 wasm32。治理平面 `pact-ref` 通过 re-export 消费它；引导阶段用 vendored 只读快照（D40），发布后改为纯版本依赖。`pact-cli` 的离线 `ref lint` 直接消费该 crate（D41），校验绑定、契约卡、Tombstone 与 `.pact` 声明的一致性，不经 daemon。ContractCard `lifecycle` 的 retention/deletionPolicy 与 `Tombstone` 记录在规范层做静态校验；保留计时、内容删除与 tombstone 发布属于治理平面/制品域，PACT 引擎仍不解析 ThingRef，也不进入 Rule-P/GateExpr。
 - **票面可见性在接口层过滤**：`pact-http` 在 `GET /counter` 与 `GET /archive` 返回前，按 daemon `[ref_bindings]` 加载的 profile 与调用者 gate 决定是否保留 `thing_ref`（D42）。默认 `read-gate`，`domain` 公开、`hidden` 隐藏；token 存在性、事件日志与 Rule-P/GateExpr 不受影响。视图身份在令牌/签名模式下要求认证，匿名请求返回 `401`。
 - **票面写入校验在接口层**：`pact-http` 在 `POST /seeds` 与 `POST /tokens` 进入引擎前完成 `thing_ref` 三态判定（缺失/显式 `null`/字符串）、URI profile 结构校验与 RefBindings 策略（FR30/D45）；形态（`value`）、未知 scheme 与写入钉版（`pinning: required`）同层执行，`pinning: required-at-archive` 在 `POST /consume` 进入引擎前判定（FR31/D46）。成功时写入规范化值；引擎、存储与 `pact-core` 仍把票面当作不透明 `ThingRef`，GateExpr/Rule-P/Rule-T 不读取其值。CLI 与 MCP 经 REST 继承同一套校验；`pact-wasm` 本地宿主通过宿主注入的 RefBindings 复用同一入口纯函数（FR30/D50），未注入绑定时只做结构校验，ContractCard 归档钉版仍只在 REST 边界。ContractCard 的运行期加载与版本不可变（FR32/D47）已实现，仍在同一接口层；卡片/绑定显式重载（FR33/D48）已实现，经控制面 `POST /ref/reload` 原子替换 `pact-http` 的规则快照，不进入引擎、存储或事件日志。域声明语义接口摘要（FR34/D49）的规范化与计算由 `pact-analysis` 提供；离线入口为 `pact ref digest` 与 `pact ref lint`，运行期比对在 `pact-http` 的 `POST /domains` 进入引擎前按 `[ref_digest].mode` 执行（D49 第二步），引擎与存储仍不感知摘要。
+- **治理平面身份独立于 daemon**：`refd` 是独立进程，其 OIDC 验证器（FR35/D51）只作用于 `/v1/resolve`、`/v1/describe`；与 `pactd` 的 `/mcp` OIDC（D36）是两套独立配置与 JWKS 缓存，互不共享。`refd` 不做 discovery、不访问 PACT 存储；actor 只来自验证后的 `sub`，`scope` claim 映射端点 scope，与对象 ACL 两层判定。JWKS 来源由 `refd` 注入（文件或 HTTPS，≤ 1 MiB、不跟随重定向），认证失败统一 `401` + `WWW-Authenticate`。
 
 ## 2. 关键数据流
 
@@ -412,6 +413,22 @@ DSH 宿主进程
 | 编号 | 权威定义位置 | 含义 |
 |---|---|---|
 | `D50` | `docs/design.md` §0 / §9.17 | WASM 本地入口票面校验与绑定注入：共享 `pact-ref-spec::validate_entry`，宿主以 JSON 注入 RefBindings |
+
+2026-10-31（第 92 轮）新增的具体编号与配置项：
+
+| 编号 | 权威定义位置 | 含义 |
+|---|---|---|
+| `FR35` | `docs/requirements.md` §4 | `refd` OIDC 身份验证：JWT/JWKS 验签、声明校验、`scope` 映射与失败语义 |
+| `D51` | `docs/design.md` §0 / §9.18 | `refd` OIDC 验证器分层：`JwksSource` 注入、缓存与限频刷新、算法白名单、统一 401 |
+| `[auth.oidc]` | `docs/design.md` §9.18、`pact-ref/docs/architecture.md` | `refd` 的 OIDC 配置表；仅当 `[auth] mode = "oidc"` 时必需 |
+| `[auth.oidc].issuer` | 同上 | 期望的 `iss`，必须为 `https://`，不得含 userinfo 或 fragment |
+| `[auth.oidc].audience` | 同上 | 期望的 `aud`，缺省 `pact-ref` |
+| `[auth.oidc].jwks_uri` | 同上 | HTTPS JWKS 地址；与 `jwks_file` 恰好一个 |
+| `[auth.oidc].jwks_file` | 同上 | 本地 JWKS 文件（测试/离线）；与 `jwks_uri` 恰好一个，≤ 1 MiB |
+| `[auth.oidc].algorithms` | 同上 | 允许的签名算法，缺省与上限为 `RS256`/`ES256`/`EdDSA` |
+| `[auth.oidc].leeway_seconds` | 同上 | `exp`/`nbf` 时钟偏差，缺省 60，上限 60 |
+| `[auth.oidc].cache_ttl_seconds` | 同上 | JWKS 缓存 TTL，缺省 300，必须 > 0 |
+| `[auth.oidc].timeout_ms` | 同上 | JWKS 拉取超时，缺省 5000，必须 > 0 |
 
 约定：
 

@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 45 轮，`refd` OIDC 身份验证，FR35/D51）
+
+- **新增 FR35（D51）**：`refd` 作为 OIDC 资源服务器验证 IdP 签发的 JWT（JWKS 验签），只做验证、不做授权服务器或 discovery。`[auth] mode = "oidc"` 时必需 `[auth.oidc]`，字段与缺省值见设计 §9.18；配置非法拒绝启动。
+- **验签约束**：算法白名单 `RS256`/`ES256`/`EdDSA`，拒绝 `none`/`HS*` 与 `crit`；`kid` 匹配、无 `kid` 仅唯一密钥可接受；校验 `iss`/`aud`/`exp`/`nbf`；`sub` 为 actor，`scope` claim 映射端点 scope。
+- **JWKS 与失败语义**：有界缓存（≤ 64 密钥、按 TTL）、未知 `kid` 单次强制刷新且 30s 限频；拉取/解析/验签失败一律 `401` 并带 `WWW-Authenticate: Bearer realm="pact-ref"`，不区分原因。`/readyz` 仍只反映审计 sink 健康。
+- **编号登记**：`FR35`/`D51`/`[auth.oidc]` 及子项已于第 92 轮（`docs/architecture.md` 附录 A）登记后再引用。
+- **测试**：`ref-auth` 单测 11 项、`refd` 集成测试 3 项（200、401+`WWW-Authenticate`、403）；`pact-ref` 全量 99 passed / 0 failed；`fmt`/`clippy`/`cargo audit` 通过。
+- 其余 FR1–FR34、NFR1–NFR7 不变。
+
 ## 2026-10-31（第 44 轮，WASM 本地入口校验，D50）
 
 - **FR30 边界扩到 WASM**：`pact-wasm` 本地宿主不经过 REST，但 `prepare_seed` / `prepare_produce` 在进入 kernel 前复用同一 `pact-ref-spec::validate_entry` 纯函数；宿主以 JSON 注入 RefBindings（`refBindings` 选项 / `PACT_WASM_REF_BINDINGS`），未注入时只做结构校验。JS/WASM 无法表达“字段缺失”，省略与 `null` 都映射为 `∅`，因此 WASM 路径不产生 `ThingRefMissing`。

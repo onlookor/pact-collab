@@ -1003,7 +1003,7 @@ spec:
 1. **静态阶段（已完成，2026-10-27）**：`pact-ref-spec` 纯 crate + `spec/ref/v1/`（URI profile、两份 schema、OpenAPI）已落地，
    18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 46 项测试通过）；`pact ref lint` 已实现（FR27/D41），
    覆盖绑定/契约/声明一致性与退出码。
-   **已完成（2026-10-31）**：`refd` 的 resolve/describe 端点（契约 §13.6）——`deny`/`static` 认证、端点 scope + 对象 ACL、审计 fail-closed、`file`/`https` adapter；`oidc` 启动即失败，延后实现。
+   **已完成（2026-10-31）**：`refd` 的 resolve/describe 端点（契约 §13.6）——`deny`/`static`/`oidc` 认证、端点 scope + 对象 ACL、审计 fail-closed、`file`/`https` adapter；OIDC（FR35/D51）支持 JWKS 文件/HTTPS、算法白名单、`iss`/`aud`/`exp`/`nbf`、未知 `kid` 限频刷新，失败统一 `401`。
    **已完成（2026-10-28）**：REST 写入路径入口校验（FR30/D45）——`POST /seeds`、`POST /tokens` 区分缺失/`null`/字符串，执行 URI profile 与 RefBindings 策略，错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef`；CLI/MCP 经 REST 继承。
    **已完成（2026-10-29）**：`value`、`onUnknownScheme` 与钉版运行期强制（FR31/D46）——`pinning: required` 写入即拦，`required-at-archive` 在 consume 进入 Archive 前拦，错误码 `ThingRefUnpinned`。
    **已完成（2026-10-30）**：ContractCard 运行期加载与版本不可变（FR32/D47）——`[ref_contracts]` 启动加载、`contract_id()` 索引、按数据触发闭环、重复 `id@version` 拒绝、consume 钉版并集（只加严）；卡片与绑定显式重载（FR33/D48）——`POST /ref/reload` 与 `pact ref reload`、同事务原子换快照、`dryRun` 影响报告、审计与 ACL 覆盖。
@@ -1353,7 +1353,7 @@ operations = ["resolve:read", "resolve:verify", "describe"]
 - 每个已认证请求一条事件，沿用 `ref-core::AuditEvent`：`traceId`、`actor`、`reference`、`domain`、`type`、`operation`、`contractId`、`status`、`resultDigest`、`pactTokenId`、`timestamp`。
 - **不记录**：`handle` 明文、Authorization 头、请求体、内部 endpoint、上游查询串。
 - 默认 fail-closed（审计写失败 → `500 AuditUnavailable`）；`[audit] fail_open = true` 需显式配置并在启动时告警。
-- `/healthz` 只表示进程存活；`/readyz` 检查配置已加载、审计 sink 可用、`oidc` 模式下 JWKS 可用，失败 `503`，不返回内部细节。
+- `/healthz` 只表示进程存活；`/readyz` 检查配置已加载与审计 sink 可用，失败 `503`，不返回内部细节。`oidc` 模式下 JWKS 可达性不在就绪探针中探测——JWKS 拉取失败在请求期以 `401` 体现，避免探针引入外部依赖与请求放大。
 
 #### 13.6.9 实现映射与未决
 
@@ -1366,8 +1366,8 @@ operations = ["resolve:read", "resolve:verify", "describe"]
 | `refd` | 引入 HTTP 栈（建议 `axum` + `tokio`，须单独做依赖与安全审视）；按 13.6.4 的顺序装配 |
 | adapters | v1 至少实现 `file` 与 `https`；其余 adapter 按 §13.1 顺序推进 |
 
-上述改动已于 2026-10-31 在 `pact-ref` 落地；唯一例外是 `ref-auth` 的 OIDC 验证器——
-`[auth] mode = oidc` 启动即失败（fail-closed），待加密/JWKS 依赖单独审视后再实现。
+上述改动已于 2026-10-31 在 `pact-ref` 落地，含 `ref-auth` 的 OIDC 验证器（`[auth] mode = oidc`，见 FR35/D51）：
+JWT/JWKS 验签、声明校验、`scope` 映射与统一 `401`；JWKS 文件/HTTPS 来源由 `refd` 注入，网络 IO 不进认证库。
 
 未决（不阻塞首版实现）：
 

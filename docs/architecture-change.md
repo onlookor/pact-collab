@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 47 轮，`refd` OIDC 身份验证，FR35/D51）
+
+- 附录 A 第 92 轮已登记 `FR35`、`D51`、`[auth.oidc]` 及子项，权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0 / §9.18。
+- 架构正文新增“治理平面身份独立于 daemon”：`refd` 的 OIDC 验证器只作用于 `/v1/resolve`、`/v1/describe`，与 `pactd` 的 `/mcp` OIDC（D36）是两套独立配置与 JWKS 缓存；actor 只来自验证后的 `sub`，`scope` claim 映射端点 scope，与对象 ACL 两层判定。
+- 组件与依赖方向：验证逻辑在 `ref-auth`（新增 `jsonwebtoken`/`base64`，不引入网络 IO），JWKS 文件/HTTPS 来源由 `refd` 注入（`ureq` 为第 91 轮已引入依赖）；`refd` 仍不访问 PACT 存储，PACT 引擎/存储/事件日志不感知。
+- 数据流不变：认证发生在 `refd` 请求入口，认证阻塞操作在 `spawn_blocking` 执行；失败统一 `401` + `WWW-Authenticate`，不进入审计正文。
+- 跨仓库：代码全部在 `pact-ref`；本仓库无服务代码改动。
+- 文档：`docs/requirements.md` FR35、`docs/requirements-change.md` 第 45 轮、`docs/design.md` §0/§9.18/§10、`docs/design-change.md` 第 92 轮、`docs/thingref-governance.md`、`pact-ref/docs/architecture.md`、`todo.md`。
+
 ## 2026-10-31（第 46 轮，参考平面 resolve/describe 端点契约与鉴权定案）
 
 - 参考平面（治理平面）首版接口收敛为 `POST /v1/resolve`、`POST /v1/describe` 与不带版本的 `/healthz`、`/readyz`；invoke/revoke 延后到动态阶段。规范产物为 `spec/ref/v1/reference-plane.openapi.yaml`，设计定案在 `docs/thingref-governance.md` §13.6。

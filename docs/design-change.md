@@ -2,6 +2,19 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 92 轮，`refd` OIDC 验证器实现）
+
+- **跨仓库**：代码全部在 `pact-ref`（`crates/ref-auth/src/oidc.rs`、`services/refd/src/{config,state,jwks,handlers}.rs`、`services/refd/tests/reference_plane.rs`）；本仓库只改需求/设计/架构/治理与台账。
+- **分层（D51）**：`ref-auth` 新增 `JwksSource`（`fetch() -> Result<Vec<u8>, String>`）与 `OidcAuthenticator`/`OidcSettings`，只做 JWT 验签、声明校验、`sub`→actor 与 `scope` claim 解析；不引入网络 IO，测试可注入固定 JWKS。`refd` 新增 `jwks.rs` 提供 `FileJwksSource`（常规文件、≤ 1 MiB）与 `HttpJwksSource`（`ureq` + rustls、超时、`redirects(0)`、2xx、响应 ≤ 1 MiB）。
+- **验签与声明**：算法白名单 `RS256`/`ES256`/`EdDSA`，白名单外（含 `none`/`HS*`）拒绝；`crit` 非空拒绝；`kid` 匹配 JWK，无 `kid` 仅唯一可用密钥接受；`jsonwebtoken` 校验 `iss`/`aud`/`exp`/`nbf`（`leeway ≤ 60`）；`sub` 非空即 actor。
+- **缓存与刷新**：`JwkSet` 按 `cache_ttl_seconds` 复用，密钥上限 64；未知 `kid` 触发一次强制刷新，`FORCE_REFRESH_MIN = 30s` 内限频并复用当前缓存。拉取/解析/空密钥集一律 `AuthError::Invalid`。
+- **配置与启动**：`config.rs` 新增 `OidcAuthConfig` 与 fail-closed 校验（`issuer` https 且无 userinfo/fragment、`audience` 非空、`jwks_uri`/`jwks_file` 恰一、算法子集、`leeway ≤ 60`、`cache_ttl > 0`、`timeout > 0`），非法配置拒绝启动；`state.rs` 按 mode 装配。
+- **请求路径**：`handlers.rs` 把 `authenticate` 移入 `tokio::task::spawn_blocking`，失败统一走 `unauthorized()`；所有 `401` 带 `WWW-Authenticate: Bearer realm="pact-ref"`。合法令牌缺端点 scope 仍为 `403`。
+- **未变**：`/readyz` 仍只反映审计 sink 健康；OIDC 不做 discovery/撤销/内省，`refd` 不访问 PACT 存储；`static`/`deny` 模式行为不变。
+- **依赖与安全审视**：新增 `jsonwebtoken` 9.3.1、`base64` 0.22.1（`ref-auth`），`ring` 0.17.14（仅测试生成 Ed25519 密钥），`refd` 复用第 91 轮已引入的 `ureq` 2（rustls）。生产代码无 `unsafe`；JWKS 只从配置指定的文件或 HTTPS 地址读取，HTTPS 不跟随重定向、有超时与 1 MiB 上限；令牌与凭据不写日志、不进审计；认证失败统一 `401` 不区分原因。`Cargo.lock` 因新依赖新增 22 个包。`cargo audit`：0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有）。
+- **验证**：`pact-ref` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked --offline -- -D warnings`、`cargo test --workspace --offline` 通过，合计 **99 passed / 0 failed**（`ref-auth` 18，其中 OIDC 11；`refd` 集成 17，其中 OIDC 3）；`cargo audit` 0 vulnerability / 1 unmaintained。
+- **未决**：动态只读/写阶段、`git`/`oci` adapter、conformance runner 仍按台账推进。
+
 ## 2026-10-31（第 91 轮，`refd` resolve/describe 实现）
 
 - **跨仓库**：代码全部在 `pact-ref`（`ref-core` / `ref-auth` / `ref-audit` / adapters / `services/refd`）；本仓库只改 OpenAPI 与状态文档，无 `pact` 服务代码变更。

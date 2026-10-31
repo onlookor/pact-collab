@@ -312,6 +312,17 @@
 - **边界**：摘要是“绑定对应哪版声明”的证据，不证明票面可达、不验证卡片内容、不进入引擎/存储/事件日志；格式保持 `sha256:<64hex>`，v1 语义冻结，未来换义须新规范版本与新编号。
 - **实现状态**：第一步与第二步均已实现（2026-10-31）。`pact-analysis` 单测覆盖格式/顺序不变、语义变化、规范化 JSON 形状、条件文本与 golden 向量；`pact-cli` 单测覆盖缺失/不一致；e2e 覆盖真实二进制 `ref digest`、`--name` 参与摘要、非法域名 `Config` 错误、不一致退出 1 与 `--strict`；`pact-http` 单测覆盖三模式与缺失/一致/不一致/解析失败分支，e2e 覆盖 `enforce` 拒绝且不留已加载域、`warn`/`off` 放行、未记录摘要与无绑定不比较。
 
+### FR35 refd OIDC 身份验证（D51）
+
+- **定位**：`refd` 作为 OIDC 资源服务器，只验证 IdP 签发的 JWT，不内置授权服务器、不做发现文档；`[auth] mode = "oidc"` 时启用。
+- **配置**：`[auth] mode = "oidc"` 时必需 `[auth.oidc]`：`issuer`（必填、必须 `https://`、不得含 userinfo/fragment）、`audience`（缺省 `pact-ref`）、`jwks_uri` 与 `jwks_file` 恰好一个（后者为常规文件、≤ 1 MiB）、`algorithms`（缺省且上限 `RS256`/`ES256`/`EdDSA`）、`leeway_seconds`（缺省 60、上限 60）、`cache_ttl_seconds`（缺省 300、> 0）、`timeout_ms`（缺省 5000、> 0）。配置非法即拒绝启动（fail-closed）。
+- **验签与声明**：白名单外算法（含 `none`、`HS*`）拒绝；`crit` 头非空拒绝；`kid` 须在 JWKS 中匹配，无 `kid` 时仅当唯一可用密钥才接受（避免算法混淆）；必须校验 `iss`/`aud`/`exp`/`nbf`（`leeway` 按配置），缺 `sub` 或 `sub` 为空拒绝。
+- **身份与授权**：actor = 验证后的 `sub`；`scope` claim（空格分隔字符串或字符串数组，其他形态视为空）映射为端点 scope，与既有 ACL 两层判定；scope 不足 → `403`，不透露对象存在性。
+- **JWKS 缓存**：有界缓存（≤ 64 密钥）按 TTL 复用；未知 `kid` 触发一次强制刷新，30s 内不重复刷新（限频窗口内复用当前缓存）；拉取、解析或空密钥集失败一律 `401`。
+- **错误语义**：缺凭据、格式错误、验签失败、未知 `kid`、JWKS 不可达均返回 `401`，统一带 `WWW-Authenticate: Bearer realm="pact-ref"`，不区分失败原因；认证调用在阻塞线程池执行，避免 JWKS 拉取阻断异步运行时。
+- **边界**：不做 discovery、令牌撤销/内省、`groups`/`roles` 到 ACL 的自动映射；`/readyz` 仍只反映审计 sink 健康，不探测 JWKS 可达性（JWKS 失败在请求期以 `401` 体现）。
+- **实现状态**：已实现（2026-10-31，跨仓库 `pact-ref`）。`ref-auth` 单测 11 项覆盖有效/过期/`nbf`/`iss`/`aud`/`alg=none`/`HS256`/未知 `kid` 限频刷新/JWKS 失败/缺凭据；`refd` 集成测试 3 项覆盖 `200`、过期与错误 `aud`/`iss` 的 `401`（含 `WWW-Authenticate`）、无端点 scope 的 `403`；全量 99 passed / 0 failed，`fmt`/`clippy`/`cargo audit` 通过。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。
