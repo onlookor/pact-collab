@@ -1016,8 +1016,8 @@ spec:
 3. **保留阶段（已完成，2026-10-27）**：ContractCard `lifecycle.retention` / `deletionPolicy` / `tombstoneRef`
    已在规范层收紧校验（FR29/D44）；新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查。
    **已完成**：可发现性 lint——对 `required=true` 检查 hidden、视图读取路径、Rule-R/consume 路径、保留证据与删除可区分性（5 个 warning code，`--strict` 视为失败）。
-4. **动态只读阶段（已完成，2026-10-31）**：`mcp-read` profile 校验、`refd` 的 `POST /v1/invoke`、`mcp` adapter（JSON-RPC `tools/call`）与内容寻址物化（FR36/D52）；结果经 `file://` 引用回到 `/v1/resolve`，参与者以正常 `seed`/`produce` 产生 witness token。动态写阶段与 `revoke` 仍未开始。
-5. **动态写阶段（已完成，2026-10-31）**：`pact-ref-spec` 强制 `mcp-mutating` 卡片级必填字段（§13.8.2）；`refd` 已落地 `POST /v1/mutate`、幂等台账（intent/result 两阶段、重启恢复、半行截断、满额）、请求级严格归属与 `operation` 校验、两阶段审计与启动 fail-closed（FR37/D53，§13.8）。witness/compensation 示例留作后续事项。
+4. **动态只读阶段（已完成，2026-10-31）**：`mcp-read` profile 校验、`refd` 的 `POST /v1/invoke`、`mcp` adapter（JSON-RPC `tools/call`）与内容寻址物化（FR36/D52）；结果经 `file://` 引用回到 `/v1/resolve`，参与者以正常 `seed`/`produce` 产生 witness token。动态写见下一阶段；`revoke` 仍未开始。
+5. **动态写阶段（已完成，2026-10-31）**：`pact-ref-spec` 强制 `mcp-mutating` 卡片级必填字段（§13.8.2）；`refd` 已落地 `POST /v1/mutate`、幂等台账（intent/result 两阶段、重启恢复、半行截断、满额）、请求级严格归属与 `operation` 校验、两阶段审计与启动 fail-closed（FR37/D53，§13.8）。witness/compensation 可运行示例见 `pact-ref/examples/witness-compensation/`（§13.8.7）。
 6. **可选注册表**：只做发现，不做真相源。
 
 ### 13.2 测试
@@ -1588,6 +1588,8 @@ JWT/JWKS 验签、声明校验、`scope` 映射与统一 `401`；JWKS 文件/HTT
 - 成功写后前端以 `resultRef` 调 `/v1/resolve` 取句柄，再由参与者在 PACT 侧 `seed`/`produce` 产出 witness token；`refd` 不写 PACT。
 - `failure.compensation` 只是保留键，**不做自动 saga / 自动补偿**：补偿是另一张 `mutating` 卡片加域内规则显式调用，承担「补偿失败」的语义由域负责。
 - 不提供撤销（`revoke`）；撤销若需要，是另一张写卡片。
+- **可运行示例**：`pact-ref/examples/witness-compensation/` 提供 `release/deploy@1`、`release/rollback@1`、`release` 域声明、RefBindings 与 `refd.toml`；离线回归 `services/refd/tests/witness_compensation.rs` 覆盖「成功 → `/v1/resolve` → 可写入 PACT 的 witness 前置条件」与「失败 → 不自动补偿 → 显式补偿成功」。
+- **钉版边界**：物化 `resultRef` 形如 `file://…/<64hex>.json`，本身不含摘要片段，`pinned_digest` 不识别；需要 `required-at-archive` 时，参与者应在写入 PACT 前追加 `resultRef#sha256=<resultDigest 去掉 sha256: 前缀>`。
 
 #### 13.8.8 配置
 

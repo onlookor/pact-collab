@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 50 轮，FR37 witness/compensation 示例）
+
+- **FR37 实现状态补齐（无需求语义变更）**：`pact-ref/examples/witness-compensation/` 提供可运行示例——`release/deploy@1` 与补偿 `release/rollback@1` 两张 `mcp-mutating` 卡片、`release` 域声明、RefBindings（含 `declarationDigest`）、`refd.toml` 与 `README.md`。
+- **两条路径**：成功写 → `resultRef` → `/v1/resolve` 校验可读 → 参与者以 `deployment` 引用正常 `seed`/`produce` 产生 witness token；失败写 → `502 UpstreamFailure` → 不自动调用 `failure.compensation` → `oncall` 显式发起 rollback 写卡片。
+- **验证**：`pact-ref` `services/refd/tests/witness_compensation.rs` 4 项离线回归（witness 闭环、失败不自动补偿 + 显式补偿、`#sha256=` 钉版片段、示例目录完整性）；`crates/ref-core/tests/examples.rs` 新增示例校验；`pact analyze` 良构、`pact ref lint --strict` 0 error / 0 warning。
+- **边界不变**：仍不自动 saga、不自动补偿、不提供 `revoke`；`refd` 不写 PACT。钉版边界写入治理 §13.8.7：物化 `resultRef` 不带摘要片段，需要 `required-at-archive` 时由参与者追加 `#sha256=<digest>`。
+
 ## 2026-10-31（第 49 轮，FR37 动态写调用实现）
 
 - **FR37 实现状态推进为已实现**：`pact-ref` 落地 `ref-core` 的 `MutateRequest`/`Mutation`/`MutationStatus`、`ref-auth` 的 `ref:mutate` scope、`refd` 幂等台账与 `POST /v1/mutate` handler；请求级严格归属（`reference == <server.id>/<tool.name>`）、`operation == tool.name`、`idempotencyKey` 文法、两阶段审计、启动 fail-closed 全部生效。

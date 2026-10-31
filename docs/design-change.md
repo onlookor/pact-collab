@@ -2,6 +2,18 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 97 轮，witness/compensation 示例，FR37/D53）
+
+- **§9.20 补齐可运行示例**：新增 `pact-ref/examples/witness-compensation/`——`release/deploy@1`（`mcp-mutating`，`failure` 带保留键 `compensation`）与补偿卡片 `release/rollback@1`、`release` 域声明（`release_request → deployment → release_receipt`、`incident → rollback`，`auditor` 只读回取）、RefBindings（`declarationDigest` + 类型 → scheme/contract）、`refd.toml`（两个 profile、`[[mcp_servers]]`、`[materialize]`、`[mutate]`）与 `README.md`。
+- **witness 路径**：`POST /v1/mutate` 成功 → 物化 `file://…/<64hex>.json` → 参与者以 `resultRef` 调 `/v1/resolve` 校验 → 以 `deployment` 引用正常 `seed`/`produce`；`refd` 不写 PACT。
+- **compensation 路径**：上游失败返回 `502 UpstreamFailure`，`refd` 不调用 `failure.compensation`；`oncall` 用另一张卡片显式发起 rollback 写请求。示例显式断言失败后 rollback 调用次数为 0，重放不触达上游，再显式补偿成功。
+- **钉版边界**：`resultRef` 不含摘要片段，示例 RefBindings 用 `pinning: optional`；需要 `required-at-archive` 时写 `resultRef#sha256=<resultDigest 去掉 sha256: 前缀>`。该边界写入 `README.md` 与治理 §13.8.7。
+- **契约一致性**：示例域声明通过 `pact analyze`（良构、0 违规、0 警告）与 `pact ref lint --strict`（0 error / 0 warning）；`declarationDigest` 由 `pact ref digest --name release` 生成，改域名需同步更新。
+- **测试**：`crates/ref-core/tests/examples.rs` 新增 `witness_compensation_example_validates`（两张卡片校验、绑定校验与 `deployment` 匹配）；`services/refd/tests/witness_compensation.rs` 4 项（witness 闭环与两阶段审计、失败不自动补偿 + 显式补偿、`#sha256=` 片段可钉版、示例目录完整性）。
+- **回归**：`pact-ref` `fmt`/`clippy`/`test`/`audit` 通过（**154 passed / 0 failed**，`cargo audit` 仅既有 `unsafe-libyaml` unmaintained）；`pact` 基线 **384 passed / 0 failed**。
+- **跨仓库**：示例、测试与 `pact-ref/docs/architecture.md` 在 `pact-ref`；本仓库改动为 `docs/requirements.md` FR37、`docs/requirements-change.md` 第 50 轮、`docs/thingref-governance.md` §13.1/§13.8.7、本文件与台账。
+- **未实现**：`revoke`、可选注册表与 conformance runner 仍按台账推进；母本未改动。
+
 ## 2026-10-31（第 96 轮，`refd` 动态写调用实现，FR37/D53）
 
 - **§9.20 状态推进为已实现**：`pact-ref` 落地 `ref-core` `MutateRequest`/`Mutation`/`MutationStatus`（`AuditEvent` 增可选 `requestDigest`）、`ref-auth` `SCOPE_MUTATE = "ref:mutate"`、`refd` 幂等台账模块与 `POST /v1/mutate` handler。

@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 95 轮）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）与 `mcp-mutating` 规范层卡片校验均已落地。开放项：动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` adapter、conformance runner。下一轮按 P3 实现②。
+当前状态（2026-10-31，第 97 轮）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）均已落地。开放项：`git`/`oci` adapter、conformance runner、可选注册表。下一轮按 P3 推进 `git`/`oci` adapter。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -65,7 +65,7 @@
 | [x] | 动态写契约定案（第 94 轮）：`POST /v1/mutate`、scope `ref:mutate` + ACL `mutate`、`mcp-mutating` 必填 profile、幂等台账 `[mutate].journal`（intent/result 两阶段）、两阶段审计、witness/compensation 边界；治理 §13.8、设计 §9.20、OpenAPI | FR37 / D53 / `thingref-governance.md` §13.8 | 契约与 OpenAPI 校验通过（6 paths / 9 schemas / 14 responses / `$ref` 全解析）；无代码变更，回归基线沿用第 93 轮 |
 | [x] | 动态写实现①（规范层，第 95 轮）：`pact-ref-spec` 校验 `mcp-mutating` **卡片级**必填字段（`tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`），并同步 vendored 快照；`reference == <server.id>/<tool.name>`、`operation == tool.name`、`server.id` 登记与 `idempotencyKey` 文法属请求级，移入实现② | FR37 / D53 / 治理 §13.8.2 / 设计 §9.20 | `pact-ref-spec` 新增 6 单测（缺 `inputSchemaDigest`/缺 `result`/`forbidden` 拒绝/`optional` 放行/缺 `audience`/缺 `failure`）；`pact` 全量 **384 passed / 0 failed**；`sync-spec.sh --check` 通过；`pact-ref` **126 passed / 0 failed** |
 | [x] | 动态写实现②（跨仓库 `pact-ref`，第 96 轮）：`ref-core` `MutateRequest`/`Mutation`、`ref-auth` `SCOPE_MUTATE`、`refd` journal 模块（intent/result、崩溃恢复、满额）与 `POST /v1/mutate` handler、请求级校验（`server.id` 登记、`reference == <server.id>/<tool.name>`、`operation == tool.name`、`idempotencyKey` 文法）、两阶段审计 | FR37 / D53 / 设计 §9.20 | 台账单测（重放/冲突/in-doubt/满额/非法行）+ `refd` 集成测试（含归属/operation 不符 `400`）；`cargo fmt/clippy/test/audit` 通过。**证据**：`Journal` 单测 8 项；`reference_plane` 37 passed（新增 12 项 mutate 用例，含归属/operation `400`、两阶段审计失败、满额 `503`、上游 `502` 重放）；`pact-ref` 全量通过、`cargo audit` 仅既有 unmaintained；`pact` 基线 384 passed |
-| [ ] | 动态写实现③（跨仓库 `pact-ref`）：witness/compensation 示例（写成功后经 `/v1/resolve` + 参与者 `seed`/`produce`）与文档 | FR37 / D53 / 治理 §13.8.7 | 示例可跑；`design-change.md` 记录；`pact-ref/docs/architecture.md` 同步 |
+| [x] | 动态写实现③（跨仓库 `pact-ref`，第 97 轮）：witness/compensation 示例（写成功后经 `/v1/resolve` + 参与者 `seed`/`produce`）与文档 | FR37 / D53 / 治理 §13.8.7 | 示例可跑；`design-change.md` 记录；`pact-ref/docs/architecture.md` 同步。**证据**：`examples/witness-compensation/`（两张卡片、域声明、RefBindings、`refd.toml`、README）；`pact analyze` 良构 0 违规/0 警告；`pact ref lint --strict` 0 error / 0 warning；`witness_compensation.rs` 4 项、`examples.rs` 3 项；`pact-ref` **154 passed**；`pact` 基线 **384 passed** |
 | [ ] | 可选注册表（只做发现，不做真相源） | 同上阶段 6 | 触发条件满足后再开 |
 
 ### 文档同步（本轮必须完成）
@@ -156,11 +156,17 @@
 | [x] | 第 96 轮本仓库回归：`pact` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` | 均通过；**384 passed / 0 failed**（与第 95 轮一致，本轮无 Rust 代码改动） |
 | [x] | 第 96 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、台账数据、审计内容） | 新增依赖仅 workspace 既有 `sha2`；生产代码无 `unsafe`；台账写入限定 `[mutate].journal` 单文件（`O_APPEND` + `sync_data`），不记录 `input`/上游正文/令牌；重放不触达上游，`in-doubt` 不猜测；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained） |
 | [x] | 第 96 轮提交：`pact-ref` `0108f08`（`journal` 模块 + `refd` mutate handler/config/state + `ref-core`/`ref-auth`/`ref-audit` + 集成测试 + `docs/architecture.md`）、`pact` `c26950b`（FR37/设计 §9.20/治理 §13.1·§13.8/OpenAPI 状态/三份变更记录/台账） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
+| [x] | 第 97 轮跨仓库回归：`pact-ref` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、`cargo audit` | 均通过；**154 passed / 0 failed**（新增 `witness_compensation` 4 项、`examples` 3 项）；`cargo audit` 0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有） |
+| [x] | 第 97 轮本仓库回归：`pact` `cargo test --workspace` 基线 | **384 passed / 0 failed**（本轮无 Rust 代码改动） |
+| [x] | 第 97 轮离线验收：`pact analyze examples/witness-compensation/domain.pact`、`pact ref digest`、`pact ref lint --strict` | 良构 0 违规 / 0 警告；`declarationDigest` 一致；`lint` 输出 `bindings=1 contracts=2 tombstones=0 errors=0 warnings=0` |
+| [x] | 第 97 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、示例数据） | 无新增依赖、无生产代码改动（仅示例、测试与文档）；示例 token/endpoint 均为占位（`release-demo-token`、`ops.example.com`），仅监听 `127.0.0.1:18090`；测试 fake MCP 只绑定本地回环；生产代码无 `unsafe` 变化；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained） |
+| [x] | 第 97 轮提交：`pact-ref` `c891374`（`examples/witness-compensation/`、`services/refd/tests/witness_compensation.rs`、`crates/ref-core/tests/examples.rs`、`docs/architecture.md`）、`pact` `0a4d7a6`（FR37 状态/治理 §13.1·§13.8.7/需求与设计变更记录/台账） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
+| 2026-10-31 | 动态写 witness/compensation 示例与文档（第 97 轮，跨仓库 `pact-ref`）：`examples/witness-compensation/`（`release` 域声明、`release/deploy@1` 与 `release/rollback@1` 卡片、RefBindings、`refd.toml`、README 两条路径）；离线回归 `services/refd/tests/witness_compensation.rs` 4 项与 `crates/ref-core/tests/examples.rs` 3 项；`pact-ref/docs/architecture.md` 同步 | FR37 / D53 / 治理 §13.8.7 | 示例可跑（fake MCP 驱动真实 `refd`，成功路径经 `/v1/resolve` 取句柄、失败路径锁定不自动补偿）；`pact analyze` 0 违规 / 0 警告；`pact ref lint --strict` 0 error / 0 warning；`pact-ref` **154 passed**、`pact` **384 passed**；`design-change.md` 第 97 轮；`pact-ref` `c891374` / `pact` `0a4d7a6` |
 | 2026-10-31 | 动态写调用实现（第 96 轮）：`ref-core` `MutateRequest`/`Mutation`/`MutationStatus`、`ref-auth` `ref:mutate`、`refd` 幂等台账（intent/result、重启恢复、半行截断、满额）与 `POST /v1/mutate`（请求级严格归属/operation、两阶段审计、错误映射、启动 fail-closed） | FR37 / D53 / 治理 §13.8 / 设计 §9.20 | `Journal` 单测 8 项、`reference_plane` **37 passed**（新增 12 项 mutate）；`pact-ref` 全量 `fmt`/`clippy`/`test`/`audit` 通过；`pact` 基线 **384 passed**；`design-change.md` 第 96 轮；`pact-ref` `0108f08` / `pact` `c26950b` |
 | 2026-10-31 | `mcp-mutating` 规范层卡片校验（第 95 轮）：`pact-ref-spec` 强制 `inputSchemaDigest`、`idempotency`、`materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`；请求级归属/operation/幂等键文法移交实现② | FR37 / D53 / 治理 §13.8.2 / 设计 §9.20 | 新增 6 单测，`pact-ref-spec` **51 passed**、`pact` **384 passed**；vendored 快照 `--check` 通过；`pact-ref` **126 passed**；`design-change.md` 第 95 轮；`pact` `62afbea` / `pact-ref` `d797f6b` |
 | 2026-10-31 | 动态写契约（契约已定案、实现待做）：`POST /v1/mutate`、`ref:mutate` + ACL `mutate`、`mcp-mutating` 必填 profile、`[mutate].journal` 幂等台账（intent/result）、两阶段审计、witness/compensation 边界 | FR37 / D53 / 治理 §13.8 / 设计 §9.20 | OpenAPI 6 paths / 9 schemas / 14 responses / `$ref` 全解析；无代码变更；`design-change.md` 第 94 轮；`pact` 与 `pact-ref` 双侧文档均更新 |

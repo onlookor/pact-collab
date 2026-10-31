@@ -347,7 +347,7 @@
 - **失败语义**：上游明确失败 → `502 UpstreamFailure`（台账 `failed`，审计 `status=failed`）；超时或连接中断 → `504 UpstreamTimeout`（台账与审计 `in-doubt`）；物化超限或写入失败 → 不返回部分结果。
 - **启动约束（fail-closed）**：存在 `mutating` 能力 profile 时，必须配置 `[mutate].journal`（父目录存在、可解析、条目数 ≤ `max_entries`）与 `[materialize]`，`capability.server.id` 必须登记于 `[[mcp_servers]]`；台账中同键异摘要或非法行拒绝启动。
 - **边界**：不做自动重试、轮询、后台任务、跨服务路由、自动 saga/compensation 或结果缓存清理；`revoke`、可选注册表与 conformance runner 不在本需求。
-- **实现状态**：已实现（2026-10-31）。规范层 `pact-ref-spec` 强制 `mcp-mutating` **卡片级**必填字段（`tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`），单测 6 项；`pact-ref` 已落地 `ref-core` `MutateRequest`/`Mutation`、`ref-auth` `ref:mutate` scope、`refd` 幂等台账（intent/result、重启恢复、半行截断、满额）、`POST /v1/mutate` handler（请求级严格归属与 `operation` 校验、两阶段审计、错误映射）与启动 fail-closed；台账单测 8 项、`refd` 集成测试 12 项。witness/compensation 示例留作下一事项（FR37 不要求自动补偿）。
+- **实现状态**：已实现（2026-10-31）。规范层 `pact-ref-spec` 强制 `mcp-mutating` **卡片级**必填字段（`tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`），单测 6 项；`pact-ref` 已落地 `ref-core` `MutateRequest`/`Mutation`、`ref-auth` `ref:mutate` scope、`refd` 幂等台账（intent/result、重启恢复、半行截断、满额）、`POST /v1/mutate` handler（请求级严格归属与 `operation` 校验、两阶段审计、错误映射）与启动 fail-closed；台账单测 8 项、`refd` 集成测试 12 项。witness/compensation 可运行示例见 `pact-ref/examples/witness-compensation/`（`README.md` 两条路径 + `services/refd/tests/witness_compensation.rs` 4 项离线回归）；FR37 不要求自动补偿。
 
 ## 5. 非功能需求
 
