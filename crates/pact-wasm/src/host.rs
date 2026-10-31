@@ -12,6 +12,7 @@ use pact_core::{
 };
 use pact_engine_kernel::{analysis_report, ConsumePreparation, KernelError, Session};
 use pact_parser::{load_domain, Problem};
+use pact_ref_spec::{validate_entry, EntryError, EntryRef, RefBindings, SpecError};
 use pact_store_model::{
     to_wire_json, validate_domain_name, validate_instance_name, Event, InstanceKey, ModelError,
     Snapshot, WireEvent, EVENT_SCHEMA_VERSION,
@@ -210,6 +211,8 @@ pub struct PactHost {
     sessions: BTreeMap<InstanceKey, InstanceSession>,
     /// tx_id → 待提交事件。
     pending: BTreeMap<String, PendingTx>,
+    /// D50：宿主注入的 RefBindings（按 `metadata.domain` 索引）。
+    ref_bindings: BTreeMap<String, RefBindings>,
     next_tx: u64,
 }
 
@@ -329,6 +332,57 @@ impl PactHost {
         self.load_domain_at(name, &declaration, instance, ts, false)
     }
 
+    // —— D50：宿主注入的 RefBindings ——
+
+    /// 注入/替换一个域的 RefBindings（JSON 字符串，`deny_unknown_fields` + `validate`）。
+    ///
+    /// WASM 不读文件：绑定由宿主解析后交给内核，按 `metadata.domain` 累积。
+    /// 注入后 `prepare_seed` / `prepare_produce` 在进入 kernel 前执行与 REST
+    /// 同一套入口校验。
+    pub fn set_ref_bindings(&mut self, bindings_json: &str) -> Result<(), FacadeError> {
+        let bindings: RefBindings = serde_json::from_str(bindings_json)
+            .map_err(|e| FacadeError::new("BadJson", format!("RefBindings 解析失败：{e}")))?;
+        bindings
+            .validate()
+            .map_err(|e| FacadeError::new("InvalidBindings", e.to_string()))?;
+        self.ref_bindings
+            .insert(bindings.metadata.domain.clone(), bindings);
+        Ok(())
+    }
+
+    /// 移除一个域的绑定；返回是否确有条目被移除。
+    pub fn remove_ref_bindings(&mut self, domain: &str) -> bool {
+        self.ref_bindings.remove(domain).is_some()
+    }
+
+    /// 清空全部绑定；之后的写入回到“只做结构校验”的旧行为。
+    pub fn clear_ref_bindings(&mut self) {
+        self.ref_bindings.clear();
+    }
+
+    /// D50：写入前校验并规范化票面（与 REST 共用 `pact_ref_spec::validate_entry`）。
+    ///
+    /// JS/WASM 无法区分“参数省略”和 `null`，两者都映射为 `∅`，
+    /// 因此这里不会产生 `ThingRefMissing`。
+    fn validate_thing_ref(
+        &self,
+        key: &InstanceKey,
+        ty: &str,
+        thing_ref: Option<&str>,
+    ) -> Result<Option<String>, FacadeError> {
+        let bindings = self.ref_bindings.get(&key.domain);
+        let input = thing_ref.map_or(EntryRef::Absent, EntryRef::Present);
+        validate_entry(bindings, Some(&key.instance), ty, input).map_err(|error| {
+            let code = match &error {
+                EntryError::Missing => "ThingRefMissing",
+                EntryError::Invalid(SpecError::ReferenceRequired) => "ThingRefRequired",
+                EntryError::Invalid(SpecError::PinningRequired { .. }) => "ThingRefUnpinned",
+                EntryError::Invalid(_) => "InvalidThingRef",
+            };
+            FacadeError::new(code, error.to_string())
+        })
+    }
+
     /// 已登记实例的定义键与实例清单（排序去重）。
     pub fn list_domains(&self) -> Vec<DomainListing> {
         let mut grouped: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -359,6 +413,8 @@ impl PactHost {
         token_id: &str,
         ts: &str,
     ) -> Result<Prepared, FacadeError> {
+        // D50：先按宿主注入的绑定校验，再进入 kernel。
+        let thing_ref = self.validate_thing_ref(key, ty, thing_ref)?;
         let session = self.session(key)?;
         let prepared = session
             .core
@@ -387,6 +443,8 @@ impl PactHost {
     ) -> Result<Prepared, FacadeError> {
         let predecessors: Vec<TokenId> = serde_json::from_str(predecessors_json)
             .map_err(|e| FacadeError::new("BadJson", e.to_string()))?;
+        // D50：先按宿主注入的绑定校验，再进入 kernel。
+        let thing_ref = self.validate_thing_ref(key, ty, thing_ref)?;
         let session = self.session(key)?;
         let prepared = session
             .core
@@ -1086,5 +1144,209 @@ seed_authority { external_stakeholder: seeds requirement }
             host.counter(&k, None).unwrap()
         );
         assert_eq!(restored.export_events(&k).unwrap(), lines);
+    }
+
+    fn ref_bindings(domain: &str, types: &str) -> String {
+        format!(
+            r#"{{"apiVersion":"pact.ref/v1","kind":"RefBindings","metadata":{{"domain":"{domain}"}},"spec":{{"types":{types}}}}}"#
+        )
+    }
+
+    #[test]
+    fn ref_bindings_validate_entry_and_normalize() {
+        let mut host = PactHost::new();
+        host.load_domain("d", DESIGN_PHASE, "default").unwrap();
+        let k = key("d", "default");
+        host.set_ref_bindings(&ref_bindings(
+            "d",
+            r#"{"requirement":{"ref":{"required":true,"schemes":["https"]}}}"#,
+        ))
+        .unwrap();
+
+        // 省略与 null 都映射为 ∅ → required 拒绝。
+        let err = host
+            .prepare_seed(
+                &k,
+                "external_stakeholder",
+                "requirement",
+                None,
+                "seq-0",
+                "T1",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "ThingRefRequired");
+
+        // scheme 白名单。
+        let err = host
+            .prepare_seed(
+                &k,
+                "external_stakeholder",
+                "requirement",
+                Some("git://example.com/req"),
+                "seq-0",
+                "T1",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "InvalidThingRef");
+        assert!(err.message.contains("git"));
+
+        // 缺省不允许 Identifier。
+        let err = host
+            .prepare_seed(
+                &k,
+                "external_stakeholder",
+                "requirement",
+                Some("REQ-001"),
+                "seq-0",
+                "T1",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "InvalidThingRef");
+
+        // scheme 规范化后写入 kernel。
+        let p = host
+            .prepare_seed(
+                &k,
+                "external_stakeholder",
+                "requirement",
+                Some("HTTPS://example.com/req"),
+                "seq-0",
+                "T1",
+            )
+            .unwrap();
+        host.commit(p.tx_id.as_deref().unwrap(), None).unwrap();
+        let counter = host.counter(&k, None).unwrap();
+        let token = counter
+            .tokens
+            .iter()
+            .find(|token| token.ty.0 == "requirement")
+            .expect("seeded requirement");
+        assert_eq!(
+            token.thing_ref.0.as_deref(),
+            Some("https://example.com/req")
+        );
+    }
+
+    #[test]
+    fn ref_bindings_apply_to_produce_and_pinning() {
+        let mut host = PactHost::new();
+        host.load_domain("d", DESIGN_PHASE, "default").unwrap();
+        let k = key("d", "default");
+        host.set_ref_bindings(&ref_bindings(
+            "d",
+            r#"{"design":{"ref":{"required":true,"pinning":"required"}}}"#,
+        ))
+        .unwrap();
+
+        let seed = host
+            .prepare_seed(
+                &k,
+                "external_stakeholder",
+                "requirement",
+                None,
+                "seq-0",
+                "T1",
+            )
+            .unwrap();
+        host.commit(seed.tx_id.as_deref().unwrap(), None).unwrap();
+
+        // produce 路径同样在进入 kernel 前校验。
+        let err = host
+            .prepare_produce(
+                &k,
+                "architect",
+                "design",
+                r#"["seq-0"]"#,
+                None,
+                "seq-1",
+                "T2",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "ThingRefRequired");
+
+        let err = host
+            .prepare_produce(
+                &k,
+                "architect",
+                "design",
+                r#"["seq-0"]"#,
+                Some("https://example.com/design"),
+                "seq-1",
+                "T2",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "ThingRefUnpinned");
+
+        let hex = "9f".repeat(32);
+        let pinned = format!("https://example.com/design#sha256={hex}");
+        let p = host
+            .prepare_produce(
+                &k,
+                "architect",
+                "design",
+                r#"["seq-0"]"#,
+                Some(&pinned),
+                "seq-1",
+                "T2",
+            )
+            .unwrap();
+        host.commit(p.tx_id.as_deref().unwrap(), None).unwrap();
+        let counter = host.counter(&k, None).unwrap();
+        let token = counter
+            .tokens
+            .iter()
+            .find(|token| token.ty.0 == "design")
+            .expect("produced design");
+        assert_eq!(token.thing_ref.0.as_deref(), Some(pinned.as_str()));
+    }
+
+    #[test]
+    fn ref_bindings_can_be_removed_and_cleared() {
+        let mut host = PactHost::new();
+        host.load_domain("d", DESIGN_PHASE, "default").unwrap();
+        let k = key("d", "default");
+
+        assert_eq!(
+            host.set_ref_bindings("not json").unwrap_err().code,
+            "BadJson"
+        );
+        let invalid = r#"{"apiVersion":"pact.ref/v2","kind":"RefBindings","metadata":{"domain":"d"},"spec":{}}"#;
+        assert_eq!(
+            host.set_ref_bindings(invalid).unwrap_err().code,
+            "InvalidBindings"
+        );
+
+        let valid = ref_bindings("d", r#"{"requirement":{"ref":{"required":true}}}"#);
+        host.set_ref_bindings(&valid).unwrap();
+        let err = host
+            .prepare_seed(
+                &k,
+                "external_stakeholder",
+                "requirement",
+                None,
+                "seq-0",
+                "T1",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, "ThingRefRequired");
+
+        assert!(host.remove_ref_bindings("d"));
+        assert!(!host.remove_ref_bindings("d"));
+        // 无绑定：回到只做结构校验，∅ 与 Identifier 均放行。
+        let p = host
+            .prepare_seed(
+                &k,
+                "external_stakeholder",
+                "requirement",
+                Some("REQ-001"),
+                "seq-0",
+                "T1",
+            )
+            .unwrap();
+        host.commit(p.tx_id.as_deref().unwrap(), None).unwrap();
+
+        host.set_ref_bindings(&valid).unwrap();
+        host.clear_ref_bindings();
+        assert!(host.ref_bindings.is_empty());
     }
 }

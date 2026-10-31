@@ -55,6 +55,7 @@
 | D47 | 物引契约卡运行期加载与版本不可变（FR32，2026-10-29 定案；2026-10-30 已实现） | daemon 新增可选 `[ref_contracts].paths`（文件或目录，可重复；目录展开 `.yaml`/`.yml`/`.json`，规则同 `[ref_bindings]`）；启动时用 `pact-ref-spec::ContractCard::validate` 校验，并以 `contract_id()`（`metadata.id@version`）建索引。**按数据触发**：任一 RefBindings 有效规则声明 `contract` ⇒ 必须配置且每个引用可解析，否则启动失败；无 `contract` 引用 ⇒ 不要求配置。**同版本不可变**：同一 `contract_id()` 出现两次（无论内容是否相同）⇒ 启动失败。**只加严**：consume 的有效钉版要求 = 绑定 `pinning` ∪ 卡片 `reference.pinning.requiredForArchive` / `artifact.digestPolicy: required-at-archive`，卡片不得放宽绑定；判定与错误码沿用 D46（`ThingRefUnpinned`）。首版不读 `artifact.kind`/`mediaType`、不做 `lifecycle` 运行期检查，也不做热更新（D48）。 | 卡片已被绑定声明、被 lint 检查，运行期不读会让“检查通过”与“归档行为”脱节；索引键必须与绑定 `contract` 的 `id@version` 一致，否则同一引用在不同层指向不同版本。按数据触发让不使用契约的部署零迁移，同时保证一旦使用就 fail-closed。同版本不可变比“重启/重载”更底层：否则同一部署在不同时刻对同一 token 给出不同判定且不留痕迹。卡片只加严，避免“卡片与绑定谁优先”的歧义；artifact/mediaType 需要票面携带 media type，当前不推断，避免把不可判定的事做成检查。 |
 | D48 | 物引契约卡与绑定显式重载（FR33，2026-10-29 定案；2026-10-30 已实现） | 新增 `POST /ref/reload`（body `{"dryRun": bool}`，缺省 false）与 CLI `pact ref reload [--dry-run] [--json]`；不提供 MCP 工具。重载把 `[ref_contracts]` 与 `[ref_bindings]` 作为**同一事务**：读取配置源 → 解析/规范校验 → 校验所有 `contract` 引用可解析 → 计算影响报告 → 写控制面审计 → 原子替换内存索引与规则；任一步失败保持旧状态，不做部分生效。并发重载单飞，冲突 `409 RefReloadBusy`；校验失败 `400 RefReloadInvalid`；审计写失败 `500`。`dryRun=true` 完成校验与影响报告但不替换；报告按 `(domain,instance,type)` 统计换绑后因缺摘要而无法归档的存量 Counter token 数，不输出票面值。审计写 `<data_dir>/ref-reload.jsonl`（append+fsync）：`ts`/`by`（无身份为 null）/`dryRun`/`outcome`/`files[{path,sha256,kind}]`/卡片与绑定计数/可选 `error`。认证：配置任何身份后必须认证；ACL 启用时调用者须对当前与新的绑定索引中每个域持有 `{domain}/*`，索引为空时只需认证；信任声明模式放行匿名。实现上 daemon 启动注入 `RefReloadConfig`（绑定/卡片路径与审计路径），每次重载**重新读取**配置源，`VisibilityProfiles` 记录本次实际读取文件的 `sha256`（审计摘要与生效内容同源）；索引以 `RwLock<Arc<VisibilityProfiles>>` 原子换指针，请求处理期间取同一快照。未注入配置 → `500 RefReloadUnavailable`；影响预检引擎错误 → `500 RefReloadFailed`；审计写失败统一 `500 RefReloadAuditFailed`（覆盖原错误）；认证失败与并发冲突不写审计。不做文件监听、SIGHUP、自动回滚与按域灰度。 | 卡片不含状态、不进事件日志，不能照搬 D39 的交接；版本化 + 显式激活即可获得“新版本服务新工作、旧版本仍可解析”的效果，而无需迁移状态。卡片与绑定必须同事务，否则中间态会出现“绑定引用了尚未加载的新版本”或反之。原子换指针（在途请求持旧快照）避免读到半套规则。默认不监听文件，避免半写文件、跨文件依赖竞态与不可审计的版本漂移；`dryRun` 让“收紧钉版会阻断存量归档”在生效前可见。审计先于替换写盘，保证每次行为变化都有可追溯记录。 |
 | D49 | 域声明语义接口摘要 `declarationDigest` v1（FR34，2026-10-31 用户确认；两步均已实现） | **摘要对象 = 语义接口**：域名（`load_domain` 的 `name`；CLI 取 `--name`，缺省文件 stem）+ `types` + `preconditions` + `gates`（含条件表达式）+ `seed_authority`；注释/空白/段内顺序/文件名/实例名/卡片与绑定内容不参与。**规范化**冻结在 `spec/ref/v1/declaration-digest.md`：UTF-8 紧凑 JSON（无缩进、无尾换行），顶层固定 `{"kind":"pact.declaration.interface","v":1,…}`，集合按字符串字典序、`gates` 按 `(participant, action, type)`（action 用字符串而非枚举序），条件用自定文法文本而非 `serde` 派生表示；摘要 = `sha256:` + 小写 hex。**实现落点**：`pact-analysis::digest` 纯函数（CLI 与 `pact-http` 共用），`pact-ref-spec` 保持零 `pact-core` 依赖。**第一步（已实现）**：`pact ref digest <file.pact> [--name N] [--json]`；`pact ref lint --declaration` 比对绑定摘要——缺失 warning `ref.bindings.digest_missing`，已记录且不一致 error `ref.bindings.digest_mismatch`（退出 1）。**第二步（已实现）**：`[ref_digest] mode = off\|warn\|enforce`（缺省 `warn`），仅在 `POST /domains` 进入引擎前比对；绑定未记录或该域无绑定不比较；`warn` 写警告日志并放行，`enforce` 仅“摘要存在且不一致”返回 `400 DeclarationDigestMismatch`；声明解析失败保留既有 `Syntax`/`WellFormedness`；启动恢复不比较，显式重载（D48）不复核已登记声明。 | 语义接口比原文/规范化 AST 更小、更接近治理关心的契约面：格式变化不误报，而类型/前置/gate 条件/种子权的变化必然改变摘要（这正是期望行为）。工具与 lint 先行让“真实漂移”在提交前被拦，运行期默认 `warn` 保留后续收紧空间；`enforce` 显式开启，避免误算直接变成域不可加载。条件使用自定文法而非 `serde` 派生表示，避免序列化器升级静默改变全量摘要。格式保持 `sha256:<64hex>`，不新增 schema 字段，未来换义必须新规范版本与新编号。 |
+| D50 | WASM 本地入口票面校验与绑定注入（FR30，2026-10-31，用户要求继续推进） | 把 `pact-http` 已有的入口校验语义抽为 `pact-ref-spec::validate_entry` 纯函数（三态输入、URI profile、`required`/`allowIdentifier`/`schemes`/`onUnknownScheme`/`value`/`maxLength`/`pinning: required`），REST 与 WASM 共用，避免两套规范化。`PactHost` 新增 `set_ref_bindings` / `remove_ref_bindings` / `clear_ref_bindings`：宿主以 **JSON 字符串**注入 RefBindings（解析后立即 `validate`，按 `metadata.domain` 累积），不在 WASM 内读文件；`prepare_seed` / `prepare_produce` 在进入 kernel 前校验，成功写规范化票面。JS `thing_ref` 省略与 `null` 都表示 `∅`（无“字段缺失”态），因此不产生 `ThingRefMissing`；错误码沿用 `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`。绑定注入是可选能力：未注入时只做结构校验，行为与本轮之前一致。ContractCard 运行期钉版与 Archive 检查不在本轮范围（仍只在 REST 边界）。 | 入口校验必须与 REST 同一语义，否则同一 `.pact` + 同一绑定在两种分发形态下判定不同；抽纯函数是最小共享面。绑定由宿主注入而非 WASM 读文件，守住“WASM 无 IO、持久化归宿主”的既有边界，也避免把 YAML 解析器拉进 wasm。JS 无法表达“缺失”三态，强行区分只会在宿主层制造假语义，故省略即 `∅`，与 MCP 省略语义一致。绑定缺省时保持旧行为，避免要求所有嵌入部署先配绑定。 |
 
 ## 1. 总体结构
 
@@ -1004,7 +1005,7 @@ spec:
 
 **行为变化**：一旦某域加载了 RefBindings，该域默认只接受 URI——旧 Identifier 需要在绑定里显式 `allowIdentifier: true`；未加载绑定的域只做结构规则，Identifier 仍可写入（回归锚点）。
 
-**未覆盖路径**：`pact-wasm` 的 `prepare_seed`/`prepare_produce` 直接构造 `ThingRef`，未接本校验；`pact-runtime` 的进程内 REST 客户端继承本校验。归档钉版、`onUnknownScheme`、`RefRule.value` 见 §9.13（D46）；ContractCard 运行期加载见 §9.14（D47）；`declarationDigest` 的离线计算与 lint 比对、运行期 `[ref_digest]` 比对见 §9.16（D49）。
+**未覆盖路径**：`pact-wasm` 本地宿主现已通过 `PactHost::set_ref_bindings` 注入绑定并复用同一校验（§9.17，D50）；未注入绑定时只做结构校验。`pact-runtime` 的进程内 REST 客户端继承本校验。归档钉版、`onUnknownScheme`、`RefRule.value` 见 §9.13（D46）；ContractCard 运行期加载见 §9.14（D47）；`declarationDigest` 的离线计算与 lint 比对、运行期 `[ref_digest]` 比对见 §9.16（D49）。
 
 **测试**：`pact-ref-spec` 单测（userinfo、Identifier 文法、长度、规范化）；`pact-http` 单测（三态、绑定策略）；`crates/pact-http/tests/visibility_e2e.rs` 端到端（原始 HTTP 缺失字段、显式 `null`、userinfo、裸路径、空格 Identifier、超长、大写 scheme、`required` 拒绝 `∅`、Identifier/scheme/maxLength 拒绝）。
 
@@ -1029,7 +1030,7 @@ spec:
 
 **错误码**：`pinning` 失败 → `400 ThingRefUnpinned`（`message` 区分写入/归档）；`value`/`onUnknownScheme` 失败 → `400 InvalidThingRef`；配置矛盾 → daemon 启动失败（`RefBindings` 校验）。
 
-**边界**：ContractCard 的运行期加载与归档钉版并集由 §9.14（D47）承接，显式重载由 §9.15（D48）承接，均已在 REST 边界实现；`artifact.kind`/`mediaType`、`lifecycle` 运行期检查不在本层。`pact-wasm` 本地宿主不在 REST 边界内。
+**边界**：ContractCard 的运行期加载与归档钉版并集由 §9.14（D47）承接，显式重载由 §9.15（D48）承接，均已在 REST 边界实现；`artifact.kind`/`mediaType`、`lifecycle` 运行期检查不在本层。`pact-wasm` 本地宿主在写入侧复用同一 `value` / `onUnknownScheme` / `pinning: required` 判定（§9.17，D50），但不加载卡片、不做 consume 前的归档钉版检查。
 
 **测试**：`pact-ref-spec`（`pinned_digest`、未知 scheme 三分支、`merged_rule` 跳过入口校验、`required+value=none` 拒绝）；`pact-http` 单测（形态、未知 scheme、写入/归档钉版）；`visibility_e2e` 端到端（`ThingRefUnpinned` 写入与 consume、钉版引用成功归档）。
 
@@ -1093,16 +1094,46 @@ pub fn declaration_interface_json(domain: &str, ast: &Domain) -> String;
 
 **测试**：`pact-analysis` 单测 5 项（格式/子句顺序不变、语义变化改变摘要、规范化 JSON 形状冻结、条件文本、golden 向量）；`pact-cli` 单测（缺失 warning / 不一致 error）；`ref_lint_e2e`（真实二进制 `ref digest` 的 JSON 与人类输出、`--name` 参与摘要、非法域名、lint 不一致退出 1、缺失默认成功/`--strict` 失败）；`pact-http` 单测（三模式、缺失/一致/不一致、解析失败不改错误码）；`ref_digest_e2e`（`enforce` 匹配放行、`enforce` 不一致 `400` 且域未加载、`warn`/`off` 放行、未记录摘要与无绑定不比较、非法声明保留既有错误码）。
 
+### 9.17 WASM 本地入口校验与绑定注入（D50，已实现）
+
+**共享纯函数**：入口语义从 `pact-http` 的 `VisibilityProfiles::validate_thing_ref` 抽到 `pact-ref-spec::entry`，REST 与 WASM 调用同一实现：
+
+```rust
+pub enum EntryRef<'a> { Missing, Absent, Present(&'a str) }
+pub enum EntryError { Missing, Invalid(SpecError) }
+pub fn validate_entry(
+    bindings: Option<&RefBindings>,
+    instance: Option<&str>,
+    type_name: &str,
+    input: EntryRef<'_>,
+) -> Result<Option<String>, EntryError>;
+```
+
+`pact-http` 的 `validate_thing_ref` 只做三态适配并查询本域绑定后委托；`RefEntryError` 改为 `pub use pact_ref_spec::EntryError as RefEntryError`，REST 错误码映射与 e2e 行为不变。纯函数无 IO、无 `pact-core` 依赖，可编译到 `wasm32-unknown-unknown`。
+
+**WASM 侧**：
+
+- `PactHost` 增加内存 `ref_bindings: BTreeMap<String, RefBindings>` 与 `set_ref_bindings(json)` / `remove_ref_bindings(domain)` / `clear_ref_bindings()`。`set_ref_bindings` 解析 JSON（`deny_unknown_fields`）后立即 `validate`，非法输入返回 `BadJson` / `InvalidBindings`；WASM **不读文件**，不引入 YAML 解析器。
+- `prepare_seed` / `prepare_produce` 在取会话与进入 kernel 前调用 `validate_entry`；成功写规范化票面（scheme 小写），失败映射为 `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`。`prepare_produce` 的前驱 JSON 解析仍先于票面校验。
+- JS/WASM 无法表达“字段缺失”：`thing_ref` 省略与 `null` 都映射为 `EntryRef::Absent`（`∅`），因此 WASM 路径不会产生 `ThingRefMissing`。
+- 绑定注入是可选能力：未注入时只做结构校验（URI profile、Identifier 文法、默认 2048 字节上限），与本轮之前行为一致。
+
+**JS 宿主**：`openPactHost({ refBindings })` 接受对象、对象数组或 JSON 字符串（也支持 `PACT_WASM_REF_BINDINGS` 环境变量），在实例加载/恢复前注入；`PactHost` 另暴露 `setRefBindings` / `removeRefBindings` / `clearRefBindings` 供运行期调整。
+
+**边界**：ContractCard 的 `requiredForArchive` 与 Archive 检查仍只在 REST 边界（D47）；WASM 不加载卡片、不做归档钉版。多用户 ACL/读审计仍不在 WASM（§16.1）。绑定只影响本进程内存，宿主重启后需重新注入。
+
+**测试**：`pact-ref-spec` 单测 7 项（三态、无绑定结构规则、required/schemes、Identifier、未知 scheme 三分支、`value`/`pinning`）；`pact-http` 既有单测与 e2e 全绿（委托后行为不变）；`pact-wasm` 单测 3 项（seed 校验与规范化、produce 校验与钉版、非法绑定/移除/清空）；Node 测试 1 项（`refBindings` 注入、拒绝、规范化、运行期移除）；wasm32 clippy 与 `ci-smoke` 通过。
+
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
 | 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码**；**D47 卡片钉版归档与重复版本拒绝**；**D48 显式重载（dryRun 报告、失败保持旧状态、审计/ACL/认证）与真实二进制 `pact ref reload`**；**D49 运行期摘要比对（`off`/`warn`/`enforce`、未记录摘要与无绑定不比较、`enforce` 拒绝且不加载）** | 阶段 4/5 的 e2e 测试 |
 | v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
-| WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试 | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |
+| WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试（含 D50 绑定注入与写入前校验） | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |
 | 依赖安全审计 | `cargo audit --file Cargo.lock`：RustSec 漏洞（vulnerability）即失败；unmaintained/unsound 仅告警，保持可见不阻断；`cargo-audit` 版本固定并缓存 | `.github/workflows/ci.yml` 的 `audit` job |
 
 ## 11. 实现阶段
@@ -1246,7 +1277,8 @@ PACT_COMPL   = int          // 互补库所只承载计数不变量
 ### 16.4 稳定化验收与不纳入项
 
 - 稳定化验收（**全部完成，2026-10-21**）：W-Q7 独立 CI job（wasm32 构建 + Node 冒烟 + 体积/ABI 断言）→ 金标扩面（多实例、组合域、条件分支、压缩后恢复）→ 抽取 `pact-engine-kernel` 消除双实现 → 宿主边界安全审视。四项通过后按 D33 去除“实验性”标记。
-- 维护约束：`wasm` CI job 持续执行 wasm32 clippy/build、bindgen、`ci-smoke` 与 Node 7 项测试；任何语义改动必须同时通过原生与 WASM 金标对账。
+- 维护约束：`wasm` CI job 持续执行 wasm32 clippy/build、bindgen、`ci-smoke` 与 Node 测试（含 D50 绑定注入）；任何语义改动必须同时通过原生与 WASM 金标对账。
+- D50（2026-10-31）：WASM 入口票面校验与 REST 共用 `pact-ref-spec::validate_entry`；宿主经 `set_ref_bindings` / `remove_ref_bindings` / `clear_ref_bindings` 注入绑定，未注入时只做结构校验。ContractCard 归档钉版仍仅在 REST 边界。
 - 不纳入：浏览器 OPFS/SharedWorker（W-Q6；兼容性评估已完成，未实现）、多用户 ACL/读审计、turso 索引与压缩、NFR6 v2 远端模式。DSH `govern` 已由阶段 11 的仓库内插件实现（FR25/D37），但不由 WASM 内核承担，也不改变本节边界。触发条件见 `docs/wasm-local-spike-feasibility.md` §11.2。
 
 ## 17. DSH 插件（阶段 11，D37）

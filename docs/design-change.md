@@ -2,6 +2,19 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 88 轮，D50：WASM 本地入口校验与绑定注入）
+
+- **D50 定案**：把入口票面语义从 `pact-http::VisibilityProfiles::validate_thing_ref` 抽到 `pact-ref-spec::entry::validate_entry` 纯函数，REST 与 WASM 共用；`EntryRef` 保留三态（`Missing` / `Absent` / `Present`），`EntryError` 由规范层统一。
+- **REST 委托**：`pact-http` 的 `validate_thing_ref` 只做三态适配并查询本域绑定后委托；`RefEntryError` 改为 `pub use pact_ref_spec::EntryError`；错误码映射与 e2e 行为不变。删除本地 `scheme_is_unknown`，统一由规范层实现。
+- **WASM 注入**：`PactHost` 增加内存 `ref_bindings: BTreeMap<String, RefBindings>` 与 `set_ref_bindings` / `remove_ref_bindings` / `clear_ref_bindings`；`set_ref_bindings` 解析 JSON 后立即 `validate`，非法输入映射为 `BadJson` / `InvalidBindings`。WASM 不读文件、不引入 YAML 解析器。`prepare_seed` / `prepare_produce` 在取会话前调用同一纯函数，成功写规范化票面；`prepare_produce` 的前驱 JSON 解析仍先于票面校验。
+- **WASM 三态语义**：JS/WASM 无法表达“字段缺失”，`thing_ref` 省略与 `null` 均映射为 `Absent`（`∅`），因此 WASM 路径不产生 `ThingRefMissing`；错误映射为 `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`。
+- **JS 宿主**：`openPactHost({ refBindings })` 接受对象、对象数组或 JSON 字符串（也支持 `PACT_WASM_REF_BINDINGS`），在实例加载/恢复前注入；`PactHost` 暴露 `setRefBindings` / `removeRefBindings` / `clearRefBindings`。
+- **边界**：绑定只影响本进程内存，宿主重启后需重新注入；ContractCard `requiredForArchive` 与 Archive 检查仍只在 REST 边界（D47），WASM 不加载卡片、不做归档钉版；多用户 ACL/读审计仍不在 WASM。
+- **文档**：`docs/design.md` §0 新增 D50、§9.12 未覆盖路径、§9.17 实现记录、§10 测试表与 §16.4 维护说明；`docs/architecture.md` 正文与附录 A 第 88 轮；`docs/requirements.md` FR21/FR30/FR31；`docs/manual.md` §2.7 与 §7.11；`docs/thingref-governance.md` §8.1/§8.2/§13.1；README 中英文本地嵌入描述改为用途视角。
+- **跨仓库**：`pact-ref-spec` 变更同步到 `pact-ref/vendor/pact-ref-spec`（`scripts/sync-spec.sh --source …`，`--check` 通过）；`pact-ref` `fmt`/`clippy`/`test` 全绿。
+- **验证**：`pact-ref-spec` 40 passed、`pact-wasm` 14 passed、Node 测试 8 passed、wasm32 clippy 与 `ci-smoke` 通过；REST 侧 `pact-http` 单测与 e2e 全绿。
+- **安全审视**：新增依赖 `pact-wasm → pact-ref-spec` 为纯 crate（无 IO/网络/`unsafe`）；WASM 仅接收宿主注入的 JSON，不新增文件 IO、进程或网络能力；`cargo audit` 结论沿用。
+
 ## 2026-10-31（第 87 轮，D49 第二步：`[ref_digest]` 运行期比对实现）
 
 - **配置**：`pact-http::config` 新增可选 `[ref_digest]`（`deny_unknown_fields`）与 `RefDigestMode`（serde `rename_all = "lowercase"`，values `off` / `warn` / `enforce`，缺省 `warn`）；`ref_digest_mode()` 供 daemon 启动注入 `ServerState`。未知键或未知模式在加载配置时拒绝。

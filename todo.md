@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 87 轮）：P0 入口校验、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）与 `declarationDigest` v1 两步（FR34/D49：工具/lint + `[ref_digest]` 运行期比对）均已落地并回归通过。WASM 入口、`refd` 与动态阶段未开始。下一轮按 P0 的 WASM 入口 → P2 → P3 顺序推进。
+当前状态（2026-10-31，第 88 轮）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）与 `declarationDigest` v1 两步（FR34/D49）均已落地并回归通过。`refd` 与动态阶段未开始；新增“物引治理 SKILL”待做项。下一轮按 P0 收尾 → P3 治理平面/动态阶段 → 物引治理 SKILL 顺序推进。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -31,7 +31,7 @@
 | [x] | 错误码映射：`ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，均为 `400` | FR30 / D45 | `server.rs::validate_entry_thing_ref` + e2e 断言 |
 | [x] | 大写入上限：结构校验硬上限 `HARD_MAX_REFERENCE_LENGTH = 65536`，绑定 `maxLength` 不得超此值 | FR30 / `uri-profile.md` §2 | `pact-ref-spec` 常量与 `validate_rule` 测试 |
 | [x] | MCP `pact_seed` / `pact_produce` 的缺失语义：工具参数省略由 client 发显式 `null`（= `∅`），无法表达“缺失” | FR30 / D45 | 已定案并写入 `manual.md` §7.11：MCP 省略 = `∅`；如需严格缺失另立事项 |
-| [ ] | `pact-wasm` 本地入口校验：`host.rs` 直接构造 `ThingRef`，未做 URI profile / 绑定校验 | FR30 / `thingref-governance.md` §8.2 | 复用 `pact-ref-spec` 纯函数（WASM 可承载）；需先定 profile 从何处注入 |
+| [x] | `pact-wasm` 本地入口校验：`host.rs` 直接构造 `ThingRef`，未做 URI profile / 绑定校验 | FR30 / D50 / `thingref-governance.md` §8.2 | 入口语义抽为 `pact-ref-spec::validate_entry` 纯函数（REST 委托、WASM 复用）；`pact-wasm` 单测 3 项（绑定注入与规范化、produce 校验与钉版、非法绑定/移除/清空）；Node 测试 `refBindings 注入后在写入前校验并规范化票面`；wasm32 clippy 与 `ci-smoke` 通过；全量 373 passed |
 | [x] | `pact-runtime` 种子/生产路径确认继承 REST 校验 | FR30 | `pact-runtime` 经 `RestClient` 调 REST；`runtime_e2e` 5 passed（含旧 Identifier 域需 `allowIdentifier: true` 的回归修正） |
 
 ### P1 归档钉版与运行期绑定策略
@@ -50,8 +50,8 @@
 
 | 状态 | 事项 | 依据 | 验收方式 |
 |---|---|---|---|
-| [x] | `pact-ref` vendored 快照同步（第 77 轮：`HARD_MAX`、Identifier 文法、userinfo、`InvalidIdentifier`；第 78 轮：`merged_rule`、`pinned_digest`、`classify_identifier`、新错误） | `AGENTS.md` 跨仓库纪律 | `scripts/sync-spec.sh --check` 通过 |
-| [x] | `pact-ref` 回归：vendored 快照更新后跑 `cargo fmt/clippy/test` | 同上 | 第 77 轮 46 passed；第 78 轮 **50 passed / 0 failed**，`fmt`/`clippy` 通过 |
+| [x] | `pact-ref` vendored 快照同步（第 77 轮：`HARD_MAX`、Identifier 文法、userinfo、`InvalidIdentifier`；第 78 轮：`merged_rule`、`pinned_digest`、`classify_identifier`、新错误；第 88 轮：`validate_entry` / `EntryRef` / `EntryError`） | `AGENTS.md` 跨仓库纪律 | 第 88 轮 `scripts/sync-spec.sh --source … --check` 通过（`pact-ref` 工作区仅 vendored 快照变化） |
+| [x] | `pact-ref` 回归：vendored 快照更新后跑 `cargo fmt/clippy/test` | 同上 | 第 88 轮 **57 passed / 0 failed**（`pact-ref-spec` 40，含新增 7 项入口测试），`fmt`/`clippy` 通过 |
 | [!] | `pact-ref` conformance：补入口校验用例（缺失/`null`、userinfo、Identifier 文法、`maxLength`） | `conformance/` | 阻塞：`conformance/runner` 仍是骨架（不执行用例）；待 runner 落地后补 |
 
 ### P3 治理平面与动态阶段
@@ -62,6 +62,12 @@
 | [ ] | 动态只读阶段（`mcp-read` profile、resolve 适配器、物化结果） | `thingref-governance.md` §13.1 阶段 4 | 端到端：resolve → witness token |
 | [ ] | 动态写阶段（`mcp-mutating` profile、审计边车、witness/compensation） | 同上阶段 5 | 审计边车用例 |
 | [ ] | 可选注册表（只做发现，不做真相源） | 同上阶段 6 | 触发条件满足后再开 |
+
+### P4 物引治理技能
+
+| 状态 | 事项 | 依据 | 验收方式 |
+|---|---|---|---|
+| [ ] | 新增“物引治理 SKILL”：把绑定、契约卡、Tombstone、可见性、`declarationDigest` 与显式重载的**使用者流程**写成技能，含适用闸门、产物清单与验收闭环；只做引导与校验，不实现引擎/治理平面 | FR27–FR34 / `docs/thingref-governance.md` §13 / `docs/manual.md` §7.8–§7.14 | 产物 `skills/pact-thingref-governance/SKILL.md`（及按需 `references/`）；覆盖绑定/卡片/tombstone/可见性/摘要/reload 六个主题；以真实二进制 `pact ref lint`（含 `--tombstones`、`--strict`）与 `pact ref digest` 闭环验收；给出“不适用/需 daemon”边界，不承诺 fetch/invoke/撤销 |
 
 ### 文档同步（本轮必须完成）
 
@@ -81,6 +87,7 @@
 | [x] | 第 85 轮：`declarationDigest` 候选 v1（语义接口、紧凑 JSON 规范化、工具+lint 先行、运行期 `warn`/`enforce`）写入治理 §13.4.2.1；`design-change.md` 第 85 轮 | 仅文档，无代码变更，无需回归；**待用户确认后再登记 FR/D、配置项与错误码** |
 | [x] | 第 86 轮：登记 `FR34`/`D49`（`architecture.md` 附录 A）；新增 `spec/ref/v1/declaration-digest.md` 与 schema `description`；`requirements.md` FR34、FR27/FR30 边界、`requirements-change.md` 第 42 轮；`design.md` D49/§9.16/D41/§9.12/§10、`design-change.md` 第 86 轮；`manual.md` §7.8/§7.11/§7.13/§8.1；治理 §8.1/§13.1/§13.4.2/§13.4.2.1；`architecture-change.md` 第 43 轮 | 编号先登记后引用；文档与代码/测试逐条对照；跨仓库标注：无 `pact-ref` 代码改动；提交 `2bffcd8` |
 | [x] | 第 87 轮：登记 `[ref_digest]`/`[ref_digest].mode`/`DeclarationDigestMismatch`（`architecture.md` 附录 A）；`requirements.md` FR34 第二步与 FR30、`requirements-change.md` 第 43 轮；`design.md` D49/§9.4/§9.16/§10、`design-change.md` 第 87 轮；`manual.md` §2.2/§7.11/§7.13/§7.14/§8.2/§9.4/§10；治理 §8.1/§13.1/§13.4.2/§13.4.3/§13.4.2.1；`architecture.md` 正文、`architecture-change.md` 第 44 轮；`dist/pact.container.toml` | 配置项与错误码先登记后引用；文档与代码/e2e 逐条对照；跨仓库标注：无 `pact-ref` 代码改动；提交 `505e81d` |
+| [x] | 第 88 轮：登记 `D50`（`architecture.md` 附录 A）；`requirements.md` FR21/FR30/FR31、`requirements-change.md` 第 44 轮；`design.md` D50/§9.12/§9.17/§10/§16.4、`design-change.md` 第 88 轮；`manual.md` §2.7/§7.11；治理 §8.1/§8.2/§13.1/§13.2；`architecture.md` 正文、`architecture-change.md` 第 45 轮；README 中英文本地嵌入改为用途视角；`todo.md` 新增 P4 物引治理 SKILL | 编号先登记后引用；文档与代码/测试逐条对照；跨仓库：`pact-ref/vendor/pact-ref-spec` 已同步，`pact-ref` 57 passed |
 
 ### 验证与交付
 
@@ -102,11 +109,16 @@
 | [x] | 第 87 轮全量回归 `cargo test --workspace --locked` | **363 passed / 0 failed**（新增 7 项：`ref_digest_e2e` 5、`pact-http` 单测 2——`digest_mismatch` 与 `ref_digest_mode` 解析） |
 | [x] | 第 87 轮 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` | 均通过（退出码 0） |
 | [x] | 第 87 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增依赖；新增代码只读配置与绑定快照、计算纯函数摘要，无 `unsafe`/网络/进程/新文件写；`enforce` 在引擎前拒绝、无副作用；`cargo audit` 结论沿用 |
+| [x] | 第 88 轮全量回归 `cargo test --workspace --locked` | **373 passed / 0 failed**（新增 10 项：`pact-ref-spec` 7、`pact-wasm` 3）；Node 测试 8 passed（含 `refBindings` 用例） |
+| [x] | 第 88 轮 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、wasm32 clippy | 均通过（退出码 0）；`ci-smoke` 通过（raw 557852 B / gzip 167138 B） |
+| [x] | 第 88 轮跨仓库：vendored 快照同步与 `pact-ref` 回归 | `scripts/sync-spec.sh --source … --check` 输出 `vendored spec is in sync`；`pact-ref` `fmt`/`clippy`/`test` 通过，**57 passed / 0 failed** |
+| [x] | 第 88 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 新增依赖 `pact-wasm → pact-ref-spec` 为纯 crate（只依赖 serde，无 IO/网络/`unsafe`）；WASM 仅接收宿主注入 JSON，无新增文件 IO/进程/网络；`cargo audit` 0 vulnerability / 2 unmaintained（沿用） |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
+| 2026-10-31 | WASM 本地入口校验与绑定注入：入口语义抽为 `pact-ref-spec::validate_entry`，REST 委托、WASM 复用；宿主 JSON 注入 RefBindings | FR30 / D50 | `pact-ref-spec` 7 单测、`pact-wasm` 3 单测、Node 8 项、wasm32 clippy、`ci-smoke`；373 passed；`pact-ref` 57 passed；提交待回填 |
 | 2026-10-31 | `declarationDigest` v1 第二步：`[ref_digest] mode = off/warn/enforce` 运行期比对（`POST /domains` 进入引擎前；`enforce` → `400 DeclarationDigestMismatch`） | FR34 / D49 第二步 / `spec/ref/v1/declaration-digest.md` | `pact-http` 单测 2（三模式/边界、配置解析）；`ref_digest_e2e` 5；363 passed；`fmt`/`clippy` 通过；CI `41163741023` 成功；提交 `505e81d` |
 | 2026-10-31 | `declarationDigest` v1 第一步：语义接口摘要工具与 lint 漂移比对 | FR34 / D49 / `spec/ref/v1/declaration-digest.md` | `pact-analysis` 单测 5（含 golden）、`pact-cli` 单测 1、`ref_lint_e2e` 1；356 passed；`fmt`/`clippy` 通过；CI `41162194383` 成功；`2bffcd8` |
 | 2026-10-30 | B0：ContractCard 运行期加载、版本不可变与归档钉版并集 | FR32 / D47 | `pact-http` 单测 + e2e；338 passed；`fmt`/`clippy` 通过；`4b42778` |

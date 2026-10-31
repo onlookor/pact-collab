@@ -156,7 +156,7 @@
 
 - **定位**：WASM 构建是 `pactd` 之外的**可选本地分发形态**，供 Node/桌面宿主内嵌运行；**权威仍是原生引擎**，NFR4 的单一静态二进制形态不变，WASM 不替代 `pactd`、不承担服务端角色。
 - **实现状态**：**已稳定（2026-10-21，D33）**。稳定化前置 (1) W-Q7 独立 CI job、(2) 金标覆盖扩展、(3) `pact-engine-kernel` 抽取、(4) 宿主边界安全审视均已完成；WASM 作为受支持的本地分发形态维护，但**不在 `dist/` 产物集内**，仍不替代 `pactd`。
-- **能力范围（W-S2 已实现，2026-10-21）**：语义核心（解析/良构校验/静态分析/片段组合/CPN 投影）、内存多实例会话（`(domain, instance)` 键）、Rule-S/P/R/E 与 Rule-T、两阶段提交（`prepare → 宿主持久化 → commit` / `abort`）、事件日志 JSONL 导出、自足快照导出与 `restore`、查询视图；事件 schema、快照结构与磁盘布局与原生共用（`pact-store-model` / `pact-views`）。
+- **能力范围（W-S2 已实现，2026-10-21；D50 于 2026-10-31 补入口校验）**：语义核心（解析/良构校验/静态分析/片段组合/CPN 投影）、内存多实例会话（`(domain, instance)` 键）、Rule-S/P/R/E 与 Rule-T、两阶段提交（`prepare → 宿主持久化 → commit` / `abort`）、事件日志 JSONL 导出、自足快照导出与 `restore`、查询视图；事件 schema、快照结构与磁盘布局与原生共用（`pact-store-model` / `pact-views`）。写入前的票面校验与 REST 共用 `pact-ref-spec::validate_entry`：宿主可注入 RefBindings（`refBindings` / `PACT_WASM_REF_BINDINGS`），未注入时只做结构校验（FR30/D50）。
 - **宿主职责**：持久化（JSONL append + fsync、快照 tmp+rename）、崩溃恢复（日志优先、末尾半行截断）、单写者（lockfile）由宿主适配层承担；WASM 内核不假定拥有 fsync、flock、socket 或进程能力。Node 适配层已交付（`crates/pact-wasm/js/`）。
 - **能力边界**：不含浏览器 OPFS/SharedWorker、多用户 ACL/读审计、MCP/HTTP 服务、TLS、turso 索引、日志压缩与 `pactd` 运维接口；DSH `govern` 与 NFR6 v2 无硬依赖（见范围外）。**安全边界为本地单用户**，不得视为多用户安全边界。
 - **ABI 策略**：`pact-wasm/0.x`，全部方法使用 JSON 字符串；破坏性变更须提升 ABI 版本并记入 `docs/design-change.md`；版本探测入口为 `abi_version`。去除非实验性标记不改变 ABI 版本策略。
@@ -241,7 +241,7 @@
 - **边界**：不校验内容是否真的已删除、tombstone 是否已发布或解析可达；不做运行期保留计时与自动删除；不改变引擎/存储/Archive 的既有语义。可发现性检查只证明静态路径存在，不保证运行期一定可读。
 - **实现状态**：已实现（2026-10-27）。`pact-ref-spec` 规范校验、`pact-cli` 单元与端到端测试覆盖 retention 语法、策略组合、Tombstone 字段、交叉检查与可发现性五项检查。
 
-### FR30 ThingRef 写入路径校验（D45）
+### FR30 ThingRef 写入路径校验（D45/D50）
 
 - **定位**：把 `pact-ref-spec` 的 URI profile 与 RefBindings 策略接到**写入路径**，让 `ThingRef` 在进入引擎前就被拒绝或规范化。校验位于 REST 写入边界（`pact-http` 的 `POST /domains/{d}[/instances/{i}]/seeds` 与 `.../tokens`）；引擎、存储与 `pact-core` 仍把 `ThingRef` 当作不透明字符串，不依赖治理 crate。
 - **三态**：
@@ -256,10 +256,10 @@
   - `schemes` 非空且不含 `*` 时，URI 的 scheme 必须在集合内；
   - `maxLength` 覆盖默认 2048 字节上限，超过 → `400 InvalidThingRef`。
   未加载该域绑定时只做结构规则，不做策略校验。
-- **继承与边界**：CLI 与 MCP 经 REST client 调用，自动继承同一套校验；MCP 工具参数省略时 client 发送显式 `null`（等价 `∅`），无法表达“缺失”。`pact-wasm` 本地宿主与 `pact-runtime` 的进程内路径不在本需求内（WASM 入口校验单列事项）。
+- **继承与边界**：CLI 与 MCP 经 REST client 调用，自动继承同一套校验；MCP 工具参数省略时 client 发送显式 `null`（等价 `∅`），无法表达“缺失”。`pact-runtime` 的进程内路径同样经 REST 继承。`pact-wasm` 本地宿主不经过 REST，但在 `prepare_seed` / `prepare_produce` 进入 kernel 前复用同一 `pact-ref-spec::validate_entry` 纯函数（D50）：宿主以 JSON 注入 RefBindings（`refBindings` 选项 / `PACT_WASM_REF_BINDINGS`），未注入时只做结构校验；JS/WASM 无法表达“字段缺失”，省略与 `null` 都映射为 `∅`，因此 WASM 路径不产生 `ThingRefMissing`。ContractCard 归档钉版与 Archive 检查仍只在 REST 边界。
 - **未生效项**：`declarationDigest` 的语义比对由 FR34 在 `pact ref lint` 与 `POST /domains`（`[ref_digest] mode`）实现（不一致按 error / `400 DeclarationDigestMismatch`）；`enforce` 需显式开启，默认 `warn` 不阻塞。`onUnknownScheme`、`value`、`pinning` 已由 FR31 接入运行期，ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载由 FR32 实现，显式重载由 FR33 实现（2026-10-30）；见 `todo.md` P1。
 - **错误码**：均为 `400`，沿用 §6.3 结构化错误体；`code` 为 `ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，`message` 携带原始规范错误文本（不含票面全文以外的敏感信息，票面本身可能含位置信息，按调用方权限返回）。
-- **实现状态**：已实现（2026-10-28）。`pact-ref-spec` 修复 userinfo 与 Identifier 文法；`pact-http` 新增 `ThingRefField`（区分缺失/`null`）与 `VisibilityProfiles::validate_thing_ref`；`seed`/`produce` 在引擎调用前接线。单元测试覆盖三态、结构规则、`git+ssh` 与 Identifier 文法；端到端测试覆盖缺失/`null`、userinfo、裸路径、Identifier、超长、大写 scheme 规范化与绑定策略。
+- **实现状态**：已实现（2026-10-28；WASM 侧 2026-10-31，D50）。`pact-ref-spec` 修复 userinfo 与 Identifier 文法，并把入口语义收为 `validate_entry` 纯函数；`pact-http` 用 `ThingRefField` 保留三态后委托该函数；`pact-wasm` 在 `prepare_seed` / `prepare_produce` 前复用同一函数，宿主经 `set_ref_bindings` 注入绑定。单元测试覆盖三态、结构规则、`git+ssh`、Identifier 与绑定策略；端到端测试覆盖缺失/`null`、userinfo、裸路径、Identifier、超长、大写 scheme 规范化与绑定策略；WASM 单测与 Node 测试覆盖绑定注入、拒绝、规范化与运行期移除。
 
 ### FR31 引用形态、未知 scheme 与钉版的运行期强制（D46）
 
@@ -275,7 +275,7 @@
   - `optional`（缺省）：不要求。
   钉版判定为 URI 携带内容摘要 `sha256:<64 位小写十六进制>`，接受 URL fragment `#sha256=<hex>` 与 OCI `@sha256:<hex>` 两种写法；`∅` 表示没有外部制品，不受钉版约束；Identifier 不是钉版。失败 → `400 ThingRefUnpinned`。
 - **执行点**：`pinning: required` 与上述形态/未知 scheme 策略在 seed/produce 前判定；`required-at-archive` 在 `/consume` 进入引擎前读取待消费 token 的票面判定。consume 只读取继承出的 `pinning`，不重复执行写入期规则，避免历史票面因后续收紧而无法归档。
-- **边界**：ContractCard 的 `artifact.digestPolicy: required-at-archive` 与 `reference.pinning.requiredForArchive` 已由 FR32 在运行期加载；FR33 已实现显式重载。`pact-wasm` 本地宿主仍不经过该边界。
+- **边界**：ContractCard 的 `artifact.digestPolicy: required-at-archive` 与 `reference.pinning.requiredForArchive` 已由 FR32 在运行期加载；FR33 已实现显式重载。`pact-wasm` 本地宿主在写入侧复用同一 `value` / `onUnknownScheme` / `pinning: required` 判定（D50），但不加载 ContractCard、不做 consume 前的 `required-at-archive` 检查。
 - **实现状态**：已实现（2026-10-29）。单元测试覆盖未知 scheme 三分支、`value` 三态、写入钉版与归档钉版；端到端测试覆盖 `ThingRefUnpinned`（写入与 consume）及钉版引用正常归档。
 
 ### FR32 ContractCard 运行期加载与版本不可变（D47）

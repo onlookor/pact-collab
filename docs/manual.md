@@ -446,6 +446,68 @@ principal_map = { "alice@example.com" = "alice" }
 - IdP/JWKS 不可达时 `/mcp` 返回 `503`；REST、CLI、stdio MCP 不受影响。令牌不缓存、不写日志、不转发给 REST。
 - 本地开发可用 `allow_insecure_http = true` 与 `ca = "./idp-ca.pem"`；生产保持默认 `false`。
 
+### 2.7 在应用内嵌 PACT（WASM，本地单用户）
+
+如果你的工具本身就是 Node 应用或桌面应用，不想为它再起一个 daemon、开端口或处理网络，
+可以把 PACT 作为 WASM 模块嵌入进程内。它适合“一个用户、一个本地工作区、一个应用进程”的场景：
+本地编辑器插件、桌面工作台、离线演示、单机 agent 工具。
+
+**你能得到什么**
+
+- 与应用同生命周期的流程准入：加载 `.pact` 声明后，`seed` / `produce` / `consume` / `read` 与
+  `counter` / `archive` / `status` 都可以直接调用，不需要 HTTP 客户端。
+- 与原生 daemon 相同的事件日志和快照格式：WASM 宿主把事件写成
+  `<root>/<domain>/<instance>.events.jsonl`，同一份日志可以被原生 `pactd` 重新打开（反之亦然）。
+- 写入前的票面校验与 REST 同一套规则（D50）：URI profile、Identifier 文法、`required` /
+  `schemes` / `allowIdentifier` 等 RefBindings 策略都会在进入内核前生效。
+
+**它不提供什么**
+
+- 不提供 REST/MCP 服务、端口、网络、TLS 或 daemon 运维端点；这些仍由 `pactd` 提供。
+- 不做身份认证、ACL、读审计或多用户隔离；安全边界是**本地单用户**，不要把 WASM 宿主暴露成共享服务。
+- 不加载 ContractCard，也不在 consume 前做归档钉版检查；需要这些治理能力时使用原生 daemon。
+- 不提供 turso 索引、日志压缩与多进程互斥；宿主的 lockfile 只是进程级单写者近似。
+- 不在 `dist/` 分发产物内，也不替代 `pactd`；原生 daemon 仍是同一实例的权威。
+
+**怎么用（Node 宿主）**
+
+```js
+const fs = require('node:fs');
+// 指向 PACT 仓库内的宿主适配层（或随应用一起打包的同一目录）
+const { openPactHost } = require('./crates/pact-wasm/js/open-host');
+
+const host = openPactHost({
+  module: '/path/to/pact_wasm.js',   // wasm-bindgen 产物
+  storeRoot: './data',               // 与 daemon 相同的目录布局
+  domain: 'proj',
+  instance: 'default',
+  declaration: fs.readFileSync('./proj.pact', 'utf8'), // 仅新建实例时使用
+  // 可选：RefBindings 对象、对象数组或 JSON 字符串
+  refBindings: {
+    apiVersion: 'pact.ref/v1',
+    kind: 'RefBindings',
+    metadata: { domain: 'proj' },
+    spec: { types: { requirement: { ref: { required: true, schemes: ['https'] } } } },
+  },
+});
+
+const req = host.seed('external', 'requirement', 'https://example.com/req', 'seq-0', 'T1');
+host.produce('architect', 'design', [req.id], null, 'seq-1', 'T2');
+host.snapshot();  // 原子写快照
+host.close();
+```
+
+- `refBindings` 也可用 `PACT_WASM_REF_BINDINGS`（JSON 字符串）注入；不注入时只做结构校验。
+- 运行期可调用 `host.setRefBindings(...)` / `host.removeRefBindings()` / `host.clearRefBindings()`
+  调整绑定；绑定只在内存中，重启后需重新注入。
+- 省略 `thing_ref` 与传 `null` 都表示 `∅`（JS 无法表达“字段缺失”）；因此 WASM 路径不会出现
+  `ThingRefMissing`，其余错误码与 REST 相同（`ThingRefRequired` / `ThingRefUnpinned` /
+  `InvalidThingRef`）。
+- 需要声明自检与静态分析而不落盘时，可直接使用 `validate` / `analyze`；浏览器工作台与沙盒见 §3.5–§3.6。
+
+**什么时候不要选它**：需要多人共享、远端接入、审计留痕、统一令牌/ACL，或需要 daemon 的运维与压缩能力时，
+请部署原生 `pactd`；WASM 只是本地嵌入形态。
+
 ---
 
 ## 3. 写一份域声明
@@ -1118,7 +1180,7 @@ spec:
 
 完整规范见 `spec/ref/v1/contract-card.schema.json` 与 `spec/ref/v1/tombstone.schema.json`；契约卡示例见设计 §9.11。
 
-### 7.11 写入票面校验（D45）
+### 7.11 写入票面校验（D45/D50）
 
 `POST /domains/{d}[/instances/{i}]/seeds` 与 `.../tokens` 的 `thing_ref` 在进入引擎前校验；CLI `pact seed` / `pact produce`、MCP `pact_seed` / `pact_produce` 经同一 REST 接口，自动继承同一套规则。
 
@@ -1160,7 +1222,9 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 
 **错误码**：`ThingRefMissing` / `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`，均为 `400`，错误体同 §6.3（`error.code` + `error.detail` + `error.message`）。
 
-**未生效**：卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除；WASM 本地宿主不经过 REST，尚无该校验。`declarationDigest` 的运行期比对已由 D49 第二步在 `POST /domains` 实现（见 §7.14）；显式重载见 §7.12。
+**WASM 本地宿主**：不经过 REST，但 `prepare_seed` / `prepare_produce` 在进入内核前复用同一校验逻辑（D50）。宿主通过 `refBindings` / `PACT_WASM_REF_BINDINGS` 注入 RefBindings，未注入时只做结构规则；省略与 `null` 都表示 `∅`，不会出现 `ThingRefMissing`。ContractCard 与 consume 前的归档钉版检查仍只在 REST 边界。用法见 §2.7。
+
+**未生效**：卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除。`declarationDigest` 的运行期比对已由 D49 第二步在 `POST /domains` 实现（见 §7.14）；显式重载见 §7.12。
 
 ### 7.12 物引配置显式重载（D48）
 

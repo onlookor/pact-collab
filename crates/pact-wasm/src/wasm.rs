@@ -107,6 +107,23 @@ impl PactWasm {
         )
     }
 
+    // —— D50：宿主注入的 RefBindings ——
+
+    /// `set_ref_bindings(bindings_json)`：注入/替换一个域的绑定。
+    pub fn set_ref_bindings(&mut self, bindings_json: &str) -> Result<(), JsValue> {
+        self.host.set_ref_bindings(bindings_json).map_err(to_js)
+    }
+
+    /// `remove_ref_bindings(domain) -> bool`：移除一个域的绑定。
+    pub fn remove_ref_bindings(&mut self, domain: &str) -> bool {
+        self.host.remove_ref_bindings(domain)
+    }
+
+    /// `clear_ref_bindings()`：清空全部绑定。
+    pub fn clear_ref_bindings(&mut self) {
+        self.host.clear_ref_bindings();
+    }
+
     // —— 四类动作（两阶段提交）——
 
     /// `prepare_seed(key, participant, ty, thing_ref, token_id, ts) -> Prepared JSON`

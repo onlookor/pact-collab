@@ -11,9 +11,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use pact_ref_spec::{
-    classify_identifier, pinned_digest, ContractCard, DigestPolicy, PinningRequirement,
-    RefBindings, RefRule, ReferenceForm, SpecError, UnknownSchemePolicy, Visibility,
-    DEFAULT_MAX_REFERENCE_LENGTH, HARD_MAX_REFERENCE_LENGTH,
+    pinned_digest, validate_entry, ContractCard, DigestPolicy, EntryRef, PinningRequirement,
+    RefBindings, RefRule, ReferenceForm, SpecError, Visibility, HARD_MAX_REFERENCE_LENGTH,
 };
 
 /// 单个 token 的票面暴露级别。
@@ -182,108 +181,13 @@ impl VisibilityProfiles {
         ty: &str,
         input: Option<Option<&str>>,
     ) -> Result<Option<String>, RefEntryError> {
-        let Some(value) = input else {
-            return Err(RefEntryError::Missing);
+        let input = match input {
+            None => EntryRef::Missing,
+            Some(None) => EntryRef::Absent,
+            Some(Some(raw)) => EntryRef::Present(raw),
         };
-        let Some(raw) = value else {
-            if let Some(loaded) = self.bindings.get(domain) {
-                loaded
-                    .bindings
-                    .resolve(Some(instance), ty, &ReferenceForm::Absent)
-                    .map_err(RefEntryError::Invalid)?;
-            }
-            return Ok(None);
-        };
-        let reference = ReferenceForm::classify_with_limit(Some(raw), HARD_MAX_REFERENCE_LENGTH)
-            .map_err(RefEntryError::Invalid)?;
-        let Some(loaded) = self.bindings.get(domain) else {
-            if raw.len() > DEFAULT_MAX_REFERENCE_LENGTH {
-                return Err(RefEntryError::Invalid(SpecError::TooLong {
-                    actual: raw.len(),
-                    max: DEFAULT_MAX_REFERENCE_LENGTH,
-                }));
-            }
-            return Ok(reference.as_str().map(str::to_owned));
-        };
-        let matched = loaded
-            .bindings
-            .resolve(Some(instance), ty, &reference)
-            .map_err(RefEntryError::Invalid)?;
-
-        // D46：未知 scheme 的三种处理。`resolve` 只拦 `reject`（缺省），
-        // 其余两种在这里落地。
-        let mut effective = reference;
-        if let ReferenceForm::Uri(uri) = &effective {
-            let scheme = effective.scheme().unwrap_or_default().to_owned();
-            if scheme_is_unknown(&matched.rule, &scheme) {
-                match matched
-                    .rule
-                    .on_unknown_scheme
-                    .unwrap_or(UnknownSchemePolicy::Reject)
-                {
-                    UnknownSchemePolicy::Allow => {}
-                    UnknownSchemePolicy::TreatAsIdentifier => {
-                        if !matched.rule.allow_identifier.unwrap_or(false) {
-                            return Err(RefEntryError::Invalid(SpecError::IdentifierNotAllowed {
-                                type_name: ty.to_owned(),
-                            }));
-                        }
-                        effective = classify_identifier(uri).map_err(RefEntryError::Invalid)?;
-                    }
-                    UnknownSchemePolicy::Reject => {
-                        return Err(RefEntryError::Invalid(SpecError::SchemeNotAllowed {
-                            scheme,
-                            type_name: ty.to_owned(),
-                        }));
-                    }
-                }
-            }
-        }
-
-        // D46：`value` 约束非空票面的形态；`∅` 由 `required` 决定。
-        if let Some(expected) = matched.rule.value.as_deref() {
-            let actual = match &effective {
-                ReferenceForm::Uri(_) => "uri",
-                ReferenceForm::Identifier(_) => "identifier",
-                ReferenceForm::Absent => "null",
-            };
-            let ok = match expected {
-                "none" => effective.is_absent(),
-                "uri" => effective.is_uri(),
-                "identifier" => effective.is_identifier(),
-                _ => true,
-            };
-            if !ok {
-                return Err(RefEntryError::Invalid(SpecError::ValueFormMismatch {
-                    expected: expected.to_owned(),
-                    actual: actual.to_owned(),
-                }));
-            }
-        }
-
-        // D46：写入时钉版（`required-at-archive` 留到 consume）。
-        if matched.pins_at_entry() {
-            if let Some(value) = effective.as_str() {
-                if pinned_digest(value).is_none() {
-                    return Err(RefEntryError::Invalid(SpecError::PinningRequired {
-                        type_name: ty.to_owned(),
-                        at_archive: false,
-                    }));
-                }
-            }
-        }
-
-        let max_length = matched
-            .rule
-            .max_length
-            .unwrap_or(DEFAULT_MAX_REFERENCE_LENGTH);
-        if raw.len() > max_length {
-            return Err(RefEntryError::Invalid(SpecError::TooLong {
-                actual: raw.len(),
-                max: max_length,
-            }));
-        }
-        Ok(effective.as_str().map(str::to_owned))
+        let bindings = self.bindings.get(domain).map(|loaded| &loaded.bindings);
+        validate_entry(bindings, Some(instance), ty, input)
     }
 
     /// D46/D47：进入 Archive（consume）前的钉版检查。
@@ -507,16 +411,6 @@ fn contract_references(bindings: &RefBindings) -> Vec<String> {
     references.into_iter().collect()
 }
 
-/// 有效 `schemes` 非空且不含 `*` 时，不在白名单内的 scheme 视为“未知”。
-fn scheme_is_unknown(rule: &pact_ref_spec::RefRule, scheme: &str) -> bool {
-    rule.schemes.as_ref().is_some_and(|allowed| {
-        !allowed.is_empty()
-            && !allowed
-                .iter()
-                .any(|candidate| candidate == "*" || candidate == scheme)
-    })
-}
-
 /// defaults → type → instance/type 的 visibility 继承（忽略 scheme 覆盖）。
 fn inherited_visibility(bindings: &RefBindings, instance: &str, ty: &str) -> Option<Visibility> {
     let mut visibility = bindings
@@ -544,23 +438,8 @@ fn inherited_visibility(bindings: &RefBindings, instance: &str, ty: &str) -> Opt
     visibility
 }
 
-/// 写入路径的票面校验错误。
-#[derive(Debug)]
-pub enum RefEntryError {
-    /// 请求体缺少 `thing_ref` 字段（作者漏传）。
-    Missing,
-    /// 结构或 RefBindings 策略拒绝。
-    Invalid(SpecError),
-}
-
-impl fmt::Display for RefEntryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing => f.write_str("请求体缺少 thing_ref 字段；确认无制品请显式传 null"),
-            Self::Invalid(error) => error.fmt(f),
-        }
-    }
-}
+/// 写入路径的票面校验错误（规范层定义，REST 与 WASM 共用）。
+pub use pact_ref_spec::EntryError as RefEntryError;
 
 /// 加载/校验错误。
 #[derive(Debug)]

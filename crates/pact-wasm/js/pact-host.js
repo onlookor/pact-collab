@@ -29,6 +29,41 @@ function invoke(fn) {
   return JSON.parse(raw);
 }
 
+/** 调用无返回值 / 非 JSON 返回值的 wasm 方法（错误仍统一解包）。 */
+function call(fn) {
+  try {
+    return fn();
+  } catch (e) {
+    throw toStoreError(e);
+  }
+}
+
+/**
+ * 把 `refBindings`（对象、对象数组或 JSON 字符串）注入 wasm 内核。
+ *
+ * 绑定由宿主提供，WASM 不读文件；重复注入同域绑定即替换。
+ */
+function applyRefBindings(wasm, refBindings) {
+  if (refBindings === undefined || refBindings === null) return;
+  let entries;
+  if (typeof refBindings === 'string') {
+    entries = [refBindings];
+  } else if (Array.isArray(refBindings)) {
+    entries = refBindings.map((item) =>
+      typeof item === 'string' ? item : JSON.stringify(item),
+    );
+  } else if (typeof refBindings === 'object') {
+    entries = [JSON.stringify(refBindings)];
+  } else {
+    throw new TypeError(
+      'refBindings must be an object, an array of objects, or a JSON string',
+    );
+  }
+  for (const json of entries) {
+    call(() => wasm.set_ref_bindings(json));
+  }
+}
+
 class PactHost {
   constructor(wasm, store, domain, instance) {
     this.wasm = wasm;
@@ -47,18 +82,36 @@ class PactHost {
    * @param {string} opts.instance
    * @param {string} opts.declaration 新建时使用；已有日志时以日志内声明为准
    * @param {string} opts.ts 新建实例的 DomainLoaded 时间戳
+   * @param {object|object[]|string} [opts.refBindings] RefBindings（对象/数组/JSON 字符串）
    */
   static open(opts) {
-    const { createWasm, store, domain, instance, declaration, ts } = opts;
+    const { createWasm, store, domain, instance, declaration, ts, refBindings } = opts;
     store.acquire(domain, instance);
     const host = new PactHost(createWasm(), store, domain, instance);
     try {
+      // 绑定先于实例加载/恢复注入；写入路径随即受其约束。
+      applyRefBindings(host.wasm, refBindings);
       host._initialize(declaration, ts);
       return host;
     } catch (e) {
       host.close();
       throw e;
     }
+  }
+
+  /** 运行期注入/替换绑定（对象、对象数组或 JSON 字符串）。 */
+  setRefBindings(refBindings) {
+    applyRefBindings(this.wasm, refBindings);
+  }
+
+  /** 移除一个域的绑定；返回是否确有移除。 */
+  removeRefBindings(domain = this.domain) {
+    return call(() => this.wasm.remove_ref_bindings(domain));
+  }
+
+  /** 清空全部绑定，回到只做结构校验。 */
+  clearRefBindings() {
+    call(() => this.wasm.clear_ref_bindings());
   }
 
   _initialize(declaration, ts) {

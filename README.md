@@ -95,7 +95,7 @@ If your process is continuous, timer-driven, mostly OR-branches, or needs automa
 - **Three interfaces, one authority** — REST (unix socket or TCP, SSE notifications), MCP (stdio and Streamable HTTP `/mcp`, 21 tools), and a single `pact` CLI.
 - **Participant runtime** — `pact-runtime` provides reusable participant drive loops, multi-agent orchestration, and a consume-event side-effect executor with saga-style compensation.
 - **Operations surface** — health/readiness/metrics, graceful shutdown, PID file, systemd/container artifacts.
-- **Local embedding** — a WASM build for Node/desktop hosts, sharing event and snapshot formats with the native engine (single-user by design).
+- **Local embedding (WASM)** — when you want PACT's admission rules inside a Node or desktop app without running a daemon, a WASM build applies the same declarations, events and snapshots in-process for a single user. A local project keeps the native disk layout, so it can move to the daemon later. It does not serve HTTP/MCP, does not carry ACL, read audit or multi-user boundaries, and is not the authoritative deployment; the native daemon remains that. See [manual §2.7](docs/manual.md).
 - **Harness adapter** — [`dsh-plugin-pact`](https://github.com/onlookor/pact-dsh) connects DeepSeek Harness agents to the engine. The default `observe` mode only mirrors events; in `govern` mode the PACT domain decides whether a step or tool may run, while DSH still owns the agent loop, model calls and tool execution. The adapter is not the coordination model; the engine is harness-independent and can serve agents from different harnesses at once.
 
 ## Where to start

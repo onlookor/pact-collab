@@ -37,7 +37,7 @@ function tmpRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'pact-js-'));
 }
 
-function open(root) {
+function open(root, refBindings) {
   return PactHost.open({
     createWasm: () => new PactWasm(),
     store: new FileStore(root),
@@ -45,6 +45,7 @@ function open(root) {
     instance: 'default',
     declaration: DECL,
     ts: 'T0',
+    refBindings,
   });
 }
 
@@ -148,6 +149,45 @@ test('幂等键跨重启生效：重放不写新事件', () => {
   const replay = host.consume('architect', req.id, 'rid-1', 'T4');
   assert.equal(replay.token.id, req.id);
   assert.equal(host.exportEvents(), before, '幂等重放不应改变日志');
+  host.close();
+});
+
+test('refBindings 注入后在写入前校验并规范化票面', () => {
+  const root = tmpRoot();
+  const refBindings = {
+    apiVersion: 'pact.ref/v1',
+    kind: 'RefBindings',
+    metadata: { domain: 'pipeline' },
+    spec: {
+      types: {
+        requirement: { ref: { required: true, schemes: ['https'] } },
+      },
+    },
+  };
+  let host = open(root, refBindings);
+
+  assert.throws(
+    () => host.seed('external', 'requirement', null, 'seq-0', 'T1'),
+    (e) => e.code === 'ThingRefRequired',
+    '省略/null 在 required 规则下应被拒绝',
+  );
+  assert.throws(
+    () => host.seed('external', 'requirement', 'git://example.com/req', 'seq-0', 'T1'),
+    (e) => e.code === 'InvalidThingRef',
+    '白名单外的 scheme 应被拒绝',
+  );
+
+  host.seed('external', 'requirement', 'HTTPS://example.com/req', 'seq-0', 'T1');
+  assert.equal(
+    host.counter().tokens[0].thing_ref,
+    'https://example.com/req',
+    'scheme 应规范化为小写',
+  );
+
+  // 运行期移除绑定后回到结构校验。
+  assert.equal(host.removeRefBindings(), true);
+  host.seed('external', 'requirement', 'REQ-001', 'seq-1', 'T2');
+  assert.equal(host.counter().tokens.length, 2);
   host.close();
 });
 

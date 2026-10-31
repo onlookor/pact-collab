@@ -13,6 +13,8 @@
 //   instance     实例名（必填）
 //   declaration  仅新建实例时使用（PACT_WASM_DECLARATION）
 //   ts           新建实例的 DomainLoaded 时间戳（PACT_WASM_TS，缺省当前时间）
+//   refBindings  RefBindings 对象/数组/JSON 字符串，宿主注入给内核
+//                （PACT_WASM_REF_BINDINGS，JSON 字符串）；缺省只做结构校验
 //
 // 已有的 `<storeRoot>/<domain>/<instance>.events.jsonl` 存在时以日志为准，
 // `declaration`/`ts` 被忽略（与 `PactHost.open` 的恢复路径一致）。
@@ -53,6 +55,8 @@ function openPactHost(options = {}) {
     throw new TypeError('openPactHost: declaration must be a string');
   }
   const ts = options.ts ?? process.env.PACT_WASM_TS ?? new Date().toISOString();
+  const refBindings =
+    options.refBindings ?? process.env.PACT_WASM_REF_BINDINGS ?? null;
 
   const { PactWasm } = require(resolveGlue(modulePath));
   const store = new FileStore(storeRoot);
@@ -63,6 +67,7 @@ function openPactHost(options = {}) {
     instance,
     declaration,
     ts,
+    refBindings,
   });
 }
 

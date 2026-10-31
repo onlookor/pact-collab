@@ -2034,6 +2034,7 @@ dependencies = [
  "pact-engine",
  "pact-engine-kernel",
  "pact-parser",
+ "pact-ref-spec",
  "pact-store",
  "pact-store-model",
  "pact-views",

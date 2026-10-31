@@ -95,7 +95,7 @@ PACT 位于工作流编排、多智能体协调、授权与审计三者的交界
 - **三种接口、一个权威**——REST（unix socket 或 TCP、SSE 通知）、MCP（stdio 与 Streamable HTTP `/mcp`，21 个工具）、单一 `pact` CLI。
 - **参与者运行时**——`pact-runtime` 提供可复用的参与者自驱循环、多 agent 编排，以及订阅消费事件的外部副作用执行器（失败按 saga 式追加补偿）。
 - **运维面**——health / readiness / metrics、优雅停机、PID 文件、systemd 与容器产物。
-- **本地嵌入**——面向 Node/桌面宿主的 WASM 构建，事件与快照格式与原生引擎共用（按单用户边界设计）。
+- **本地嵌入（WASM）**——想在 Node 或桌面应用里用 PACT 的准入规则、又不想起 daemon 时，WASM 构建在进程内按同一套域声明、事件与快照运行，面向单用户。本地项目的磁盘布局与原生一致，后续可迁到 daemon。它不提供 HTTP/MCP 服务，也不承担 ACL、读审计或多用户边界；权威部署仍是原生 daemon。用法见[手册 §2.7](docs/manual.md)。
 - **Harness 适配器**——[`dsh-plugin-pact`](https://github.com/onlookor/pact-dsh) 把 DeepSeek Harness 的 agent 接入引擎。缺省的 `observe` 档位只镜像事件；切到 `govern` 档位后，agent 这一步或这个工具能否执行由 PACT 域声明裁定，DSH 仍负责 agent 循环、模型调用与工具执行。插件不是协同模型本身——引擎独立于 harness，可以同时服务来自不同 harness 的 agent。
 
 ## 从哪里开始

@@ -2,6 +2,14 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 45 轮，WASM 本地入口校验，D50）
+
+- 附录 A 第 88 轮登记 `D50`（WASM 本地入口票面校验与绑定注入），权威定义在 `docs/design.md` §0 / §9.17。
+- 架构正文“票面写入校验在接口层”更新：`pact-wasm` 本地宿主通过宿主注入的 RefBindings 复用同一 `pact-ref-spec::validate_entry` 纯函数（FR30/D50），未注入绑定时只做结构校验；ContractCard 归档钉版仍只在 REST 边界。
+- 组件与依赖方向：`pact-ref-spec` 仍是纯规范层（只依赖 `serde`，可编译 wasm32，无 `pact-core` 依赖）；`pact-wasm` 新增对它的依赖，`pact-http` 删除本地入口语义后继续委托同一实现。引擎、存储与事件日志仍不感知票面。
+- 数据流不变：WASM 仍在宿主持久化后提交；绑定注入只影响本进程内存，宿主重启需重新注入。
+- 文档：`docs/requirements.md` FR21/FR30/FR31、`docs/design.md` §0/§9.12/§9.17、`docs/manual.md` §2.7/§7.11、`docs/thingref-governance.md` §8.1/§8.2/§13.1、README 中英文本地嵌入描述。
+
 ## 2026-10-31（第 44 轮，`[ref_digest]` 与 `DeclarationDigestMismatch` 登记与运行期落点）
 
 - 附录 A 登记运行期配置项 `[ref_digest]` / `[ref_digest].mode` 与 HTTP 错误码 `DeclarationDigestMismatch`（均无字母+数字编号，仍先登记后使用）。

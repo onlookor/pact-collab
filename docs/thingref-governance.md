@@ -305,7 +305,7 @@ Token { domain, type, thing_ref }
 | `pact-http` | 入口校验 + 视图可见性 + 视图审计 + 摘要比对 | `/seeds`、`/tokens` 校验；`/counter`、`/archive` 已实现默认 `read-gate` 过滤，RefBindings 的 `domain`/`hidden` 覆盖（FR28/D42）；视图级读审计已实现（`read_audit` 记录 `kind=view`，D43）；`POST /domains` 的 `declarationDigest` 运行期比对已实现（D49 第二步，`[ref_digest] mode = off/warn/enforce`） |
 | `pact-mcp` | 入口校验 | 与 REST 同一套校验；不新增治理语义 |
 | `pact-cli` | 校验 + 离线 lint + 摘要 | `--thing-ref` 校验；`pact ref lint` 已实现（FR27/D41），离线读 RefBindings/ContractCard/`.pact`；`pact ref digest` 与 lint 摘要比对已实现（FR34/D49 第一步） |
-| `pact-wasm` | 纯校验 | URI 解析/绑定匹配可进 WASM；解析器/调用器不进 |
+| `pact-wasm` | 入口校验（写入边界） | 复用 `pact-ref-spec::validate_entry` 纯函数，在 `prepare_seed` / `prepare_produce` 进入内核前做三态、URI profile 与绑定策略校验（D50）；宿主注入 RefBindings，解析器/调用器不进 |
 | `pact-runtime` | 参与者侧治理 | resolve / invoke / 审计边车最适合放这里 |
 | `web/authoring` | 提示与校验 | 不涉及引擎 |
 
@@ -314,7 +314,7 @@ Token { domain, type, thing_ref }
 现状（2026-10-31）：`pact-http` 已实现入口与归档校验——`POST /seeds`、`POST /tokens` 在引擎调用前完成三态判定、URI profile 与 RefBindings 策略（FR30/D45）；`POST /consume` 在进入 Archive 前强制 `pinning: required-at-archive`（FR31/D46）与绑定引用卡片的归档钉版要求（FR32/D47）；`value` 与 `onUnknownScheme` 也在写入时生效。
 `/counter`、`/archive` 的视图过滤与视图审计已实现（FR28/D42、D43）。`pact-cli` 的离线 `ref lint` 已实现（FR27/D41）；`declarationDigest` 的计算工具与 lint 漂移比对已实现（FR34/D49 第一步，规范见 `spec/ref/v1/declaration-digest.md`）。
 运行期比对已实现于 `POST /domains`（FR34/D49 第二步，`[ref_digest] mode = off/warn/enforce`；`enforce` 不一致返回 `400 DeclarationDigestMismatch`）。
-仍未接入：`pact-wasm` 本地宿主（直接构造 `ThingRef`）。
+`pact-wasm` 本地宿主也已接入写入侧入口校验（FR30/D50）：`prepare_seed` / `prepare_produce` 在进入内核前调用同一 `validate_entry` 纯函数；宿主通过 `refBindings` / `PACT_WASM_REF_BINDINGS` 注入 RefBindings，未注入时只做结构规则。WASM 省略与 `null` 都表示 `∅`，不产生 `ThingRefMissing`；ContractCard 与 consume 前的归档钉版检查仍只在 REST 边界。
 待做项与优先级见 `todo.md`（与 §13.1 对齐）。
 
 ### 8.2 单 WASM 是否仍能支撑
@@ -322,7 +322,8 @@ Token { domain, type, thing_ref }
 | 能力 | 单 WASM 能否支撑 | 原因 |
 |---|---|---|
 | 协调内核（token、规则、事件、快照） | 能 | 现有 `pact-wasm` 已经做到；无 IO |
-| 静态治理（URI 校验、RefBindings 匹配、ContractCard 校验） | 能 | 纯函数；只要宿主把清单/卡片传进来 |
+| 静态治理（URI 校验、RefBindings 匹配） | 已实现 | 纯函数；宿主以 JSON 注入绑定（D50），未注入时只做结构校验 |
+| ContractCard 校验与归档钉版 | 部分 | 绑定声明的卡片规则可进 WASM，但卡片加载与 consume 前归档钉版仍只在 REST 边界 |
 | 解析/调用（fetch、MCP invoke、OAuth、撤销、审计） | 不能 | WASM 当前明确不做网络/安全边界；浏览器也不能当 ACL/审计边界 |
 | 注册表/发现/多租户 ACL | 不能 | 这是服务面，不是嵌入式内核面 |
 
@@ -1002,11 +1003,12 @@ spec:
 1. **静态阶段（已完成，2026-10-27）**：`pact-ref-spec` 纯 crate + `spec/ref/v1/`（URI profile、两份 schema、OpenAPI）已落地，
    18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 46 项测试通过）；`pact ref lint` 已实现（FR27/D41），
    覆盖绑定/契约/声明一致性与退出码。
-   **待做**：`refd` 的 resolve/describe 端点；`pact-wasm` 本地宿主的入口校验。
+   **待做**：`refd` 的 resolve/describe 端点。
    **已完成（2026-10-28）**：REST 写入路径入口校验（FR30/D45）——`POST /seeds`、`POST /tokens` 区分缺失/`null`/字符串，执行 URI profile 与 RefBindings 策略，错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef`；CLI/MCP 经 REST 继承。
    **已完成（2026-10-29）**：`value`、`onUnknownScheme` 与钉版运行期强制（FR31/D46）——`pinning: required` 写入即拦，`required-at-archive` 在 consume 进入 Archive 前拦，错误码 `ThingRefUnpinned`。
    **已完成（2026-10-30）**：ContractCard 运行期加载与版本不可变（FR32/D47）——`[ref_contracts]` 启动加载、`contract_id()` 索引、按数据触发闭环、重复 `id@version` 拒绝、consume 钉版并集（只加严）；卡片与绑定显式重载（FR33/D48）——`POST /ref/reload` 与 `pact ref reload`、同事务原子换快照、`dryRun` 影响报告、审计与 ACL 覆盖。
    **已完成（2026-10-31）**：`declarationDigest` v1（FR34/D49 第一步）——`pact ref digest` 工具、`pact ref lint` 漂移比对（缺失 warning / 不一致 error）、规范 `spec/ref/v1/declaration-digest.md` 与 golden 向量；同日完成第二步——`[ref_digest] mode = off/warn/enforce`（默认 `warn`）在 `POST /domains` 进入引擎前比对，`enforce` 不一致返回 `400 DeclarationDigestMismatch`，启动恢复与 `ref reload` 不比对。
+   **已完成（2026-10-31）**：`pact-wasm` 本地宿主写入侧入口校验（FR30/D50）——把 REST 的入口语义抽为 `pact-ref-spec::validate_entry` 纯函数，REST 与 WASM 共用；WASM 由宿主以 JSON 注入 RefBindings（`refBindings` / `PACT_WASM_REF_BINDINGS`），未注入时只做结构规则；省略与 `null` 均表示 `∅`。ContractCard 与 consume 前归档钉版仍只在 REST 边界。
 2. **可见性阶段（已完成，2026-10-27）**：Counter/Archive 返回前过滤 `thing_ref`（FR28/D42）；
    默认 `read-gate`（无条件 `reads`/`consumes`），RefBindings 的 `domain`/`hidden` 显式覆盖；
    daemon `[ref_bindings].paths` 加载 profile，失败 fail-closed；令牌/签名模式下视图要求身份。
@@ -1025,7 +1027,7 @@ spec:
 - **端到端测试**：静态制品 resolve → witness token → 下游生产；动态 `mcp-read` → 物化 → 新 token；tombstone 交叉检查。
 - **回归测试**：旧 Identifier 仍可写入/读取；`ThingRef` 不透明性不变；CPN 颜色集不变。
 - **安全测试**：SSRF、路径穿越、凭据泄露、日志注入、超长 URI、危险 scheme、URI userinfo。
-- **WASM 测试**：静态校验可用；无网络依赖；AOT/体积门禁不退化。
+- **WASM 测试**：静态校验可用（`prepare_seed` / `prepare_produce` 入口校验、绑定注入与规范化）；无网络依赖；AOT/体积门禁不退化。
 - **一致性测试**：ContractCard 两种 profile 的 conformance cases。
 
 ### 13.3 验收

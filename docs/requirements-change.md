@@ -2,6 +2,14 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 44 轮，WASM 本地入口校验，D50）
+
+- **FR30 边界扩到 WASM**：`pact-wasm` 本地宿主不经过 REST，但 `prepare_seed` / `prepare_produce` 在进入 kernel 前复用同一 `pact-ref-spec::validate_entry` 纯函数；宿主以 JSON 注入 RefBindings（`refBindings` 选项 / `PACT_WASM_REF_BINDINGS`），未注入时只做结构校验。JS/WASM 无法表达“字段缺失”，省略与 `null` 都映射为 `∅`，因此 WASM 路径不产生 `ThingRefMissing`。
+- **FR21 能力范围同步**：WASM 在写入前执行票面结构规则与绑定策略；ContractCard 加载、归档钉版与 Archive 检查仍只在 REST 边界。
+- **FR31 边界同步**：WASM 写入侧执行 `value` / `onUnknownScheme` / `pinning: required`，但不加载卡片、不做 consume 前 `required-at-archive`。
+- **FR30 实现状态**：补 2026-10-31 WASM 侧完成；未生效项清单不变（`declarationDigest` 由 FR34 承接）。
+- 其余 FR1–FR29、FR31–FR34、NFR1–NFR7 不变。
+
 ## 2026-10-31（第 43 轮，`declarationDigest` v1 第二步：运行期比对）
 
 - **FR34 第二步实现**：新增可选 `[ref_digest].mode = "off" | "warn" | "enforce"`（缺省 `warn`；整段可省，未知键/未知模式拒绝启动）。daemon 在 `POST /domains`（`load_domain`）授权后、进入引擎前解析声明并计算摘要，与该域当前绑定 `metadata.declarationDigest` 比对。
