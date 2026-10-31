@@ -347,6 +347,7 @@
 - **失败语义**：上游明确失败 → `502 UpstreamFailure`（台账 `failed`，审计 `status=failed`）；超时或连接中断 → `504 UpstreamTimeout`（台账与审计 `in-doubt`）；物化超限或写入失败 → 不返回部分结果。
 - **启动约束（fail-closed）**：存在 `mutating` 能力 profile 时，必须配置 `[mutate].journal`（父目录存在、可解析、条目数 ≤ `max_entries`）与 `[materialize]`，`capability.server.id` 必须登记于 `[[mcp_servers]]`；台账中同键异摘要或非法行拒绝启动。
 - **边界**：不做自动重试、轮询、后台任务、跨服务路由、自动 saga/compensation 或结果缓存清理；`revoke`、可选注册表与 conformance runner 不在本需求。
+- **实现状态**：部分实现（2026-10-31）。规范层 `pact-ref-spec` 已强制 `mcp-mutating` **卡片级**必填字段（`tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`），单测 6 项；vendored 快照已同步。`POST /v1/mutate`、幂等台账、两阶段审计、请求级归属/`operation` 校验与启动约束待实现。
 
 ## 5. 非功能需求
 

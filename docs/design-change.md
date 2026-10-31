@@ -2,6 +2,14 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 95 轮，`mcp-mutating` 卡片校验实现，FR37/D53）
+
+- **§9.20 状态推进**：`pact-ref-spec` 的 `ContractCard::validate` 实现 `mcp-mutating` **卡片级**必填字段校验——`tool.inputSchemaDigest` 必须存在（格式仍走既有 `sha256:<64hex>` 校验）、`idempotency {key, semantics}` 非空、`result.materialization ∈ {required, optional}`（`forbidden` 拒绝）、`auth.audience` 非空、`capability.failure` 非空。此前只要求 `idempotency` 且 `materialization=required`。
+- **校验分层澄清**：`server.id` 是否登记于 `[[mcp_servers]]`、`reference` 严格等于 `<server.id>/<tool.name>`、`operation == tool.name`、`idempotencyKey` 文法均为请求级约束，放在实现②的 `/v1/mutate` handler；卡片校验不承担这些检查。此前台账把归属/operation 写在实现①，本轮修正拆分。
+- **测试**：新增 6 项单测（缺 `inputSchemaDigest`、缺 `result`、`materialization=forbidden`、`optional` 放行、缺 `audience`、缺 `failure`）；`pact-ref-spec` 51 passed，`pact` 全量 384 passed。
+- **跨仓库**：vendored 快照同步至 `pact-ref/vendor/pact-ref-spec`（`--check` 通过）；`refd` 集成测试的基线卡片补 `capability.failure` 以符合新约束；`pact-ref` 全量 126 passed。
+- **未改**：`contract-card.schema.json` 仍不收紧（沿用第 94 轮决策，运行期 profile 校验为权威）；D1–D53 与 FR1–FR37 语义无变更；母本未改动。
+
 ## 2026-10-31（第 94 轮，动态写阶段契约定案，FR37/D53；无代码变更）
 
 - **决策 D53 / 新增 §9.20**：动态写与只读**端点分离**——`POST /v1/mutate`、scope `ref:mutate`、ACL operation `mutate`；`/v1/invoke` 与 `/v1/mutate` 互不接受对方 `sideEffect`，只读授权不自动升级为写授权。

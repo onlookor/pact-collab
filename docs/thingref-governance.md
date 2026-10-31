@@ -1017,7 +1017,7 @@ spec:
    已在规范层收紧校验（FR29/D44）；新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查。
    **已完成**：可发现性 lint——对 `required=true` 检查 hidden、视图读取路径、Rule-R/consume 路径、保留证据与删除可区分性（5 个 warning code，`--strict` 视为失败）。
 4. **动态只读阶段（已完成，2026-10-31）**：`mcp-read` profile 校验、`refd` 的 `POST /v1/invoke`、`mcp` adapter（JSON-RPC `tools/call`）与内容寻址物化（FR36/D52）；结果经 `file://` 引用回到 `/v1/resolve`，参与者以正常 `seed`/`produce` 产生 witness token。动态写阶段与 `revoke` 仍未开始。
-5. **动态写阶段（契约已定案，2026-10-31；实现待做）**：`mcp-mutating` profile、`POST /v1/mutate` 与幂等台账、两阶段审计、witness/compensation 边界（FR37/D53，§13.8）。
+5. **动态写阶段（规范层已实现，2026-10-31；端点待做）**：`pact-ref-spec` 已强制 `mcp-mutating` 卡片级必填字段（§13.8.2）；`POST /v1/mutate`、幂等台账、两阶段审计与 witness/compensation 边界待实现（FR37/D53，§13.8）。
 6. **可选注册表**：只做发现，不做真相源。
 
 ### 13.2 测试
@@ -1497,6 +1497,8 @@ JWT/JWKS 验签、声明校验、`scope` 映射与统一 `401`；JWKS 文件/HTT
 | `capability.result.materialization` | `required` 或 `optional`；写结果必须声明是否物化 |
 | `capability.auth.audience` | 非空；写操作必须声明目标受众 |
 | `capability.failure` | 非空；写失败必须可解释，可含保留键 `compensation` |
+
+**校验分层（2026-10-31 实现约定）**：上表中的**卡片自身字段**由 `pact-ref-spec` 的 `ContractCard::validate` 在加载/重载时强制（缺失即拒绝加载）；`server.id` 是否登记于 `[[mcp_servers]]`、`reference` 严格等于 `<server.id>/<tool.name>`、`operation == tool.name` 以及 `idempotencyKey` 文法属于**请求级**约束，由 `refd` 的 `/v1/mutate` handler 在触达上游前执行。
 
 #### 13.8.3 请求与响应
 

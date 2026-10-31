@@ -1221,7 +1221,7 @@ allow_plaintext = false             # 仅回环主机可设 true
 
 **测试**：`adapters/mcp` 单测覆盖 `tools/call` 请求形状、HTTP 非 2xx、JSON-RPC error、超限与物化摘要；`refd` 集成测试覆盖 invoke 成功 → `file://` → `/v1/resolve` 闭环、mutating `403`、缺 ACL `403`、上游失败 `502` 且审计 `failed`、缺 `[[mcp_servers]]`/缺 `[materialize]` 启动失败、非回环 `http://` 拒绝。
 
-### 9.20 refd 动态写调用与幂等台账（D53，契约已定案、实现待做）
+### 9.20 refd 动态写调用与幂等台账（D53，规范层已实现、端点待做）
 
 **目标**：为 `mcp-mutating` 能力提供一条与只读调用**完全分离**的写入通道，使写操作「至多生效一次、结果可追溯、崩溃不猜测」；`refd` 仍不写 PACT 状态，witness 由参与者正常 `seed`/`produce` 产生。
 
@@ -1314,13 +1314,15 @@ max_entries = 10000                            # 1..=1000000
 
 **边界**：v1 不自动重试、不轮询上游、不提供撤销（revoke）；`capability.timeoutMs` 不参与执行；`/v1/invoke` 与 `/v1/mutate` 互不接受对方 `sideEffect`；台账不进入 PACT 事件日志，也不参与重放/压缩。
 
+**实现状态（第 95 轮）**：`pact-ref-spec` 的 `ContractCard::validate` 已强制上述**卡片级**必填字段——`tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience` 与非空 `failure`；`server.id` 是否登记于 `[[mcp_servers]]`、`reference`/`operation` 严格相等、`idempotencyKey` 格式属于请求级约束，由 `refd` 的 `/v1/mutate` handler 执行（实现②）。vendored 快照已同步；`refd` 测试基线卡片补 `failure` 以符合新约束。
+
 **测试**：台账单测覆盖 intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断恢复与非法行拒绝启动；`refd` 集成测试覆盖 mutate 成功 → `file://` → `/v1/resolve` 闭环、同键重放 `replayed=true` 且上游仅被调用一次、只读授权访问 `/v1/mutate` `403`、`mcp-read` 卡片 `403`、intent 审计失败时上游未被调用、result 审计失败返回 `500` 但重放可得结论、缺 `[mutate].journal`/缺必填 profile 字段启动或请求失败。
 
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验**；**D51 OIDC 算法白名单、`crit` 拒绝、`kid` 选键、未知 `kid` 限频刷新与 JWKS 失败**；**D52 mcp adapter `tools/call` 请求形状、错误分类与内容寻址物化**；**D53 幂等台账（intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断与非法行拒绝启动）** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验**；**D51 OIDC 算法白名单、`crit` 拒绝、`kid` 选键、未知 `kid` 限频刷新与 JWKS 失败**；**D52 mcp adapter `tools/call` 请求形状、错误分类与内容寻址物化**；**D53 规范层 `mcp-mutating` 卡片必填字段（缺 `inputSchemaDigest`/`idempotency`/`result`/`audience`/`failure` 及 `materialization=forbidden` 均拒绝，`optional` 放行）与幂等台账（intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断与非法行拒绝启动）** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
 | 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）**、**D51 `refd` OIDC（有效令牌 200、过期/错误 `aud`/`iss` 401 带 `WWW-Authenticate`、无端点 scope 403）**；**D52 `refd` invoke（成功→`file://`→resolve 闭环、mutating/ACL 403、上游失败 502 审计 failed、启动 fail-closed）**；**D53 `refd` mutate（成功→resolve 闭环、同键重放 `replayed=true` 且上游仅调用一次、只读授权 403、`mcp-read` 卡片 403、intent 审计失败时上游未被调用、result 审计失败 500 但重放可得结论、缺 `[mutate].journal` 启动失败）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码**；**D47 卡片钉版归档与重复版本拒绝**；**D48 显式重载（dryRun 报告、失败保持旧状态、审计/ACL/认证）与真实二进制 `pact ref reload`**；**D49 运行期摘要比对（`off`/`warn`/`enforce`、未记录摘要与无绑定不比较、`enforce` 拒绝且不加载）** | 阶段 4/5 的 e2e 测试 |

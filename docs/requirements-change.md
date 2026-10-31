@@ -2,6 +2,12 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 48 轮，FR37 规范层卡片校验实现）
+
+- **FR37 实现状态推进**：规范层 `pact-ref-spec` 已强制 `mcp-mutating` 卡片级必填字段（`tool.inputSchemaDigest`、`idempotency`、`result.materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`），新增 6 项单测。
+- **范围澄清**：`reference`/`operation` 严格归属与 `idempotencyKey` 文法属于请求级校验，随 `/v1/mutate` handler 在实现②落地；需求语义不变，仅补实现状态与拆分说明。
+- **未变更**：FR1–FR36 与 FR37 的授权、台账、审计、崩溃语义均不变。
+
 ## 2026-10-31（第 47 轮，`refd` 动态写调用契约，FR37/D53）
 
 - **新增 FR37（D53，契约已定案，实现待做）**：`refd` 新增 `POST /v1/mutate`，把「执行外部写动作」收进治理平面，并用本地幂等台账保证写操作「至多生效一次、结果可追溯、崩溃不猜测」。`/v1/invoke` 保持只读，两者互不接受对方的 `sideEffect`。
