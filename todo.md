@@ -118,6 +118,7 @@
 | [x] | 第 90 轮契约校验：`yaml.safe_load` + `$ref` 遍历 | paths 为 `/healthz`、`/readyz`、`/v1/resolve`、`/v1/describe`；schemas 5 项；`all $ref resolve OK` |
 | [x] | 第 90 轮回归基线：无代码变更 | 沿用第 88 轮全量 **373 passed / 0 failed**；`pact-ref` 仅文档改动 |
 | [x] | 第 90 轮推送前安全审视 | 无新增依赖、无代码、无网络/进程/文件写变化；设计层面默认拒绝、凭据不入请求体、审计 fail-closed；`cargo audit` 结论沿用 |
+| [x] | 第 90 轮提交：`pact` `e260207`（契约与鉴权、治理 §13.6、OpenAPI、变更记录、台账）；`pact-ref` `c9ccfd1`（API 段落与引导阶段同步） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
 
 ## 已完成归档区
 
