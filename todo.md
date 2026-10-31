@@ -111,7 +111,7 @@
 | [x] | 第 87 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增依赖；新增代码只读配置与绑定快照、计算纯函数摘要，无 `unsafe`/网络/进程/新文件写；`enforce` 在引擎前拒绝、无副作用；`cargo audit` 结论沿用 |
 | [x] | 第 88 轮全量回归 `cargo test --workspace --locked` | **373 passed / 0 failed**（新增 10 项：`pact-ref-spec` 7、`pact-wasm` 3）；Node 测试 8 passed（含 `refBindings` 用例） |
 | [x] | 第 88 轮 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、wasm32 clippy | 均通过（退出码 0）；`ci-smoke` 通过（raw 557852 B / gzip 167138 B） |
-| [x] | 第 88 轮跨仓库：vendored 快照同步与 `pact-ref` 回归 | `scripts/sync-spec.sh --source … --check` 输出 `vendored spec is in sync`；`pact-ref` `fmt`/`clippy`/`test` 通过，**57 passed / 0 failed**；提交 `9be7cbd`（本地已提交；跨仓库推送待用户确认） |
+| [x] | 第 88 轮跨仓库：vendored 快照同步与 `pact-ref` 回归 | `scripts/sync-spec.sh --source … --check` 输出 `vendored spec is in sync`；`pact-ref` `fmt`/`clippy`/`test` 通过，**57 passed / 0 failed**；提交 `9be7cbd` 已推送，CI `41166710183` / Security `41166710038` 均成功 |
 | [x] | 第 88 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 新增依赖 `pact-wasm → pact-ref-spec` 为纯 crate（只依赖 serde，无 IO/网络/`unsafe`）；WASM 仅接收宿主注入 JSON，无新增文件 IO/进程/网络；`cargo audit` 0 vulnerability / 2 unmaintained（沿用） |
 | [x] | 第 88 轮 CI（提交 `5f73772`） | CI `41166320702` **success**（audit / build-test-fmt-clippy / wasm 三个 job 通过） |
 
@@ -119,7 +119,7 @@
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
-| 2026-10-31 | WASM 本地入口校验与绑定注入：入口语义抽为 `pact-ref-spec::validate_entry`，REST 委托、WASM 复用；宿主 JSON 注入 RefBindings | FR30 / D50 | `pact-ref-spec` 7 单测、`pact-wasm` 3 单测、Node 8 项、wasm32 clippy、`ci-smoke`；373 passed；`pact-ref` 57 passed；提交 `3934999`（跨仓库 `9be7cbd`）；CI `41166320702` 成功 |
+| 2026-10-31 | WASM 本地入口校验与绑定注入：入口语义抽为 `pact-ref-spec::validate_entry`，REST 委托、WASM 复用；宿主 JSON 注入 RefBindings | FR30 / D50 | `pact-ref-spec` 7 单测、`pact-wasm` 3 单测、Node 8 项、wasm32 clippy、`ci-smoke`；373 passed；`pact-ref` 57 passed；提交 `3934999`（跨仓库 `9be7cbd`，CI 成功）；CI `41166320702` 成功 |
 | 2026-10-31 | `declarationDigest` v1 第二步：`[ref_digest] mode = off/warn/enforce` 运行期比对（`POST /domains` 进入引擎前；`enforce` → `400 DeclarationDigestMismatch`） | FR34 / D49 第二步 / `spec/ref/v1/declaration-digest.md` | `pact-http` 单测 2（三模式/边界、配置解析）；`ref_digest_e2e` 5；363 passed；`fmt`/`clippy` 通过；CI `41163741023` 成功；提交 `505e81d` |
 | 2026-10-31 | `declarationDigest` v1 第一步：语义接口摘要工具与 lint 漂移比对 | FR34 / D49 / `spec/ref/v1/declaration-digest.md` | `pact-analysis` 单测 5（含 golden）、`pact-cli` 单测 1、`ref_lint_e2e` 1；356 passed；`fmt`/`clippy` 通过；CI `41162194383` 成功；`2bffcd8` |
 | 2026-10-30 | B0：ContractCard 运行期加载、版本不可变与归档钉版并集 | FR32 / D47 | `pact-http` 单测 + e2e；338 passed；`fmt`/`clippy` 通过；`4b42778` |
