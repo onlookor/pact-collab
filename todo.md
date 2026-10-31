@@ -145,7 +145,7 @@
 | [x] | 第 94 轮回归基线：无代码变更 | 沿用第 93 轮 `pact` **378 passed / 0 failed**、`pact-ref` **120 passed / 0 failed** |
 | [x] | 第 94 轮推送前安全审视 | 无新增依赖、无代码、无网络/进程/文件写变化；契约层面默认拒绝、只读/写授权分离、台账先于上游；`cargo audit` 结论沿用 |
 | [x] | 第 94 轮跨仓库文档同步：`pact-ref/docs/architecture.md` 增动态 mutate 流程、`/v1/mutate` 端点、`[mutate]` 配置与引导阶段状态 | 与 `pact` 仓库契约逐条一致；本轮 `pact-ref` 仅文档改动 |
-| [x] | 第 94 轮提交：`pact` `待回填`（FR37/D53、治理 §13.8、设计 §9.20、OpenAPI `/v1/mutate`、三份 change、台账）；`pact-ref` `待回填`（`docs/architecture.md`） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
+| [x] | 第 94 轮提交：`pact` `48edab7`（FR37/D53、治理 §13.8、设计 §9.20、OpenAPI `/v1/mutate`、三份 change、台账）；`pact-ref` `a6070dc`（`docs/architecture.md`） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
 
 ## 已完成归档区
 
