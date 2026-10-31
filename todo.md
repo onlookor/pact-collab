@@ -107,7 +107,7 @@
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
-| 2026-10-31 | `declarationDigest` v1 第二步：`[ref_digest] mode = off/warn/enforce` 运行期比对（`POST /domains` 进入引擎前；`enforce` → `400 DeclarationDigestMismatch`） | FR34 / D49 第二步 / `spec/ref/v1/declaration-digest.md` | `pact-http` 单测 2（三模式/边界、配置解析）；`ref_digest_e2e` 5；363 passed；`fmt`/`clippy` 通过；提交 `505e81d` |
+| 2026-10-31 | `declarationDigest` v1 第二步：`[ref_digest] mode = off/warn/enforce` 运行期比对（`POST /domains` 进入引擎前；`enforce` → `400 DeclarationDigestMismatch`） | FR34 / D49 第二步 / `spec/ref/v1/declaration-digest.md` | `pact-http` 单测 2（三模式/边界、配置解析）；`ref_digest_e2e` 5；363 passed；`fmt`/`clippy` 通过；CI `41163741023` 成功；提交 `505e81d` |
 | 2026-10-31 | `declarationDigest` v1 第一步：语义接口摘要工具与 lint 漂移比对 | FR34 / D49 / `spec/ref/v1/declaration-digest.md` | `pact-analysis` 单测 5（含 golden）、`pact-cli` 单测 1、`ref_lint_e2e` 1；356 passed；`fmt`/`clippy` 通过；CI `41162194383` 成功；`2bffcd8` |
 | 2026-10-30 | B0：ContractCard 运行期加载、版本不可变与归档钉版并集 | FR32 / D47 | `pact-http` 单测 + e2e；338 passed；`fmt`/`clippy` 通过；`4b42778` |
 | 2026-10-30 | B1：RefBindings/ContractCard 显式重载（`POST /ref/reload` + CLI，`dryRun`/审计/ACL/原子快照） | FR33 / D48 | 单测 3 + `ref_reload_e2e` 7 + CLI e2e 1；349 passed；`fmt`/`clippy` 通过；`a514380` |
