@@ -2,6 +2,17 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 48 轮，治理平面动态只读调用，FR36/D52）
+
+- 附录 A 已登记 `FR36`、`D52`、`[materialize]` 及子项、`[[mcp_servers]]` 及子项（权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0 / §9.19）。
+- 架构正文新增 §2.8「治理平面动态只读调用（FR36/D52）」：给出 invoke 调用链（认证 → 端点 scope → 请求校验 → 对象 ACL `invoke` → profile → 只读闸门 → 引用归属 → `InvokerRegistry` → `mcp` adapter → 内容寻址物化 → `resultRef`/`resultDigest`），并明确四条边界——`refd` 不写 PACT 状态、上游失败统一 `502` 且审计 `failed`、启动 fail-closed、动态写阶段不在本层。
+- 组件视图：`refd` 新增 `InvokerRegistry` 与 `mcp` adapter；`ref-core` 增加 `InvokeRequest`/`Invocation`；`ref-auth` 增加 `ref:invoke` 端点 scope 与 `invoke` ACL 操作；`refd` 配置增加 `[materialize]` 与 `[[mcp_servers]]`。依赖方向不变：`refd → ref-invoker / adapter-mcp / ref-core / ref-auth / ref-audit`，治理平面仍不访问 PACT 存储。
+- 分配视图：物化产物落在 `[materialize].dir`（运维配置的本地目录），不进入 PACT `data_dir`；上游端点默认仅 `https://`，`allow_plaintext` 仅回环可选。
+- 质量属性：调用路径有 30s 总上限与 `max_bytes` 结果上限；上游失败不重试、不轮询，失败语义确定。
+- 无其他结构性变更：引擎层、存储层、接口层与 `pactd` / `refd` 的进程边界不变；`pactd` 仍不调用 `refd`。
+- 跨仓库：代码全部在 `pact-ref`；本仓库为契约、规范层只读卡片校验与文档。`docs/requirements-change.md` 第 46 轮、`docs/design-change.md` 第 93 轮、`docs/thingref-governance.md` §13.7、`pact-ref/docs/architecture.md` 同轮更新。
+- 验证：`pact` `cargo test --workspace --locked` **378 passed / 0 failed**，`fmt`/`clippy` 通过；`pact-ref` **120 passed / 0 failed**，`fmt`/`clippy`/`cargo audit` 通过，vendored 快照 `--check` 同步。
+
 ## 2026-10-31（第 47 轮，`refd` OIDC 身份验证，FR35/D51）
 
 - 附录 A 第 92 轮已登记 `FR35`、`D51`、`[auth.oidc]` 及子项，权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0 / §9.18。

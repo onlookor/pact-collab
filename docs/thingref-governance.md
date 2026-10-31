@@ -1016,7 +1016,7 @@ spec:
 3. **保留阶段（已完成，2026-10-27）**：ContractCard `lifecycle.retention` / `deletionPolicy` / `tombstoneRef`
    已在规范层收紧校验（FR29/D44）；新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查。
    **已完成**：可发现性 lint——对 `required=true` 检查 hidden、视图读取路径、Rule-R/consume 路径、保留证据与删除可区分性（5 个 warning code，`--strict` 视为失败）。
-4. **动态只读阶段**：`mcp-read` profile；resolve 适配器；物化结果。
+4. **动态只读阶段（已完成，2026-10-31）**：`mcp-read` profile 校验、`refd` 的 `POST /v1/invoke`、`mcp` adapter（JSON-RPC `tools/call`）与内容寻址物化（FR36/D52）；结果经 `file://` 引用回到 `/v1/resolve`，参与者以正常 `seed`/`produce` 产生 witness token。动态写阶段与 `revoke` 仍未开始。
 5. **动态写阶段**：`mcp-mutating` profile；审计边车；witness/compensation。
 6. **可选注册表**：只做发现，不做真相源。
 
@@ -1200,7 +1200,7 @@ spec:
 
 ### 13.6 `refd` 的 resolve/describe 端点与鉴权（2026-10-31 定案）
 
-本节解阻 §13.1 第 1 条的“`refd` 的 resolve/describe 端点”。规范产物是 `spec/ref/v1/reference-plane.openapi.yaml`；本节记录取舍与不变量。`invoke` / `revoke` 不在首版范围，随动态阶段（§13.1 第 4–5 步）另行定案。
+本节解阻 §13.1 第 1 条的“`refd` 的 resolve/describe 端点”。规范产物是 `spec/ref/v1/reference-plane.openapi.yaml`；本节记录取舍与不变量。`invoke` 的只读契约见 §13.7；`revoke` 与 `mcp-mutating` 不在首版范围，随动态写阶段（§13.1 第 5 步）另行定案。
 
 #### 13.6.1 不变量
 
@@ -1215,7 +1215,7 @@ spec:
 
 | 项 | 约定 |
 |---|---|
-| 路径 | 业务端点 `POST /v1/resolve`、`POST /v1/describe`；探针 `/healthz`、`/readyz` 不带版本 |
+| 路径 | 业务端点 `POST /v1/resolve`、`POST /v1/describe`、`POST /v1/invoke`；探针 `/healthz`、`/readyz` 不带版本 |
 | 版本 | 破坏性变更升 `/v2`；v1 内只允许新增可选响应字段，客户端必须忽略未知响应字段，服务端拒绝未知请求字段 |
 | 编码 | 仅 `application/json`（UTF-8）；其他 `415` |
 | 大小 / 时限 | 请求体 ≤ 64 KiB（`413`）；单请求 30s 上限，adapter 超时映射 `504` |
@@ -1240,7 +1240,7 @@ spec:
 
 两层，顺序固定：
 
-1. **端点 scope**：`/v1/resolve` 需要 `ref:resolve`，`/v1/describe` 需要 `ref:describe`；缺失 → `403 Forbidden`。
+1. **端点 scope**：`/v1/resolve` 需要 `ref:resolve`，`/v1/describe` 需要 `ref:describe`，`/v1/invoke` 需要 `ref:invoke`；缺失 → `403 Forbidden`。
 2. **对象 ACL**：`[[acl]]` 规则为**并集允许**、默认拒绝，无 deny 规则、无优先级排序：
 
 ```toml
@@ -1249,7 +1249,7 @@ principal = "team-a/*"          # 主体 glob
 domains   = ["build"]           # 或 ["*"]
 types     = ["artifact"]
 schemes   = ["https", "oci"]
-operations = ["resolve:read", "resolve:verify", "describe"]
+operations = ["resolve:read", "resolve:verify", "describe", "invoke"]
 ```
 
 - 任一规则匹配 `(principal, domain, type, scheme, operation)` 即允许；无匹配 → `403`，消息不区分“无权”与“不存在”。
@@ -1359,7 +1359,7 @@ operations = ["resolve:read", "resolve:verify", "describe"]
 
 | 位置 | 需要的改动 |
 |---|---|
-| `spec/ref/v1/reference-plane.openapi.yaml` | 已按本节重写为 v1 契约（resolve/describe + 探针） |
+| `spec/ref/v1/reference-plane.openapi.yaml` | 已按本节重写为 v1 契约（resolve/describe + 探针）；只读 `invoke` 按 §13.7 增补 |
 | `ref-core` | `ResolveRequest.actor` 移出请求、由服务端注入；`Resolution.handle` 改为 `Option`；`ContractDescriptor` 扩为投影结构 |
 | `ref-auth` | 新增 OIDC 验证器、静态令牌验证器、ACL 求值器；`DenyAllAuthorizer` 作为缺省 |
 | `ref-audit` | 落地 append-only sink 与 fail-closed 包装；现有 `MemoryAuditSink` 保留给测试 |
@@ -1371,7 +1371,7 @@ JWT/JWKS 验签、声明校验、`scope` 映射与统一 `401`；JWKS 文件/HTT
 
 未决（不阻塞首版实现）：
 
-- `invoke` / `revoke` 契约随动态阶段定案，届时升 OpenAPI 版本或新增路径；
+- `invoke` 的只读契约已按 §13.7 定案并实现（FR36/D52）；`revoke` 与 `mcp-mutating` 契约随动态写阶段定案；
 - 可选注册表落地后，`describe` 可接受 Identifier，`resolve` 仍要求 URI；
 - 限流、mTLS、多租户 JWKS 与认证配置热加载均不在 v1。
 
@@ -1382,6 +1382,92 @@ JWT/JWKS 验签、声明校验、`scope` 映射与统一 `401`；JWKS 文件/HTT
 - 不把 `ContractCard` 全文透出；`describe` 是白名单投影。
 - 不对 Identifier 做模糊解析；不做隐式重试或降级。
 - 不在 `ThingRef`、请求体或日志中存放凭据。
+
+### 13.7 `POST /v1/invoke`：动态只读调用（2026-10-31 定案并实现）
+
+`invoke` 是 §13.1 阶段 4 的落点。目标：把 `mcp-read` 能力调用结果**物化为新的静态引用**，让参与者回到 PACT 侧以正常 `seed`/`produce` 产生 witness token；`refd` 仍不写 PACT 状态。
+
+#### 13.7.1 不变量
+
+1. **只读**：仅接受 `capability.sideEffect = read-only` 的卡片；`mutating` 一律 `403`，不进入执行路径。
+2. **引用归属**：`reference` 必须是绝对 URI，且以 `capability.server.id + "/"` 开头、工具路径非空；不满足 `400 InvalidReference`。
+3. **服务登记**：`capability.server.id` 必须在部署侧 `[[mcp_servers]]` 登记；未登记不放行（启动期与请求期双重约束）。
+4. **不写 PACT**：不产生 token、不改 Counter/Archive、不校验 PACT read gate；证据由参与者正常 `seed`/`produce` 产生。
+5. **失败统一**：上游失败 → `502 UpstreamFailure`，不泄露上游细节；不隐式重试、不轮询。
+
+#### 13.7.2 请求与响应
+
+```json
+{
+  "domain": "query",
+  "type": "answer",
+  "reference": "mcp://tools.example/query.run",
+  "operation": "query.run",
+  "idempotencyKey": "req-1",
+  "input": { "q": "…" }
+}
+```
+
+| 字段 | 规则 |
+|---|---|
+| `domain` / `type` | 1–255 字符，非控制字符；不解释语义 |
+| `reference` | 非空 URI，≤ 65536；必须以 `capability.server.id + "/"` 开头 |
+| `operation` | 1–255 字符，非控制字符；能力侧操作名，不参与端点 scope 与 ACL 求值 |
+| `idempotencyKey` | 必需，1–128，`[A-Za-z0-9._:-]`；v1 只透传上游，不本地去重 |
+| `input` | 可选对象，缺省按空对象；原样传给 MCP `tools/call` |
+
+成功响应 `200`：
+
+```json
+{ "status": "succeeded",
+  "resultRef": "file:///var/lib/refd/materialized/<sha256>.json",
+  "resultDigest": "sha256:<64hex>" }
+```
+
+- `resultRef` 是内容寻址的 `file://` 引用，可直接交给 `/v1/resolve`（`intent=read`/`verify`）。
+- `resultDigest` 与 `resultRef` 同源；重复调用相同结果会收敛到同一路径。
+- v1 的 `status` 只有 `succeeded`；失败走错误信封，不返回部分结果。
+
+#### 13.7.3 授权与执行顺序
+
+固定顺序，先授权后触达上游：
+
+1. 认证（§13.6.3）→ 端点 scope `ref:invoke`；
+2. 对象 ACL operation `invoke`（§13.6.4，`(principal, domain, type, scheme)` 匹配）；
+3. profile 存在 → scheme 在卡片白名单 → `capability` 存在 → `sideEffect = read-only`；
+4. 引用归属校验（§13.7.1 第 2 条）；
+5. 调用 `InvokerRegistry` → `mcp` adapter（`spawn_blocking`，总上限 30s）；
+6. 物化 → 审计 → 响应。
+
+#### 13.7.4 物化与配置
+
+- 结果按内容寻址写入 `[materialize].dir/<sha256>.json`：先写 `.tmp` 再 `rename`，避免半文件；已存在同摘要文件直接复用。
+- `[materialize].max_bytes` 缺省 1048576，必须 > 0 且 ≤ 16 MiB；超限返回失败，不截断。
+- `[[mcp_servers]]`：`id`（`mcp://…`）、`endpoint`（默认 `https://`，拒绝 userinfo/fragment）、`timeout_ms`（1–30000，缺省 10000）、`bearer_token_env`（必需且启动时非空）。
+- `[[mcp_servers]].allow_plaintext`：仅当端点主机为回环（`localhost`/`127.0.0.0/8`/`::1`）时允许明文 `http://`；缺省 false，用于本地开发与测试。
+- 启动 fail-closed：存在只读能力 profile 时，必须有 `[materialize]` 且 `capability.server.id` 已登记；`bearer_token_env` 指向的环境变量缺失或为空即拒绝启动。
+- `capability.timeoutMs` 在 v1 不参与执行；实际超时取 `[[mcp_servers]].timeout_ms` 与 `refd` 30s 总上限的较小者。
+
+#### 13.7.5 错误与审计
+
+| HTTP | `code` | 触发 |
+|---|---|---|
+| 400 | `InvalidRequest` | 未知字段、选择器非法、`idempotencyKey` 非法 |
+| 400 | `InvalidReference` | 引用非 URI、scheme 不在卡片白名单、不属于声明服务 |
+| 403 | `Forbidden` | 缺 `ref:invoke`、ACL 未命中、`sideEffect` 非只读 |
+| 404 | `NotFound` | profile 不存在 |
+| 502 | `UpstreamFailure` | 上游明确失败（审计 `status=failed`） |
+| 504 | `UpstreamTimeout` | 上游或总时限超时 |
+
+- 审计沿用 §13.6.8 字段，`operation = "invoke"`；成功记 `status=ok` 与 `resultDigest`，上游失败记 `status=failed`。
+- 不记录 `input`、上游响应正文、`resultRef` 路径以外的物化内容与任何 bearer 令牌。
+
+#### 13.7.6 明确不做
+
+- 不实现 `mcp-mutating`、`revoke`、审计边车与 witness/compensation（阶段 5）。
+- 不做本地幂等表、结果缓存、轮询或自动重试。
+- 不接受 Identifier 作为 `reference`；不做跨服务路由或服务发现。
+- 不把上游响应直接透传给调用方；调用方只拿到物化引用与摘要。
 
 ---
 

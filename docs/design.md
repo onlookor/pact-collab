@@ -57,6 +57,7 @@
 | D49 | 域声明语义接口摘要 `declarationDigest` v1（FR34，2026-10-31 用户确认；两步均已实现） | **摘要对象 = 语义接口**：域名（`load_domain` 的 `name`；CLI 取 `--name`，缺省文件 stem）+ `types` + `preconditions` + `gates`（含条件表达式）+ `seed_authority`；注释/空白/段内顺序/文件名/实例名/卡片与绑定内容不参与。**规范化**冻结在 `spec/ref/v1/declaration-digest.md`：UTF-8 紧凑 JSON（无缩进、无尾换行），顶层固定 `{"kind":"pact.declaration.interface","v":1,…}`，集合按字符串字典序、`gates` 按 `(participant, action, type)`（action 用字符串而非枚举序），条件用自定文法文本而非 `serde` 派生表示；摘要 = `sha256:` + 小写 hex。**实现落点**：`pact-analysis::digest` 纯函数（CLI 与 `pact-http` 共用），`pact-ref-spec` 保持零 `pact-core` 依赖。**第一步（已实现）**：`pact ref digest <file.pact> [--name N] [--json]`；`pact ref lint --declaration` 比对绑定摘要——缺失 warning `ref.bindings.digest_missing`，已记录且不一致 error `ref.bindings.digest_mismatch`（退出 1）。**第二步（已实现）**：`[ref_digest] mode = off\|warn\|enforce`（缺省 `warn`），仅在 `POST /domains` 进入引擎前比对；绑定未记录或该域无绑定不比较；`warn` 写警告日志并放行，`enforce` 仅“摘要存在且不一致”返回 `400 DeclarationDigestMismatch`；声明解析失败保留既有 `Syntax`/`WellFormedness`；启动恢复不比较，显式重载（D48）不复核已登记声明。 | 语义接口比原文/规范化 AST 更小、更接近治理关心的契约面：格式变化不误报，而类型/前置/gate 条件/种子权的变化必然改变摘要（这正是期望行为）。工具与 lint 先行让“真实漂移”在提交前被拦，运行期默认 `warn` 保留后续收紧空间；`enforce` 显式开启，避免误算直接变成域不可加载。条件使用自定文法而非 `serde` 派生表示，避免序列化器升级静默改变全量摘要。格式保持 `sha256:<64hex>`，不新增 schema 字段，未来换义必须新规范版本与新编号。 |
 | D50 | WASM 本地入口票面校验与绑定注入（FR30，2026-10-31，用户要求继续推进） | 把 `pact-http` 已有的入口校验语义抽为 `pact-ref-spec::validate_entry` 纯函数（三态输入、URI profile、`required`/`allowIdentifier`/`schemes`/`onUnknownScheme`/`value`/`maxLength`/`pinning: required`），REST 与 WASM 共用，避免两套规范化。`PactHost` 新增 `set_ref_bindings` / `remove_ref_bindings` / `clear_ref_bindings`：宿主以 **JSON 字符串**注入 RefBindings（解析后立即 `validate`，按 `metadata.domain` 累积），不在 WASM 内读文件；`prepare_seed` / `prepare_produce` 在进入 kernel 前校验，成功写规范化票面。JS `thing_ref` 省略与 `null` 都表示 `∅`（无“字段缺失”态），因此不产生 `ThingRefMissing`；错误码沿用 `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`。绑定注入是可选能力：未注入时只做结构校验，行为与本轮之前一致。ContractCard 运行期钉版与 Archive 检查不在本轮范围（仍只在 REST 边界）。 | 入口校验必须与 REST 同一语义，否则同一 `.pact` + 同一绑定在两种分发形态下判定不同；抽纯函数是最小共享面。绑定由宿主注入而非 WASM 读文件，守住“WASM 无 IO、持久化归宿主”的既有边界，也避免把 YAML 解析器拉进 wasm。JS 无法表达“缺失”三态，强行区分只会在宿主层制造假语义，故省略即 `∅`，与 MCP 省略语义一致。绑定缺省时保持旧行为，避免要求所有嵌入部署先配绑定。 |
 | D51 | `refd` OIDC 验证器分层（FR35，2026-10-31，用户要求继续推进） | `ref-auth` 定义 `JwksSource`（`fetch() -> Result<Vec<u8>, String>`）与 `OidcAuthenticator`：只做 JWT 验签、声明校验、`sub`→actor 与 `scope` claim 解析，持有有界缓存（≤ 64 密钥、按 `cache_ttl_seconds` 复用）；未知 `kid` 触发一次强制刷新，30s 窗口内限频并复用当前缓存。`refd` 注入 `FileJwksSource`（常规文件、≤ 1 MiB）或 `HttpJwksSource`（`ureq` + rustls、超时、不跟随重定向、2xx、响应 ≤ 1 MiB），网络 IO 不进认证库。算法白名单 `RS256`/`ES256`/`EdDSA`（白名单外含 `none`/`HS*` 拒绝），`crit` 非空拒绝，无 `kid` 仅唯一可用密钥接受；`iss`/`aud`/`exp`/`nbf` 由 `jsonwebtoken` 校验（`leeway ≤ 60`）。认证调用在 `spawn_blocking` 执行；任何失败一律 `AuthError::Invalid` → `401` + `WWW-Authenticate: Bearer realm="pact-ref"`。 | OIDC 只做验证不做签发/discovery，避免把 `refd` 变成 IdP 代理；JWKS 来源由 `refd` 注入，让认证库保持无网络、可用假源做单测。未知 `kid` 必须可刷新（IdP 轮换密钥），但不能每个请求都拉取（放大型 SSRF/DoS），故限频并复用缓存。算法白名单与“无 `kid` 需唯一密钥”封住算法混淆；`crit` 一律拒绝，因为当前没有可协商的扩展。失败原因不细分且统一 `401`，避免给令牌探测提供侧信道；阻塞线程池防止网络 JWKS 卡住异步运行时。 |
+| D52 | `refd` 动态只读调用与物化分层（FR36，2026-10-31，用户要求继续推进） | 新增 `POST /v1/invoke`：端点 scope `ref:invoke`，对象 ACL operation `invoke`，仅接受 `capability.sideEffect = read-only`；`reference` 必须以 `capability.server.id + "/"` 开头且工具路径非空。`refd` 引入 `InvokerRegistry` 与 `mcp` adapter：JSON-RPC 2.0 `tools/call`，上游失败映射 `502 UpstreamFailure` 且审计 `status=failed`；成功结果按内容寻址写入 `[materialize].dir/<sha256>.json`（`.tmp` + rename 原子写），返回 `resultRef`（`file://`）与 `resultDigest`。启动 fail-closed：只读能力 profile 的 `server.id` 必须登记于 `[[mcp_servers]]` 且必须配置 `[materialize]`；`endpoint` 默认只允许 `https://`，仅回环主机可经 `allow_plaintext` 放宽；`bearer_token_env` 缺失或为空拒绝启动。调用走 `spawn_blocking`，总上限 30s。 | 动态调用必须落成静态引用才能进入 PACT 证据链：治理平面不写 PACT 状态，物化 + 现有 `/v1/resolve` 让参与者用正常 `seed`/`produce` 产生 witness token，避免在治理面引入第二套状态。只读闸门与引用归属校验把“调用任意工具”收窄为“调用卡片声明的工具”。上游失败不细分并统一 502，避免泄露上游详情；不重试、不轮询，保持确定性。`allow_plaintext` 仅回环且显式开启，既让本地假 MCP 服务可测，又不放宽生产默认。结果内容寻址使重复调用天然幂等，且可直接被 `resolve` 消费。 |
 
 ## 1. 总体结构
 
@@ -1167,13 +1168,65 @@ pub struct OidcAuthenticator { /* settings, Arc<dyn JwksSource>, Mutex<Cache> */
 
 **测试**：`ref-auth` 单测 11 项（有效令牌、过期、`nbf`、错误 `iss`/`aud`、`alg=none`、`HS256`、未知 `kid` 限频刷新、JWKS 失败、缺凭据）；`refd` 集成测试 3 项（有效令牌 `200` 且审计 actor 为 `sub`、过期与错误 `aud`/`iss` `401` 且带 `WWW-Authenticate`、无端点 scope `403`）；测试密钥在运行时用 `ring` 生成并以临时文件承载 JWKS，不提交私钥。
 
+### 9.19 refd 动态只读调用（D52，已实现）
+
+**目标**：把 `mcp-read` 能力调用结果落成新的静态引用，使参与者在 PACT 侧以正常 `seed`/`produce` 产生 witness token；`refd` 不写 PACT 状态。
+
+**分层**：
+
+| 层 | 职责 |
+|---|---|
+| `ref-core` | `InvokeRequest { domain, type_name, reference, actor, operation, idempotency_key, input }`、`Invocation { status, result_ref?, result_digest? }`；`InvocationStatus::{Succeeded, Failed}` |
+| `ref-auth` | 新增 `SCOPE_INVOKE = "ref:invoke"`；ACL operation `invoke` |
+| `ref-invoker` | `InvokerRegistry`：按 `capability.server.id`（`mcp://…`）路由到已登记 invoker；未登记即失败 |
+| `adapters/mcp` | `McpAdapter`：JSON-RPC 2.0 `tools/call`、错误分类、内容寻址物化（`<sha256>.json`，`.tmp` + rename 原子写） |
+| `refd` | `POST /v1/invoke` 的认证、scope、ACL、只读闸门、引用归属校验、审计与错误映射；启动装配与 fail-closed |
+
+**请求/响应**（与 OpenAPI `InvokeRequest` / `Invocation` 一致）：
+
+```json
+// 请求
+{ "domain": "query", "type": "answer", "reference": "mcp://tools.example/query.run",
+  "operation": "query.run", "idempotencyKey": "req-1", "input": { "q": "…" } }
+// 成功
+{ "status": "succeeded", "resultRef": "file:///var/lib/refd/materialized/<sha256>.json",
+  "resultDigest": "sha256:<64hex>" }
+```
+
+**处理顺序**（固定，先授权后触达上游）：解析 JSON（拒绝未知字段）→ `domain`/`type`/`operation` 选择器校验 → `idempotencyKey` 校验 → 引用必须为绝对 URI → 对象 ACL `invoke` → profile 必须存在 → scheme 必须在卡片白名单 → `capability` 必须存在 → `sideEffect == read-only` → `reference` 以 `capability.server.id + "/"` 开头且工具路径非空 → 调用 invoker（`spawn_blocking`，30s 上限）→ 物化 → 审计。
+
+**配置**：
+
+```toml
+[materialize]
+dir = "/var/lib/refd/materialized"   # 必须已存在且为目录
+max_bytes = 1048576                 # > 0 且 ≤ 16 MiB
+
+[[mcp_servers]]
+id = "mcp://tools.example"
+endpoint = "https://tools.example/mcp"
+timeout_ms = 10000                  # 1..=30000
+bearer_token_env = "TOOLS_TOKEN"
+allow_plaintext = false             # 仅回环主机可设 true
+```
+
+**启动 fail-closed**：存在只读能力 profile 时，`capability.server.id` 必须已登记于 `[[mcp_servers]]`，且必须配置 `[materialize]`；`bearer_token_env` 指向的环境变量未设置或为空即拒绝启动；`endpoint` 非 `https://` 且未显式 `allow_plaintext`（或主机非回环）即拒绝启动。
+
+**错误映射**：上游明确失败 → `502 UpstreamFailure`（`retryable=false`，消息固定，不泄露上游）；`refd` 总时限超时 → `504 UpstreamTimeout`；ACL/只读闸门不满足 → `403`；引用格式或归属不符 → `400 InvalidReference`；未知字段与幂等键非法 → `400 InvalidRequest`。
+
+**审计**：沿用 `ref-core::AuditEvent`，`operation = "invoke"`；成功记 `status = ok` 与 `resultDigest`；上游失败由 `status_override` 记为 `failed`；不记录 `input`、上游响应正文与 bearer 令牌。
+
+**边界**：v1 不重试、不轮询、不缓存上游结果（重复调用由内容寻址自然收敛）；`capability.timeoutMs` 不参与执行，超时以 `[[mcp_servers]].timeout_ms` 为准；`mcp-mutating` 不经过本端点。
+
+**测试**：`adapters/mcp` 单测覆盖 `tools/call` 请求形状、HTTP 非 2xx、JSON-RPC error、超限与物化摘要；`refd` 集成测试覆盖 invoke 成功 → `file://` → `/v1/resolve` 闭环、mutating `403`、缺 ACL `403`、上游失败 `502` 且审计 `failed`、缺 `[[mcp_servers]]`/缺 `[materialize]` 启动失败、非回环 `http://` 拒绝。
+
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验**；**D51 OIDC 算法白名单、`crit` 拒绝、`kid` 选键、未知 `kid` 限频刷新与 JWKS 失败** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验**；**D51 OIDC 算法白名单、`crit` 拒绝、`kid` 选键、未知 `kid` 限频刷新与 JWKS 失败**；**D52 mcp adapter `tools/call` 请求形状、错误分类与内容寻址物化** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
-| 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）**、**D51 `refd` OIDC（有效令牌 200、过期/错误 `aud`/`iss` 401 带 `WWW-Authenticate`、无端点 scope 403）** | crates/tests |
+| 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）**、**D51 `refd` OIDC（有效令牌 200、过期/错误 `aud`/`iss` 401 带 `WWW-Authenticate`、无端点 scope 403）**；**D52 `refd` invoke（成功→`file://`→resolve 闭环、mutating/ACL 403、上游失败 502 审计 failed、启动 fail-closed）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码**；**D47 卡片钉版归档与重复版本拒绝**；**D48 显式重载（dryRun 报告、失败保持旧状态、审计/ACL/认证）与真实二进制 `pact ref reload`**；**D49 运行期摘要比对（`off`/`warn`/`enforce`、未记录摘要与无绑定不比较、`enforce` 拒绝且不加载）** | 阶段 4/5 的 e2e 测试 |
 | v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
 | WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试（含 D50 绑定注入与写入前校验） | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |

@@ -323,6 +323,18 @@
 - **边界**：不做 discovery、令牌撤销/内省、`groups`/`roles` 到 ACL 的自动映射；`/readyz` 仍只反映审计 sink 健康，不探测 JWKS 可达性（JWKS 失败在请求期以 `401` 体现）。
 - **实现状态**：已实现（2026-10-31，跨仓库 `pact-ref`）。`ref-auth` 单测 11 项覆盖有效/过期/`nbf`/`iss`/`aud`/`alg=none`/`HS256`/未知 `kid` 限频刷新/JWKS 失败/缺凭据；`refd` 集成测试 3 项覆盖 `200`、过期与错误 `aud`/`iss` 的 `401`（含 `WWW-Authenticate`）、无端点 scope 的 `403`；全量 99 passed / 0 failed，`fmt`/`clippy`/`cargo audit` 通过。
 
+### FR36 refd 动态只读调用与结果物化（D52）
+
+- **定位**：`refd` 新增 `POST /v1/invoke`，把 `mcp-read` 能力调用结果转换为新的静态引用，形成“动态只读 → resolve → witness token”的闭环。治理平面仍不写 PACT Counter/Archive，也不校验 PACT read gate。
+- **授权**：端点 scope `ref:invoke`；对象 ACL 的 operation 固定为 `invoke`（与 `resolve:read`/`resolve:verify`/`describe` 并列，并集允许、默认拒绝）。任一层不满足返回 `403`，不区分“无权”与“不存在”。
+- **请求**：`{domain, type, reference, operation, idempotencyKey, input?}`；`operation` 是能力侧操作名，不参与授权求值；`idempotencyKey` 为 `[A-Za-z0-9._:-]{1,128}`；未知字段拒绝（`400 InvalidRequest`）。
+- **只读闸门**：`profile.capability.sideEffect` 必须为 `read-only`，否则 `403`；`reference` 必须指向卡片声明的服务标识（`<capability.server.id>/<tool-path>`），否则 `400 InvalidReference`。
+- **调用**：`mcp` adapter 以 JSON-RPC 2.0 `tools/call` 调用上游；端点默认必须 `https://`，仅回环主机可经 `[[mcp_servers]].allow_plaintext` 显式放宽；每服务 `timeout_ms` ≤ 30000，`refd` 另有 30s 总上限。
+- **物化**：成功结果按内容寻址写入 `[materialize].dir/<sha256>.json`（原子写），响应 `200 {status: "succeeded", resultRef, resultDigest}`；`resultRef` 为 `file://` 引用，可交给 `/v1/resolve` 与参与者 `seed`/`produce`。单次结果上限 `[materialize].max_bytes`（缺省 1 MiB，≤ 16 MiB）。
+- **失败语义**：上游明确失败 → `502 UpstreamFailure`，审计 `status=failed`，响应不泄露上游细节；`refd` 不隐式重试、不轮询。
+- **启动约束（fail-closed）**：存在只读能力 profile 时，其 `capability.server.id` 必须已登记于 `[[mcp_servers]]`，且必须配置 `[materialize]`；`bearer_token_env` 未设置或为空拒绝启动。
+- **边界**：`mcp-mutating`（动态写阶段）、审计边车、witness/compensation 不在本需求；`refd` 不提供写操作执行路径。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。

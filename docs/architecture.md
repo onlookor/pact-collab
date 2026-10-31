@@ -184,6 +184,23 @@ ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；
 - `GET /.well-known/oauth-protected-resource` 只读取静态配置（`public_url`/`issuer`），不访问 IdP。
 - 信任模式（`[mcp].enabled`、无 OIDC、无令牌）仅用于单机/回环，启动告警；`/mcp` 有 OIDC 或令牌时必须认证。
 
+### 2.8 治理平面动态只读调用（FR36/D52）
+
+```
+参与者（持 PACT token）──POST /v1/invoke（ref:invoke）──► refd
+   authenticate → 端点 scope → 请求体/选择器/引用校验
+   → 对象 ACL（operation = "invoke"）→ profile（ContractCard capability）
+   → sideEffect 必须 read-only → reference 以 capability.server.id 为前缀
+   → InvokerRegistry → mcp adapter（JSON-RPC tools/call）
+   → 结果内容寻址写入 <materialize.dir>/<sha256>.json
+   → 200 {status: "succeeded", resultRef: "file://…", resultDigest: "sha256:…"}
+```
+
+- `refd` 只负责调用与物化，不写 PACT Counter/Archive；`resultRef` 是新的静态引用，参与者随后用 `/v1/resolve` 取得票面，再以正常 `seed`/`produce` 产生 witness token。
+- 上游失败统一 `502 UpstreamFailure`，审计记 `status=failed`；响应不泄露上游细节。
+- 启动 fail-closed：存在只读能力 profile 时，`capability.server.id` 必须在 `[[mcp_servers]]` 登记，且必须配置 `[materialize]`；`[[mcp_servers]].endpoint` 默认只允许 `https://`，仅回环主机可显式开启明文。
+- 动态写阶段（`mcp-mutating`）不在本层；`refd` 不为写操作提供执行路径。
+
 ## 3. 进程与部署视图
 
 ```
@@ -429,6 +446,22 @@ DSH 宿主进程
 | `[auth.oidc].leeway_seconds` | 同上 | `exp`/`nbf` 时钟偏差，缺省 60，上限 60 |
 | `[auth.oidc].cache_ttl_seconds` | 同上 | JWKS 缓存 TTL，缺省 300，必须 > 0 |
 | `[auth.oidc].timeout_ms` | 同上 | JWKS 拉取超时，缺省 5000，必须 > 0 |
+
+2026-10-31（第 93 轮）新增的具体编号与配置项：
+
+| 编号 | 权威定义位置 | 含义 |
+|---|---|---|
+| `FR36` | `docs/requirements.md` §4 | `refd` 动态只读调用：`mcp-read` 能力、`POST /v1/invoke`、结果物化为静态引用 |
+| `D52` | `docs/design.md` §0 / §9.19 | 动态只读分层：`ref:invoke` scope + ACL、只读能力闸门、JSON-RPC `tools/call`、内容寻址物化 |
+| `[materialize]` | `docs/design.md` §9.19、`pact-ref/docs/architecture.md` | `refd` 调用结果物化配置表；存在 `mcp-read` profile 时必需 |
+| `[materialize].dir` | 同上 | 物化目录；必须已存在且为目录，产物为 `<sha256>.json` |
+| `[materialize].max_bytes` | 同上 | 单次调用结果上限，缺省 1048576，必须 > 0 且 ≤ 16 MiB |
+| `[[mcp_servers]]` | 同上 | 已登记的 MCP 服务端列表；未登记的 `mcp://` 引用拒绝调用 |
+| `[[mcp_servers]].id` | 同上 | 与卡片 `capability.server.id` 相同的 `mcp://` URI，服务标识 |
+| `[[mcp_servers]].endpoint` | 同上 | `https://` 调用地址，拒绝 userinfo 与 fragment |
+| `[[mcp_servers]].allow_plaintext` | 同上 | 仅回环主机（`localhost`/`127.0.0.0/8`/`::1`）允许明文 `http://`；缺省 false |
+| `[[mcp_servers]].timeout_ms` | 同上 | 单次上游调用超时，缺省 10000，必须 > 0 且 ≤ 30000 |
+| `[[mcp_servers]].bearer_token_env` | 同上 | 上游 bearer 令牌所在环境变量名；未设置或为空则拒绝启动 |
 
 约定：
 

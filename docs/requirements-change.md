@@ -2,6 +2,19 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 46 轮，`refd` 动态只读调用，FR36/D52）
+
+- **新增 FR36（D52）**：`refd` 新增 `POST /v1/invoke`，把「读取外部制品」这一步收进治理平面：调用前按卡片声明的只读能力校验，调用后把结果物化为新的静态引用（`file://` + `sha256:`），后续参与者照常经 `POST /v1/resolve` 读取该引用，并以 witness token 记录物化确认。`resolve` 保持纯静态解析，不承担调用。
+- **定位与授权**：端点 scope `ref:invoke` + 对象 ACL `invoke` 两层判定，主体仍只来自验证后的凭据（不接受请求体 `actor`）；profile 缺失 → `404`，scheme 不被卡片允许 → `400`。
+- **只读闸门**：仅接受 `capability.sideEffect = "read-only"` 的卡片；`mutating` 一律 `403`，动态写阶段（审计边车、witness/compensation）不在本轮。
+- **引用归属**：`reference` 必须落在卡片声明的服务标识之下（`<server.id>/<tool-path>`），防止借一张卡片调用任意上游。
+- **请求与响应**：请求必填 `domain`/`type`/`reference`/`operation`/`idempotencyKey`，可选 `input`（不透明 JSON 对象）；成功 `200` 返回 `{status: "succeeded", resultRef, resultDigest}`；上游失败 `502 UpstreamFailure`，不轮询、不重试。
+- **物化与启动约束**：结果写入配置的 `<materialize.dir>/<sha256>.json`（原子写），单次上限 `max_bytes`（≤ 16 MiB）；配置了 `[[mcp_servers]]` 就必须配置 `[materialize]`；只读卡片引用的 `server.id` 必须已登记；`allow_plaintext` 仅在回环主机允许 `http://`；任一不满足即拒绝启动（fail-closed）。
+- **边界**：`refd` 仍不写 PACT 状态、不解释 PACT 语义（`domain`/`type` 只用于选择 profile 与 ACL）；每次已认证调用一条审计事件（含 `operation`、`contractId`、`resultDigest`，失败时 `status = failed`），审计失败 fail-closed；`revoke` 与 `mcp-mutating` 随动态写阶段定案。
+- **编号登记**：`FR36`/`D52`/`[materialize]`/`[[mcp_servers]].allow_plaintext` 已于本轮先登记到 `docs/architecture.md` 附录 A 再引用。
+- **测试**：`pact-ref` 集成测试新增 7 项 invoke 用例（成功闭环、mutating `403`、ACL `403`、引用越界、上游失败 `502`、物化上限、启动 fail-closed）；全量回归见 `design-change.md` 第 93 轮。
+- 其余 FR1–FR35、NFR1–NFR7 不变。
+
 ## 2026-10-31（第 45 轮，`refd` OIDC 身份验证，FR35/D51）
 
 - **新增 FR35（D51）**：`refd` 作为 OIDC 资源服务器验证 IdP 签发的 JWT（JWKS 验签），只做验证、不做授权服务器或 discovery。`[auth] mode = "oidc"` 时必需 `[auth.oidc]`，字段与缺省值见设计 §9.18；配置非法拒绝启动。

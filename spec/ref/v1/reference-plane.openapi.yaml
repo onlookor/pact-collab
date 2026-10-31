@@ -6,8 +6,10 @@ info:
     ThingRef 的解析与描述接口。治理平面不读写 PACT Counter/Archive，也不校验 PACT
     的 read gate；参与者凭 PACT token 取得票面后调用本平面，两边权限都需满足。
 
-    首版只包含 resolve / describe。invoke / revoke 随动态阶段另行定案，届时新增路径
-    或升版本。治理侧不解释 PACT 语义：domain / type 只用于选择 profile 与 ACL。
+    首版包含 resolve / describe / invoke。invoke 仅接受 `capability.sideEffect =
+    read-only` 的卡片，结果必须物化为新的静态引用（`resultRef` + `resultDigest`）；
+    mutating 能力与 revoke 随动态写阶段另行定案。治理侧不解释 PACT 语义：domain /
+    type 只用于选择 profile 与 ACL。
 
     设计依据见 `docs/thingref-governance.md` §13.6。
 servers:
@@ -106,6 +108,47 @@ paths:
         "502": { $ref: "#/components/responses/UpstreamFailure" }
         "503": { $ref: "#/components/responses/Unavailable" }
         "504": { $ref: "#/components/responses/UpstreamTimeout" }
+  /v1/invoke:
+    post:
+      operationId: invokeCapability
+      summary: 调用只读能力并把结果物化为静态引用
+      description: |
+        需要 scope `ref:invoke` 与匹配的对象 ACL（operation `invoke`）。仅接受
+        `capability.sideEffect = read-only` 的卡片；其余返回 403。`reference` 必须
+        指向卡片声明的服务标识（`<server.id>/<tool-path>`）。上游成功时服务把结果
+        内容寻址写入物化目录，返回 `resultRef`（`file://`）与 `resultDigest`
+        （`sha256:`），随后可用 `/v1/resolve` 解析该引用并交给参与者
+        seed/produce 产生 witness token。上游失败统一返回 502 `UpstreamFailure`，
+        审计记 `status=failed`，不泄露上游细节。v1 不轮询、不重试。
+      parameters:
+        - $ref: "#/components/parameters/TraceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvokeRequest" }
+      responses:
+        "200":
+          description: invoked and materialized
+          headers:
+            X-Trace-Id:
+              $ref: "#/components/headers/TraceId"
+            Cache-Control:
+              description: 固定为 no-store
+              schema: { type: string, const: "no-store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invocation" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/RequestTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "502": { $ref: "#/components/responses/UpstreamFailure" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
 components:
   securitySchemes:
     bearerAuth:
@@ -114,7 +157,8 @@ components:
       bearerFormat: JWT
       description: |
         OIDC JWT 或受控静态令牌。主体取自验证后的 `sub`，请求体不接受 `actor`。
-        端点 scope：`ref:resolve`（/v1/resolve）、`ref:describe`（/v1/describe）。
+        端点 scope：`ref:resolve`（/v1/resolve）、`ref:describe`（/v1/describe）、
+        `ref:invoke`（/v1/invoke）。
   parameters:
     TraceId:
       name: X-Trace-Id
@@ -131,6 +175,11 @@ components:
         type: string
         pattern: "^[A-Za-z0-9._:-]{1,128}$"
   responses:
+    InvalidRequest:
+      description: 请求字段缺失、格式非法或 idempotencyKey 不合规
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     InvalidReference:
       description: 引用为空、为 `∅`、是 Identifier、是裸路径或违反 URI profile
       content:
@@ -371,6 +420,58 @@ components:
           not: { required: [capability] }
         - required: [capability]
           not: { required: [artifact] }
+    InvokeRequest:
+      type: object
+      additionalProperties: false
+      required: [domain, type, reference, operation, idempotencyKey]
+      properties:
+        domain:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+        type:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+        reference:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: 必须指向卡片声明的服务标识：`<server.id>/<tool-path>`
+        operation:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+          description: 能力侧操作名；不参与端点 scope 与 ACL 求值
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: "^[A-Za-z0-9._:-]+$"
+          description: 调用方幂等键；缺省不重试，v1 由上游语义决定去重
+        input:
+          description: 传给 MCP 工具的参数对象；缺省按空对象处理
+          type: object
+          additionalProperties: true
+    Invocation:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [succeeded]
+        resultRef:
+          type: string
+          minLength: 1
+          description: 物化结果的 `file://` 引用；可与 `/v1/resolve` 配合使用
+        resultDigest:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: 与 `resultRef` 一致的内容摘要
     Error:
       type: object
       additionalProperties: false

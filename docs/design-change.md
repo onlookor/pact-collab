@@ -2,6 +2,20 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 93 轮，`refd` 动态只读调用实现，FR36/D52）
+
+- **跨仓库**：代码全部在 `pact-ref`（`crates/ref-core`、`ref-auth`、`ref-invoker`、`ref-client`、`adapters/mcp`、`services/refd` 与 vendored 快照）；本仓库改动为 `spec/ref/v1/reference-plane.openapi.yaml`、`crates/pact-ref-spec/src/contract.rs` 的只读卡片校验，以及需求/设计/架构/治理与台账。
+- **决策 D52 / 新增 §9.19**：`POST /v1/invoke` 把动态读取收进治理平面——只读闸门（`capability.sideEffect = read-only`）、引用归属（`reference` 必须以 `capability.server.id + "/"` 开头且工具路径非空）、结果物化为内容寻址静态引用（`[materialize].dir/<sha256>.json`，`.tmp` + rename 原子写，返回 `resultRef` + `resultDigest`）。`resolve` 保持纯静态解析，动静分离。
+- **调用链（已实现）**：解析 JSON（`deny_unknown_fields`）→ `domain`/`type`/`operation` 选择器与 `idempotencyKey` 校验 → 引用绝对 URI → 对象 ACL `invoke` → profile 存在（否则 `404`）→ scheme 白名单（否则 `400`）→ capability 存在 → `read-only`（否则 `403`）→ 引用归属（否则 `400`）→ `InvokerRegistry` 路由到 `mcp` adapter（JSON-RPC 2.0 `tools/call`，`spawn_blocking`，总上限 30s）→ 物化 → 审计。
+- **规范层补校验**：`pact-ref-spec` 的 `validate_capability` 对 `side_effect = read-only` 的卡片要求 `idempotency`（键与语义非空）、`result.materialization = required`、`auth.audience` 非空、至少一个 tool schema 摘要；不满足即 `InvalidContract`。`pact-ref` 的 vendored 快照已同步，`sync-spec.sh --check` 输出 `vendored spec is in sync`。
+- **配置与启动 fail-closed**：`[materialize]`（`dir` 必须存在且为目录，`max_bytes` 缺省 1 MiB、上限 16 MiB）；`[[mcp_servers]]`（`id` 为 `mcp://` URI、`endpoint` 默认仅 `https://`、`timeout_ms ≤ 30000`、可选 `bearer_token_env`、`allow_plaintext` 仅回环主机可设）。存在只读能力 profile 时，其 `server.id` 必须已登记且必须配置 `[materialize]`；`bearer_token_env` 未设置或为空即拒绝启动。
+- **错误与审计**：上游明确失败 → `502 UpstreamFailure`（固定消息、`retryable=false`），审计 `status = failed`；`refd` 超时 → `504`；ACL/只读闸门 → `403`；引用格式/归属 → `400 InvalidReference`；未知字段/幂等键 → `400 InvalidRequest`。审计不记录 `input`、上游正文与令牌。
+- **边界**：v1 不重试、不轮询、不缓存上游结果；`capability.timeoutMs` 不参与执行；`mcp-mutating` 与 `revoke` 仍在动态写阶段。
+- **依赖与安全审视**：未新增第三方包（`adapters/mcp` 复用 workspace 既有 `ureq` 2、`sha2`、`serde_json`；`Cargo.lock` 仅增加 workspace 内部依赖边）。生产代码无 `unsafe`；`refd` 只在显式配置的 `[materialize].dir` 下写单个 `<sha256>.json`，不遍历、不删除；上游端点仅 `https://` 或显式回环明文；不跟随上游重定向（`ureq` 调用不启用 `redirects`）；结果读取有 `max_bytes` 上限；`bearer` 令牌只从环境变量取、不落日志/审计；`input` 不写审计；`refd` 仍不写 PACT 存储。`cargo audit`：0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有）。
+- **验证**：`pact-ref` 全量 **120 passed / 0 failed**（`reference_plane` 24，其中 invoke 7；`pact-ref-spec` 45，含 5 项只读卡片校验；`ref-auth` 18）；`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --offline -- -D warnings`、`cargo audit` 通过。`pact` 侧 `cargo test --workspace --locked` **378 passed / 0 failed**（基线 373 + 只读卡片校验 5），`fmt`/`clippy` 通过。
+- **合同校验**：OpenAPI 5 条 path、7 个 schema、13 个 response，57 个 `$ref` 全部可解析。
+- **未决**：动态写阶段（`mcp-mutating`、审计边车、witness/compensation）、`git`/`oci` adapter、conformance runner 仍按台账推进。
+
 ## 2026-10-31（第 92 轮，`refd` OIDC 验证器实现）
 
 - **跨仓库**：代码全部在 `pact-ref`（`crates/ref-auth/src/oidc.rs`、`services/refd/src/{config,state,jwks,handlers}.rs`、`services/refd/tests/reference_plane.rs`）；本仓库只改需求/设计/架构/治理与台账。
