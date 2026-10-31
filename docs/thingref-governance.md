@@ -511,7 +511,7 @@ Counter/Archive 可见性已实现（FR28/D42）：daemon `[ref_bindings]` 加�
 可发现性 lint 落地与推送前安全审视：`pact` `eb86654`（2026-10-28），`pact-ref` 无新改动；
 `scripts/sync-spec.sh --check` 通过。记录见 `docs/design-change.md` 第 74–75 轮。
 `pact-ref` 远端：<https://github.com/onlookor/pact-ref>（公开）。
-下一步是 `refd` 的 resolve/describe 端点；其契约与鉴权已于 2026-10-31 定案（§13.6），实现待做。
+`refd` 的 resolve/describe 端点已按 §13.6 在 `pact-ref` 实现（2026-10-31）；下一步是动态只读阶段。
 
 ### 9.3 `pact-ref` 仓库结构
 
@@ -1003,7 +1003,7 @@ spec:
 1. **静态阶段（已完成，2026-10-27）**：`pact-ref-spec` 纯 crate + `spec/ref/v1/`（URI profile、两份 schema、OpenAPI）已落地，
    18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 46 项测试通过）；`pact ref lint` 已实现（FR27/D41），
    覆盖绑定/契约/声明一致性与退出码。
-   **待做**：`refd` 的 resolve/describe 端点。**契约与鉴权已定案（2026-10-31，§13.6）**，实现待做。
+   **已完成（2026-10-31）**：`refd` 的 resolve/describe 端点（契约 §13.6）——`deny`/`static` 认证、端点 scope + 对象 ACL、审计 fail-closed、`file`/`https` adapter；`oidc` 启动即失败，延后实现。
    **已完成（2026-10-28）**：REST 写入路径入口校验（FR30/D45）——`POST /seeds`、`POST /tokens` 区分缺失/`null`/字符串，执行 URI profile 与 RefBindings 策略，错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef`；CLI/MCP 经 REST 继承。
    **已完成（2026-10-29）**：`value`、`onUnknownScheme` 与钉版运行期强制（FR31/D46）——`pinning: required` 写入即拦，`required-at-archive` 在 consume 进入 Archive 前拦，错误码 `ThingRefUnpinned`。
    **已完成（2026-10-30）**：ContractCard 运行期加载与版本不可变（FR32/D47）——`[ref_contracts]` 启动加载、`contract_id()` 索引、按数据触发闭环、重复 `id@version` 拒绝、consume 钉版并集（只加严）；卡片与绑定显式重载（FR33/D48）——`POST /ref/reload` 与 `pact ref reload`、同事务原子换快照、`dryRun` 影响报告、审计与 ACL 覆盖。
@@ -1365,6 +1365,9 @@ operations = ["resolve:read", "resolve:verify", "describe"]
 | `ref-audit` | 落地 append-only sink 与 fail-closed 包装；现有 `MemoryAuditSink` 保留给测试 |
 | `refd` | 引入 HTTP 栈（建议 `axum` + `tokio`，须单独做依赖与安全审视）；按 13.6.4 的顺序装配 |
 | adapters | v1 至少实现 `file` 与 `https`；其余 adapter 按 §13.1 顺序推进 |
+
+上述改动已于 2026-10-31 在 `pact-ref` 落地；唯一例外是 `ref-auth` 的 OIDC 验证器——
+`[auth] mode = oidc` 启动即失败（fail-closed），待加密/JWKS 依赖单独审视后再实现。
 
 未决（不阻塞首版实现）：
 

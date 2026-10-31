@@ -2,6 +2,19 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 91 轮，`refd` resolve/describe 实现）
+
+- **跨仓库**：代码全部在 `pact-ref`（`ref-core` / `ref-auth` / `ref-audit` / adapters / `services/refd`）；本仓库只改 OpenAPI 与状态文档，无 `pact` 服务代码变更。
+- **`ref-core` 契约对齐**：`ResolveRequest.actor` 由服务端注入（请求体不再接受）；`Resolution.handle` 改为 `Option`；`ContractDescriptor` 扩为白名单投影；`AuditEvent` 补 `domain` / `typeName` / `pactTokenId`；`AuditSink::record` 返回 `Result` 并新增 `available()` 就绪检查。
+- **`ref-auth`**：`DenyAuthenticator`（默认）、`StaticTokenAuthenticator`（显式 `allow = true`、常量时间比较、scope 集合）、`Acl` 求值器（维度 `(principal, domain, type, scheme, operation)`，并集允许、默认拒绝）。端点 scope 与对象 ACL 是两层，任一拒绝即 `403`。
+- **`ref-audit`**：`FileAuditSink` 以 append-only JSONL 写入并逐条 flush；`available()` 以文件锁状态反映 sink 健康，供 `/readyz` 使用。
+- **`refd`**：`axum` 0.7 路由 `/healthz`、`/readyz`、`/v1/resolve`、`/v1/describe`；处理顺序为 trace id → 方法 → 认证 → 审计上下文 → scope → `Content-Type` → 64 KiB 请求体 → JSON → selector/reference → 对象 ACL → profile → scheme 白名单 → adapter（`spawn_blocking` + 30s 上限）→ 摘要比对 → 响应 → 审计。审计失败默认覆盖为 `500 AuditUnavailable`，`[audit] fail_open = true` 才放行。`[auth] mode = oidc` 启动即失败。
+- **adapter**：`file` 只接受 `file://` / `file://localhost` 绝对路径，做百分号解码、拒绝 `..` 并 `canonicalize` 到配置根目录内；`https` 用 `HEAD` 不取正文，主机 allowlist 默认拒绝，拒绝 userinfo 与重定向，摘要取 `Digest: sha-256`（base64 或 64 位十六进制）或 `X-Checksum-Sha256`。
+- **契约放宽（本仓库）**：`ContractDescriptor.required` 去掉 `lifecycle`，改为 `[contractId, version, mediaType, reference]`。`ContractCard` 的 `spec.lifecycle` 是可选项，原 required 会拒掉合法卡片的投影；其余 required 不变，投影白名单规则不放松。
+- **依赖与安全审视**：新增 `axum` 0.7、`tokio` 1（`rt-multi-thread` / `macros` / `net` / `signal` / `time`）、`http-body-util` 0.1、`toml` 0.8、`ureq` 2（rustls），`tower` 仅测试用。生产代码无 `unsafe`；`refd` 不访问 PACT 存储；`file` adapter 只读 canonicalize 后的根内文件；`https` adapter 不跟随重定向、不取正文；审计不记录 `handle`、凭据、请求体或内部 endpoint。`cargo audit`：0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有）。
+- **验证**：`pact-ref` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --locked` 通过，合计 **87 passed / 0 failed**（其中 `refd` 端点集成测试 14 项）；真实二进制冒烟：`/healthz`、`/readyz` 均 200，`/v1/resolve` 返回 digest 与 handle，`/v1/describe` 不含 owner，无凭据 401，审计落两行。
+- **未决**：OIDC（JWT/JWKS）延后，`mode = oidc` 启动失败；`git`/`oci` adapter 仍为占位；限流、mTLS、配置热加载不在 v1。
+
 ## 2026-10-31（第 90 轮，`refd` resolve/describe 端点契约与鉴权定案）
 
 - **解除台账阻塞**：P3 首项原为“`refd` resolve/describe 端点 / 阻塞于端点契约与鉴权设计”。本轮定案端点契约与鉴权，规范产物为 `spec/ref/v1/reference-plane.openapi.yaml`，设计定案写入 `docs/thingref-governance.md` §13.6。

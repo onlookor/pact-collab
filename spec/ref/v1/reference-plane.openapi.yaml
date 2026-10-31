@@ -270,7 +270,7 @@ components:
     ContractDescriptor:
       type: object
       additionalProperties: false
-      required: [contractId, version, mediaType, reference, lifecycle]
+      required: [contractId, version, mediaType, reference]
       description: |
         消费者投影白名单。未列出的 ContractCard 字段一律不出现；新增字段需显式改
         schema 与 `docs/thingref-governance.md` §13.6.6。
