@@ -13,6 +13,7 @@
 - **契约放宽（本仓库）**：`ContractDescriptor.required` 去掉 `lifecycle`，改为 `[contractId, version, mediaType, reference]`。`ContractCard` 的 `spec.lifecycle` 是可选项，原 required 会拒掉合法卡片的投影；其余 required 不变，投影白名单规则不放松。
 - **依赖与安全审视**：新增 `axum` 0.7、`tokio` 1（`rt-multi-thread` / `macros` / `net` / `signal` / `time`）、`http-body-util` 0.1、`toml` 0.8、`ureq` 2（rustls），`tower` 仅测试用。生产代码无 `unsafe`；`refd` 不访问 PACT 存储；`file` adapter 只读 canonicalize 后的根内文件；`https` adapter 不跟随重定向、不取正文；审计不记录 `handle`、凭据、请求体或内部 endpoint。`cargo audit`：0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有）。
 - **验证**：`pact-ref` `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace --locked` 通过，合计 **87 passed / 0 failed**（其中 `refd` 端点集成测试 14 项）；真实二进制冒烟：`/healthz`、`/readyz` 均 200，`/v1/resolve` 返回 digest 与 handle，`/v1/describe` 不含 owner，无凭据 401，审计落两行。
+- **CI 修正**：`refd` 由骨架变为必须读取配置后，`pact-ref` 的 `test` job 中原 `cargo run -p pact-refd` 会以退出码 1 结束；改为写入临时 `refd.toml`（回环 + 明文 + 审计路径）、后台启动二进制并探测 `/healthz`、`/readyz`，失败即 job 失败。
 - **未决**：OIDC（JWT/JWKS）延后，`mode = oidc` 启动失败；`git`/`oci` adapter 仍为占位；限流、mTLS、配置热加载不在 v1。
 
 ## 2026-10-31（第 90 轮，`refd` resolve/describe 端点契约与鉴权定案）

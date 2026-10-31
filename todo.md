@@ -124,7 +124,9 @@
 | [x] | 第 91 轮真实二进制冒烟（`/tmp/refd-smoke`，端口 18080） | `/healthz`、`/readyz` 均 200；`/v1/resolve` 返回 `contractId`/`version`/`mediaType`/`digest`/`expiresAt`/`handle`；`/v1/describe` 不含 owner 且含 lifecycle；无凭据 401；审计文件落 2 行（`resolve:read` 与 `describe`） |
 | [x] | 第 91 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 新增 `axum` 0.7 / `tokio` 1 / `http-body-util` 0.1 / `toml` 0.8 / `ureq` 2（rustls），`tower` 仅测试；生产代码无 `unsafe`；`file` adapter 只读 canonicalize 后根内文件，`https` 不取正文、不跟随重定向；审计不记录 handle/凭据/请求体/内部 endpoint；`refd` 不访问 PACT 存储；`cargo audit` 0 vulnerability / 1 unmaintained（`unsafe-libyaml`，既有） |
 | [x] | 第 91 轮本仓库回归基线：`pact` 无服务代码改动（仅 OpenAPI required 放宽与状态文档） | 沿用第 88 轮全量 **373 passed / 0 failed**；OpenAPI `ContractDescriptor.required` 去掉 `lifecycle` 以匹配可选 `ContractCard.spec.lifecycle` |
-| [x] | 第 91 轮提交：`pact-ref` `d98d2f5`（`ref-core`/`ref-auth`/`ref-audit`/adapters/`refd` + `docs/architecture.md`）；`pact` `d08190b`（OpenAPI 放宽、治理状态、`design-change.md`、台账） | 跨仓库双侧均已改并分别提交；按用户要求**未推送** |
+| [x] | 第 91 轮提交：`pact-ref` `d98d2f5`（`ref-core`/`ref-auth`/`ref-audit`/adapters/`refd` + `docs/architecture.md`）；`pact` `d08190b`（OpenAPI 放宽、治理状态、`design-change.md`、台账） | 跨仓库双侧均已改并分别提交 |
+| [x] | 第 91 轮 CI 修正：`pact-ref` `test` job 原 `cargo run -p pact-refd` 因 `refd` 改为必须读配置而失败（run `41179227568`）；改为临时 `refd.toml` + 后台启动 + `/healthz`、`/readyz` 探针 | 本地按同一脚本冒烟通过（18091 端口，两探针 200）；提交 `f48dc12` |
+| [x] | 第 91 轮推送与 CI：`pact-ref` `d98d2f5` → `f48dc12`；`pact` `7f2bf7d..7cf98ad` 推至 `origin` | 推送前凭据扫描无命中；`pact-ref` CI `41179435290`、Security `41179435351` 均 success；`pact` CI `41179249550` success；首轮 `pact-ref` CI `41179227568` 的失败已由 `f48dc12` 修正 |
 
 ## 已完成归档区
 
