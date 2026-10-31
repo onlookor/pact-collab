@@ -11,7 +11,7 @@
 - 质量属性：出站请求有单次总超时（缺省 10s、上限 30s）与响应体积上限（git 广告 2 MiB、OCI manifest 1 MiB）；host allowlist 精确匹配、不跟随重定向、明文仅回环可选；引用本身拒绝 userinfo 与非法段。
 - 无其他结构性变更：引擎层、存储层、接口层与 `pactd` / `refd` 的进程边界不变；`pactd` 仍不调用 `refd`；治理平面仍不访问 PACT 存储。
 - 跨仓库：代码全部在 `pact-ref`；本仓库为编号登记、架构正文与文档。`docs/requirements-change.md` 第 51 轮、`docs/design-change.md` 第 98 轮、`docs/thingref-governance.md` §13.1/§13.6.9、`pact-ref/docs/architecture.md` 同轮更新。
-- 验证：`pact-ref` `fmt`/`clippy`/`test`/`audit` 通过，**172 passed / 0 failed**（基线 154）；本仓库文档改动，`pact` 回归基线 **384 passed / 0 failed** 待跑确认。
+- 验证：`pact-ref` `fmt`/`clippy`/`test`/`audit` 通过，**172 passed / 0 failed**（基线 154）；本仓库文档改动，`pact` 回归基线 **384 passed / 0 failed**。
 
 ## 2026-10-31（第 49 轮，治理平面动态写调用契约，FR37/D53）
 
