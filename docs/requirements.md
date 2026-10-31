@@ -334,6 +334,7 @@
 - **失败语义**：上游明确失败 → `502 UpstreamFailure`，审计 `status=failed`，响应不泄露上游细节；`refd` 不隐式重试、不轮询。
 - **启动约束（fail-closed）**：存在只读能力 profile 时，其 `capability.server.id` 必须已登记于 `[[mcp_servers]]`，且必须配置 `[materialize]`；`bearer_token_env` 未设置或为空拒绝启动。
 - **边界**：`mcp-mutating`（动态写阶段）、审计边车、witness/compensation 不在本需求；`refd` 不提供写操作执行路径。
+- **实现状态**：已实现（2026-10-31，跨仓库 `pact-ref`）。`pact-ref-spec` 只读卡片校验 5 项；`refd` `POST /v1/invoke` 的 7 项集成测试覆盖成功闭环、只读闸门 `403`、ACL `403`、归属 `400`、上游 `502` 与物化/审计；`[materialize]` 与 `[[mcp_servers]]` 启动 fail-closed。
 
 ### FR37 refd 动态写调用与幂等台账（D53）
 

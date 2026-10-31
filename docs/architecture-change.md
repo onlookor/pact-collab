@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 51 轮，附录 A 补登记与物引专题 gap 补齐；无结构性变更）
+
+- **附录 A 补登记**：`FR27`–`FR29`、`D41`–`D44` 此前在需求与设计中已被引用，但未在附录 A 登记，违反“先定义、后使用”。本轮按 2026-10-27 的实际定案补登记（`pact ref lint`、物引可见性过滤、引用保留与 tombstone、视图级读审计）。**均为既有编号补登记，不新增编号**，含义与权威位置以 `docs/requirements.md` §4 与 `docs/design.md` §0 为准。
+- **编号口径不变**：附录 A 仍是唯一登记处；本轮未引入新的字母+数字编号，也未改变任何既有编号的含义。
+- **架构描述无变更**：分层、组件、依赖方向、数据流、部署形态与进程边界均未改变——引擎层与存储层仍不感知票面，`pactd` 仍不调用 `refd`，`refd` 仍不写 PACT 状态。
+- **未启动项的架构含义（登记而非实现）**：①可选注册表仍只在 `pact-ref/crates/ref-registry` 提供 `MemoryRegistry`，未接入 `refd`、无端点，`resolve`/`describe` 仍只接受 URI；②`revoke` 无 FR/D 授权，v1 无撤销端点；③conformance 仅 `EntryCase`，`resolve`/`invoke` 数据面用例待 adapter 假服务方案。三者均无组件、依赖或数据流变化。
+- **跨仓库**：`pact-ref/README.md`（状态与 API 描述更正）在 `pact-ref`；本仓库为附录 A 与文档。`docs/requirements.md` FR36 实现状态、`docs/design.md` D53 状态、`docs/design-change.md` 第 100 轮、`docs/thingref-governance.md` §13.1 阶段 6 同轮更新。
+- **验证**：无 Rust 代码变更，回归基线保持 `pact` **384 passed / 0 failed**、`pact-ref` **175 passed / 0 failed**；母本未改动。
+
 ## 2026-10-31（第 50 轮，治理平面 `git`/`oci` adapter，FR38/D54）
 
 - 附录 A 已登记 `FR38`、`D54`、`[adapter.git]`/`[adapter.oci]` 及子项（权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0 / §9.21）；`[adapter.git]`/`[adapter.oci]` 的权威位置由 `docs/manual.md` §2.2 更正为 `docs/design.md` §9.21（`manual.md` 只描述 `pact.toml`，不含 `refd` 配置）。

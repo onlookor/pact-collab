@@ -1019,7 +1019,17 @@ spec:
 4. **动态只读阶段（已完成，2026-10-31）**：`mcp-read` profile 校验、`refd` 的 `POST /v1/invoke`、`mcp` adapter（JSON-RPC `tools/call`）与内容寻址物化（FR36/D52）；结果经 `file://` 引用回到 `/v1/resolve`，参与者以正常 `seed`/`produce` 产生 witness token。动态写见下一阶段；`revoke` 仍未开始。
 5. **动态写阶段（已完成，2026-10-31）**：`pact-ref-spec` 强制 `mcp-mutating` 卡片级必填字段（§13.8.2）；`refd` 已落地 `POST /v1/mutate`、幂等台账（intent/result 两阶段、重启恢复、半行截断、满额）、请求级严格归属与 `operation` 校验、两阶段审计与启动 fail-closed（FR37/D53，§13.8）。witness/compensation 可运行示例见 `pact-ref/examples/witness-compensation/`（§13.8.7）。
    **已完成（2026-10-31）**：`git`/`oci` scheme adapter（FR38/D54）——`git+https` 走 smart HTTP 解析 `info/refs` 广告并把 commit 钉进 `handle`（不进 `digest`）；`git+ssh` 注册但显式不支持，`git+file` 不实现；`oci` 以 `HEAD /v2/<repo>/manifests/<ref>` 取 `Docker-Content-Digest` 并归一化。两者共用 host/registry allowlist、`redirects(0)`、超时（≤30s）与响应体积上限（2 MiB / 1 MiB）；仅在配置 `[adapter.git]`/`[adapter.oci]` 时注册。
-6. **可选注册表**：只做发现，不做真相源。
+6. **可选注册表**：只做发现，不做真相源。**未启动（2026-10-31）**。
+   现状：`pact-ref/crates/ref-registry` 只有内存 `Registry` 实现（`MemoryRegistry`），未接入 `refd`、无端点；v1 的 `resolve`/`describe` 仍只接受 URI（Identifier → `400 InvalidReference`，§13.6.1）。
+   **启动触发条件（全部满足才立项）**：
+   - 出现必须解析 Identifier 的消费方；
+   - ≥ 2 个独立消费方需要跨域/跨部署发现卡片与绑定；
+   - 存在无法靠上下文解析的未分类 Identifier；
+   - 注册表不可用时的 fail-closed 发现语义已定案。
+   **反向约束（任一违反不得启动）**：不做真相源（域旁 sidecar 权威，§10 议题 3）；不进入引擎/内核；不做强制全局中心；不为“统一省心”而开（§12）。
+   **验收**：先立 FR/D 并在 `docs/architecture.md` 附录 A 登记；`describe` 接受 Identifier 且注册表不可用时显式失败；不改变 `resolve` 对 URI 的要求。台账见 `todo.md`。
+
+阶段外事项：`revoke` 未立项——无 FR/D 授权，v1 不提供撤销端点（§13.8.10）；若要做，先立需求与设计，且不引入自动补偿。
 
 ### 13.2 测试
 

@@ -2,6 +2,18 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 100 轮，物引专题 gap 补齐；无代码变更）
+
+- **gap 审视结论**：按物引（ThingRef）专题全链路核对，识别 8 项 gap。可推进的 5 项本轮补齐（G1–G4、G7），3 项因缺少立项或前置设计无法推进，已作为未启动项登记台账（可选注册表、`revoke`、conformance 的 resolve/invoke 用例）。
+- **D53 状态更正**：`docs/design.md` §0 的 D53 仍写“2026-10-31 定案；实现待做”，与第 96 轮已实现事实矛盾，改为“2026-10-31 定案；2026-10-31 已实现”。
+- **FR36 实现状态补齐**：`docs/requirements.md` FR36 此前无“实现状态”行（FR27–FR29、FR35、FR37、FR38 均有），补记为已实现（跨仓库 `pact-ref`），并写明卡片校验 5 项、`/v1/invoke` 集成测试覆盖范围与 `[materialize]`/`[[mcp_servers]]` 启动 fail-closed。
+- **治理 §13.1 阶段 6 可判定化**：原单行“只做发现，不做真相源”改为——未启动状态、现状（`ref-registry` 仅有 `MemoryRegistry`，未接入 `refd`）、4 条启动触发条件（全部满足才立项）、4 条反向约束、验收方式。同时新增“阶段外事项：`revoke` 未立项”，说明 v1 不提供撤销端点且不引入自动补偿。
+- **`pact-ref/README.md` 更正**：原文称“只打印装配状态、尚未实现 HTTP 服务”“当前 35 项测试”“不监听端口”，API 列表含未实现的 `revoke`。更正为 6 个端点、三种认证模式、5 个 adapter、conformance runner 与 `entry/` 23 例、175 项测试，并显式列出“尚未实现”。启动命令核实为位置参数 `services/refd/refd.toml`（或环境变量 `REFD_CONFIG`），配置缺失即 fail-closed。
+- **边界判定（不补）**：`docs/manual.md` 不增加 `refd` 运维内容——`manual.md` 只覆盖 `pactd` 与 CLI，`refd` 的部署与配置文档归属 `pact-ref` 仓库（`pact-ref/README.md` 与 `pact-ref/docs/`）。
+- **设计语义无变更**：D1–D54 与 FR1–FR38 的语义均未变化；本轮只补状态、登记与触发条件，未新增编号、未改动母本。
+- **跨仓库**：`pact-ref/README.md` 在 `pact-ref`；本仓库改动为 `docs/architecture.md` 附录 A、`docs/design.md` D53、`docs/requirements.md` FR36、`docs/thingref-governance.md` §13.1、本文件、`architecture-change.md` 第 51 轮与 `todo.md`。
+- **验证**：无 Rust 代码变更，沿用回归基线 `pact` **384 passed / 0 failed**、`pact-ref` **175 passed / 0 failed**；纯文档改动，无新增依赖、无网络面变化。
+
 ## 2026-10-31（第 99 轮，conformance runner 与入口用例）
 
 - **一致性测试阶段落地**：`pact-ref/conformance/runner` 从骨架改为可执行 runner——递归读取 `conformance/cases/**/*.yaml`，按 `apiVersion: conformance.pact-ref/v1` / `kind: EntryCase` 解析，驱动 `pact-ref-spec::validate_entry`，逐条输出 `ok`/`FAIL`；全部通过退出 0，存在失败退出 1，参数/读取/解析错误退出 2。

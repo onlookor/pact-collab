@@ -423,6 +423,18 @@ DSH 宿主进程
 | HTTP 错误码 | `docs/manual.md` §9 | REST 结构化错误 `code`（CamelCase，无数字编号） | `DeclarationDigestMismatch` |
 | TOML 配置项 | `docs/manual.md` §2.2 / `dist/pact.container.toml` | daemon 配置表与键（无数字编号） | `[ref_digest].mode` |
 
+2026-10-27 新增的具体编号（2026-10-31 补登记）：
+
+| 编号 | 权威定义位置 | 含义 |
+|---|---|---|
+| `FR27` | `docs/requirements.md` §4 | 物引静态检查命令 `pact ref lint` |
+| `FR28` | `docs/requirements.md` §4 | 物引可见性过滤（`read-gate` / `domain` / `hidden`） |
+| `FR29` | `docs/requirements.md` §4 | 引用保留、tombstone 与可发现性检查 |
+| `D41` | `docs/design.md` §0 | 物引静态检查命令与交叉检查规则 |
+| `D42` | `docs/design.md` §0 | 物引可见性过滤与身份判定 |
+| `D43` | `docs/design.md` §0 | 视图级读审计（`kind=view`） |
+| `D44` | `docs/design.md` §0 | 引用保留、tombstone 与可发现性 |
+
 2026-10-28 新增的具体编号：
 
 | 编号 | 权威定义位置 | 含义 |
