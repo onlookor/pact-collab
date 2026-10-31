@@ -257,7 +257,7 @@
   - `maxLength` 覆盖默认 2048 字节上限，超过 → `400 InvalidThingRef`。
   未加载该域绑定时只做结构规则，不做策略校验。
 - **继承与边界**：CLI 与 MCP 经 REST client 调用，自动继承同一套校验；MCP 工具参数省略时 client 发送显式 `null`（等价 `∅`），无法表达“缺失”。`pact-wasm` 本地宿主与 `pact-runtime` 的进程内路径不在本需求内（WASM 入口校验单列事项）。
-- **未生效项**：`declarationDigest` 的语义比对由 FR34 第一步在 `pact ref lint` 实现（不一致 = error）；运行期比对（`[ref_digest].mode`）尚未启用，见 D49 第二步。`onUnknownScheme`、`value`、`pinning` 已由 FR31 接入运行期，ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载由 FR32 实现，显式重载由 FR33 实现（2026-10-30）；见 `todo.md` P1。
+- **未生效项**：`declarationDigest` 的语义比对由 FR34 在 `pact ref lint` 与 `POST /domains`（`[ref_digest] mode`）实现（不一致按 error / `400 DeclarationDigestMismatch`）；`enforce` 需显式开启，默认 `warn` 不阻塞。`onUnknownScheme`、`value`、`pinning` 已由 FR31 接入运行期，ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载由 FR32 实现，显式重载由 FR33 实现（2026-10-30）；见 `todo.md` P1。
 - **错误码**：均为 `400`，沿用 §6.3 结构化错误体；`code` 为 `ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，`message` 携带原始规范错误文本（不含票面全文以外的敏感信息，票面本身可能含位置信息，按调用方权限返回）。
 - **实现状态**：已实现（2026-10-28）。`pact-ref-spec` 修复 userinfo 与 Identifier 文法；`pact-http` 新增 `ThingRefField`（区分缺失/`null`）与 `VisibilityProfiles::validate_thing_ref`；`seed`/`produce` 在引擎调用前接线。单元测试覆盖三态、结构规则、`git+ssh` 与 Identifier 文法；端到端测试覆盖缺失/`null`、userinfo、裸路径、Identifier、超长、大写 scheme 规范化与绑定策略。
 
@@ -304,13 +304,13 @@
 
 ### FR34 域声明语义接口摘要 `declarationDigest` v1（D49）
 
-- **定位**：让 RefBindings 的 `metadata.declarationDigest` 从“只校验格式的死字段”变成可核对的声明版本证据。摘要对象取**语义接口**，规范化与 golden 向量冻结在 `spec/ref/v1/declaration-digest.md`；运行期比对不在本需求第一步内。
+- **定位**：让 RefBindings 的 `metadata.declarationDigest` 从“只校验格式的死字段”变成可核对的声明版本证据。摘要对象取**语义接口**，规范化与 golden 向量冻结在 `spec/ref/v1/declaration-digest.md`；离线工具与运行期比对按 D49 两步落地。
 - **摘要对象**：域名（`load_domain` 的 `name`；CLI 取 `--name`，缺省文件 stem，须匹配 `[A-Za-z0-9_-]{1,128}`）+ `types` + `preconditions` + `gates`（每个 `(participant, action, type)` 及其条件表达式）+ `seed_authority`。注释、空白、换行/缩进、段内顺序、文件名、实例名、分析结果与卡片/绑定内容都不参与。
 - **规范化**：UTF-8 紧凑 JSON（无缩进、无尾换行），顶层固定 `{"kind":"pact.declaration.interface","v":1,"domain":…,"types":[…],"preconditions":[…],"gates":[…],"seed":[…]}`；集合按字符串字典序升序，`gates` 按 `(participant, action, type)` 升序（action 用 `read`/`consume`/`produce` 字符串键，不是枚举序）；条件用自定文法文本 `via(T)` / `exists(T)` / `count(T,>=,n)` / `count(T,=,n)` / `and(A,B)` / `or(A,B)` / `not(A)`，不使用 `serde` 派生表示。摘要 = `sha256:` + 规范化字节的小写十六进制 SHA-256。
 - **第一步（已实现）**：新增离线 `pact ref digest <file.pact> [--name <domain>] [--json]`；`pact ref lint --declaration` 计算摘要并与绑定比对——缺失仍为 warning `ref.bindings.digest_missing`（`--strict` 失败），已记录且不一致为 error `ref.bindings.digest_mismatch`（退出码 1）。实现落在 `pact-analysis` 纯函数（CLI 与未来运行期共用），`pact-ref-spec` 保持零 `pact-core` 依赖；规范文件为 `spec/ref/v1/declaration-digest.md`。
-- **第二步（未实现，另行登记配置项与错误码）**：运行期 `[ref_digest] mode = off|warn|enforce`（默认 `warn`），仅在 `POST /domains`（`load_domain`）比对；绑定未记录摘要或该域无绑定时不比较；`warn` 写结构化日志且加载成功，`enforce` 仅“摘要存在且不一致”返回 `400`；启动恢复不比较（既有实例持声明快照，D27），显式重载（D48）不复核已登记声明。
+- **第二步（已实现，2026-10-31）**：运行期 `[ref_digest] mode = off|warn|enforce`（默认 `warn`），仅在 `POST /domains`（`load_domain`）进入引擎前比对；绑定未记录摘要或该域无绑定时不比较；`warn` 写警告日志且加载成功，`enforce` 仅“摘要存在且不一致”返回 `400 DeclarationDigestMismatch`（`detail` 含 `domain` / `expected` / `actual` / `digestVersion`）；`off` 不比较；声明解析失败交由引擎返回既有 `Syntax` / `WellFormedness`，不按摘要拒绝。启动恢复不比较（既有实例持声明快照，D27），显式重载（D48）不复核已登记声明。
 - **边界**：摘要是“绑定对应哪版声明”的证据，不证明票面可达、不验证卡片内容、不进入引擎/存储/事件日志；格式保持 `sha256:<64hex>`，v1 语义冻结，未来换义须新规范版本与新编号。
-- **实现状态**：第一步已实现（2026-10-31）。`pact-analysis` 单测覆盖格式/顺序不变、语义变化、规范化 JSON 形状、条件文本与 golden 向量；`pact-cli` 单测覆盖缺失/不一致；e2e 覆盖真实二进制 `ref digest`、`--name` 参与摘要、非法域名 `Config` 错误、不一致退出 1 与 `--strict`。第二步未实现。
+- **实现状态**：第一步与第二步均已实现（2026-10-31）。`pact-analysis` 单测覆盖格式/顺序不变、语义变化、规范化 JSON 形状、条件文本与 golden 向量；`pact-cli` 单测覆盖缺失/不一致；e2e 覆盖真实二进制 `ref digest`、`--name` 参与摘要、非法域名 `Config` 错误、不一致退出 1 与 `--strict`；`pact-http` 单测覆盖三模式与缺失/一致/不一致/解析失败分支，e2e 覆盖 `enforce` 拒绝且不留已加载域、`warn`/`off` 放行、未记录摘要与无绑定不比较。
 
 ## 5. 非功能需求
 

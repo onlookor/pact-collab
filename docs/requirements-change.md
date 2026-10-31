@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 43 轮，`declarationDigest` v1 第二步：运行期比对）
+
+- **FR34 第二步实现**：新增可选 `[ref_digest].mode = "off" | "warn" | "enforce"`（缺省 `warn`；整段可省，未知键/未知模式拒绝启动）。daemon 在 `POST /domains`（`load_domain`）授权后、进入引擎前解析声明并计算摘要，与该域当前绑定 `metadata.declarationDigest` 比对。
+- **行为边界**：`off` 不比较；`warn` 写 stderr 警告并照常加载；`enforce` 仅“摘要存在且不一致”返回 `400 DeclarationDigestMismatch`（`detail` 含 `domain`/`expected`/`actual`/`digestVersion`），拒绝时域未装载、无事件写入。无绑定、绑定未记录摘要或声明解析失败 → 不比较；解析失败保留既有 `Syntax`/`WellFormedness`。启动恢复与 `ref reload` 不比较。
+- **编号登记**：`[ref_digest]` / `[ref_digest].mode` 与错误码 `DeclarationDigestMismatch` 先登记于 `docs/architecture.md` 附录 A（第 87 轮）再引用。
+- **FR30 未生效项收敛**：`declarationDigest` 的 lint 与运行期比对均由 FR34 实现，不再列为未生效。
+- **测试**：`pact-http` 单测覆盖纯函数 `digest_mismatch` 的三模式与边界；新增 `ref_digest_e2e` 5 项（匹配放行、enforce 拒绝且无加载副作用、warn/off、缺失摘要与外来域、解析失败保留既有错误码）；全量 `cargo test --workspace --locked` 363 passed / 0 failed。
+- 其余 FR1–FR33、NFR1–NFR7 不变。
+
 ## 2026-10-31（第 42 轮，`declarationDigest` v1 第一步实现）
 
 - **新增 FR34（D49）**：域声明语义接口摘要 `declarationDigest` v1。摘要对象 = 域名 + `types` + `preconditions` + `gates`（含条件表达式）+ `seed_authority`；规范化冻结在 `spec/ref/v1/declaration-digest.md`（UTF-8 紧凑 JSON、固定字段顺序、字符串字典序、条件自定文法文本），摘要为 `sha256:` + 64 位小写 hex。

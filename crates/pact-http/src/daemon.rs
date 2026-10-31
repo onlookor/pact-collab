@@ -87,6 +87,12 @@ pub async fn run_daemon(cfg: Config) -> Result<(), Box<dyn std::error::Error>> {
         cfg.ref_contract_paths().to_vec(),
         cfg.data_dir(),
     ));
+    // D49 第二步：运行期声明摘要比对模式（缺省 warn）。
+    state.configure_ref_digest(cfg.ref_digest_mode());
+    println!(
+        "pactd: [ref_digest] mode={}",
+        cfg.ref_digest_mode().as_str()
+    );
     let mcp_enabled = cfg.mcp.as_ref().is_some_and(|m| m.enabled);
     let app = router_with_mcp(state, mcp_enabled);
     if mcp_enabled && oidc.is_none() && cfg.auth_tokens().is_empty() {

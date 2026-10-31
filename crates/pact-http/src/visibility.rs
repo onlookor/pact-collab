@@ -155,6 +155,18 @@ impl VisibilityProfiles {
         self.bindings.contains_key(domain)
     }
 
+    /// D49 第二步：该域绑定记录的 `metadata.declarationDigest`。
+    ///
+    /// 未加载该域或绑定未记录摘要时为 `None`（运行期不比较）。
+    pub fn declaration_digest(&self, domain: &str) -> Option<&str> {
+        self.bindings
+            .get(domain)?
+            .bindings
+            .metadata
+            .declaration_digest
+            .as_deref()
+    }
+
     /// D45：写入路径的票面校验。
     ///
     /// `input` 的三态与 [`ThingRefField`](crate::dto::ThingRefField) 对齐：

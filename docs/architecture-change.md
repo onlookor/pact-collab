@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 44 轮，`[ref_digest]` 与 `DeclarationDigestMismatch` 登记与运行期落点）
+
+- 附录 A 登记运行期配置项 `[ref_digest]` / `[ref_digest].mode` 与 HTTP 错误码 `DeclarationDigestMismatch`（均无字母+数字编号，仍先登记后使用）。
+- 架构正文“票面写入校验在接口层”更新：D49 第二步已实现，`pact-http` 在 `POST /domains` 进入引擎前按 `[ref_digest].mode` 比对 `declarationDigest`；比较只读 `pact-analysis` 的纯函数与当前绑定快照，引擎、存储与事件日志仍不感知摘要。
+- 组件与依赖方向不变：`pact-http` 既有 `pact-analysis`/`pact-parser` 依赖，未新增 crate 或依赖；未改变 `pact-ref-spec` 的零 `pact-core` 依赖。启动恢复路径与 D48 重载路径不进入比较，数据流不变。
+- 文档：`docs/manual.md` §2.2 / §7.14 / §8.2 / §9.4 / §10、`docs/design.md` §9.16、`docs/thingref-governance.md` §8.1 / §13.1 / §13.4.2、`dist/pact.container.toml` 同步。
+
 ## 2026-10-31（第 43 轮，`declarationDigest` v1 第一步）
 
 - 附录 A 登记 `FR34` / `D49`（域声明语义接口摘要 v1），权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0/§9.16。

@@ -2,6 +2,17 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 87 轮，D49 第二步：`[ref_digest]` 运行期比对实现）
+
+- **配置**：`pact-http::config` 新增可选 `[ref_digest]`（`deny_unknown_fields`）与 `RefDigestMode`（serde `rename_all = "lowercase"`，values `off` / `warn` / `enforce`，缺省 `warn`）；`ref_digest_mode()` 供 daemon 启动注入 `ServerState`。未知键或未知模式在加载配置时拒绝。
+- **比较点**：`load_domain` 在 `authorize_key` 之后、`engine.load_domain` 之前调用 `check_declaration_digest`；摘要缺失（该域无绑定或绑定未记录）→ 任何模式都不比较；声明解析失败 → 返回既有 `Syntax` / `WellFormedness`，不改写错误语义。
+- **三模式**：`off` 直接放行；`warn` 打一条 stderr 警告（`expected` / `actual` / `digestVersion`）并继续加载；`enforce` 返回 `400 DeclarationDigestMismatch`，`detail = {domain, expected, actual, digestVersion}`。拒绝发生在引擎调用前，域未装载、无事件写入。
+- **启动恢复 / D48 重载不比较**：摘要约束的是“声明注册时对应哪版绑定”，既有实例持声明快照；重载只替换绑定规则，不追溯已登记声明。
+- **可测试性**：比较逻辑抽为纯函数 `digest_mismatch(mode, expected, name, declaration)`，单测覆盖三模式、缺失摘要、外来域与解析失败；新增 `ref_digest_e2e`（真实 daemon）5 项。
+- **编号登记**：`[ref_digest]`、`[ref_digest].mode`、`DeclarationDigestMismatch` 于 `docs/architecture.md` 附录 A 第 87 轮登记；`docs/manual.md` §2.2 / §7.14 / §8.2 / §9.4 / §10 与 `dist/pact.container.toml` 同步。
+- **跨仓库**：无 `pact-ref` 代码改动；`spec/ref/v1/declaration-digest.md` 不参与 `scripts/sync-spec.sh` 的 crate 快照。
+- **验证**：全量 `cargo test --workspace --locked` **363 passed / 0 failed**；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --locked -- -D warnings` 通过。
+
 ## 2026-10-31（第 86 轮，`declarationDigest` v1 第一步实现）
 
 - **D49 定案并实现第一步**：摘要对象取语义接口（域名 + `types` + `preconditions` + `gates` 含条件 + `seed_authority`），规范化与 golden 向量冻结在 `spec/ref/v1/declaration-digest.md`；实现为 `pact-analysis::digest` 纯函数（新增 workspace 既有 `serde_json`/`sha2`），CLI 与未来 `pact-http` 共用。

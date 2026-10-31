@@ -2,7 +2,7 @@
 //!
 //! 被拒动作返回 4xx + §6.3 结构化错误体；错误码 = RuleError / Problem 变体名。
 
-use crate::config::{acl_allows, acl_allows_domain, acl_allows_wildcard, AclMap};
+use crate::config::{acl_allows, acl_allows_domain, acl_allows_wildcard, AclMap, RefDigestMode};
 use crate::dto::{
     conflicts_detail, problem_detail, rule_error_detail, ActivateReq, ActiveResp, CompactReq,
     ComposeReq, ConsumeReq, DomainInfo, DomainsResp, EnabledOption, EnabledResp, EntryResp,
@@ -58,6 +58,8 @@ pub struct ServerState {
     reload: std::sync::OnceLock<RefReloadConfig>,
     /// D48：并发重载单飞（`try_lock` 失败 → 409）。
     reload_lock: tokio::sync::Mutex<()>,
+    /// D49 第二步：运行期声明摘要比对模式（启动时注入一次；缺省 `warn`）。
+    ref_digest: std::sync::OnceLock<RefDigestMode>,
     /// D35：进程内能力令牌（MCP → 本地 REST）。
     internal_token: [u8; 32],
     /// D34：nonce 防重放缓存。
@@ -119,6 +121,7 @@ impl ServerState {
             visibility: std::sync::RwLock::new(Arc::new(visibility)),
             reload: std::sync::OnceLock::new(),
             reload_lock: tokio::sync::Mutex::new(()),
+            ref_digest: std::sync::OnceLock::new(),
             internal_token: random_internal_token(),
             nonces: tokio::sync::Mutex::new(crate::sign::NonceCache::default()),
             started_at: std::time::Instant::now(),
@@ -128,6 +131,37 @@ impl ServerState {
     /// D48：注入重载配置源（daemon 启动时调用一次；重复注入忽略）。
     pub fn configure_reload(&self, config: RefReloadConfig) {
         let _ = self.reload.set(config);
+    }
+
+    /// D49 第二步：注入运行期摘要比对模式（daemon 启动时调用一次；重复注入忽略）。
+    pub fn configure_ref_digest(&self, mode: RefDigestMode) {
+        let _ = self.ref_digest.set(mode);
+    }
+
+    fn ref_digest_mode(&self) -> RefDigestMode {
+        self.ref_digest.get().copied().unwrap_or_default()
+    }
+
+    /// D49 第二步：在 `load_domain` 进入引擎前比对绑定摘要。
+    ///
+    /// `off` / 该域无绑定 / 绑定未记录摘要 / 声明解析失败时都不比较；
+    /// `warn` 仅写 stderr 警告，`enforce` 才以 `400` 拒绝。
+    fn check_declaration_digest(&self, name: &str, declaration: &str) -> Result<(), ApiError> {
+        let mode = self.ref_digest_mode();
+        if mode == RefDigestMode::Off {
+            return Ok(());
+        }
+        let profiles = self.profiles();
+        let expected = profiles.declaration_digest(name);
+        if let Some((expected, actual)) = digest_mismatch(mode, expected, name, declaration)? {
+            eprintln!(
+                "pactd: 警告：域 {name} 的声明与绑定 declarationDigest 不一致\
+                 （expected={expected}, actual={actual}, digestVersion={}），\
+                 按 [ref_digest] mode=warn 继续加载",
+                pact_analysis::digest::DECLARATION_DIGEST_VERSION
+            );
+        }
+        Ok(())
     }
 
     /// D48：读取当前 profile 快照；请求处理期间保持同一快照。
@@ -1248,6 +1282,8 @@ async fn load_domain(
 ) -> Result<(StatusCode, Json<pact_engine::views::DomainSummary>), ApiError> {
     let instance = req.instance.unwrap_or_else(|| DEFAULT_INSTANCE.to_owned());
     st.authorize_key(&headers, &InstanceKey::new(&req.name, &instance))?;
+    // D49 第二步：在进入引擎前比对绑定摘要（enforce 失败时不产生任何加载副作用）。
+    st.check_declaration_digest(&req.name, &req.declaration)?;
     let summary = st
         .engine
         .load_domain(
@@ -2016,6 +2052,50 @@ fn validate_entry_thing_ref(
     Ok(ThingRef(validated))
 }
 
+/// D49 第二步：比较绑定记录的摘要与声明的实际摘要。
+///
+/// `off` / 绑定未记录 / 声明解析失败 / 一致 → `Ok(None)`；
+/// `warn` 不一致 → `Ok(Some((expected, actual)))`（由调用方写警告）；
+/// `enforce` 不一致 → `400 DeclarationDigestMismatch`。
+fn digest_mismatch(
+    mode: RefDigestMode,
+    expected: Option<&str>,
+    name: &str,
+    declaration: &str,
+) -> Result<Option<(String, String)>, ApiError> {
+    if mode == RefDigestMode::Off {
+        return Ok(None);
+    }
+    let Some(expected) = expected else {
+        return Ok(None);
+    };
+    let Ok(ast) = pact_parser::load_domain(declaration) else {
+        return Ok(None);
+    };
+    let actual = pact_analysis::digest::declaration_digest(name, &ast);
+    if expected == actual.as_str() {
+        return Ok(None);
+    }
+    if mode == RefDigestMode::Enforce {
+        return Err(ApiError {
+            status: StatusCode::BAD_REQUEST,
+            detail: ErrorDetail {
+                code: "DeclarationDigestMismatch".to_owned(),
+                detail: serde_json::json!({
+                    "domain": name,
+                    "expected": expected,
+                    "actual": actual,
+                    "digestVersion": pact_analysis::digest::DECLARATION_DIGEST_VERSION,
+                }),
+                message: format!(
+                    "域 {name} 的声明与绑定 declarationDigest 不一致：绑定 `{expected}`，实际 `{actual}`；如声明已变更，请重新生成摘要并更新绑定"
+                ),
+            },
+        });
+    }
+    Ok(Some((expected.to_owned(), actual)))
+}
+
 // ============ 监听 ============
 
 /// 在途连接计数器（优雅停机用）：停机时停止接受新连接，等待在途请求完成（有界）。
@@ -2158,6 +2238,79 @@ where
 #[cfg(test)]
 mod tests {
     use super::ct_eq;
+    use crate::config::RefDigestMode;
+
+    const DIGEST_DECL: &str = r#"
+types { request; design; impl }
+preconditions { design → impl }
+gates {
+  architect: reads design, consumes design, produces impl;
+  dev: produces impl
+}
+seed_authority { client: seeds request }
+"#;
+
+    fn digest_of(name: &str) -> String {
+        let ast = pact_parser::load_domain(DIGEST_DECL).unwrap();
+        pact_analysis::digest::declaration_digest(name, &ast)
+    }
+
+    /// D49 第二步：三种模式、缺失/一致/不一致与声明解析失败的分支。
+    #[test]
+    fn digest_mismatch_modes_and_boundaries() {
+        let actual = digest_of("proj");
+        let wrong = format!("sha256:{}", "0".repeat(64));
+
+        // 未记录摘要 → 任何模式都不比较。
+        for mode in [RefDigestMode::Warn, RefDigestMode::Enforce] {
+            assert_eq!(
+                super::digest_mismatch(mode, None, "proj", DIGEST_DECL).unwrap(),
+                None
+            );
+        }
+        // off 即使不一致也不比较。
+        assert_eq!(
+            super::digest_mismatch(RefDigestMode::Off, Some(&wrong), "proj", DIGEST_DECL).unwrap(),
+            None
+        );
+        // 一致 → 不告警、不拒绝。
+        for mode in [
+            RefDigestMode::Warn,
+            RefDigestMode::Enforce,
+            RefDigestMode::Off,
+        ] {
+            assert_eq!(
+                super::digest_mismatch(mode, Some(&actual), "proj", DIGEST_DECL).unwrap(),
+                None
+            );
+        }
+        // warn：返回 expected/actual，供调用方写警告。
+        let warned = super::digest_mismatch(RefDigestMode::Warn, Some(&wrong), "proj", DIGEST_DECL)
+            .unwrap()
+            .expect("warn 模式应报告不一致");
+        assert_eq!(warned, (wrong.clone(), actual.clone()));
+        // enforce：400 DeclarationDigestMismatch，带结构化 detail。
+        let error =
+            super::digest_mismatch(RefDigestMode::Enforce, Some(&wrong), "proj", DIGEST_DECL)
+                .unwrap_err();
+        assert_eq!(error.status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(error.detail.code, "DeclarationDigestMismatch");
+        assert_eq!(error.detail.detail["domain"], "proj");
+        assert_eq!(error.detail.detail["expected"], wrong);
+        assert_eq!(error.detail.detail["actual"], actual);
+        assert_eq!(error.detail.detail["digestVersion"], 1);
+        // 声明解析失败 → 交给引擎报告 Syntax/WellFormedness，不做摘要判定。
+        assert_eq!(
+            super::digest_mismatch(
+                RefDigestMode::Enforce,
+                Some(&wrong),
+                "proj",
+                "types { a; b }"
+            )
+            .unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn ct_eq_matches_only_identical_strings() {

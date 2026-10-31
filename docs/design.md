@@ -54,7 +54,7 @@
 | D46 | 形态、未知 scheme 与钉版策略的执行点（FR31，2026-10-29，入口/归档阶段） | `value`、`onUnknownScheme`、`pinning` 在 REST 边界执行：写入时（seed/produce）与归档前（consume 调引擎前）。`onUnknownScheme` 的“未知”= 有效 `schemes` 非空且不含 `*` 时不在白名单；`treat-as-identifier` 重分类后仍须 `allowIdentifier`。`pinning: required` 写入即拦，`required-at-archive` 仅在 consume 拦；钉版=URI 含 `sha256:<64 小写 hex>`（fragment 或 OCI 形式），`∅` 豁免。consume 只读 `merged_rule` 的 `pinning`，不重跑写入期规则。失败 `ThingRefUnpinned`（`400`）。 | 规范层早已声明三类策略，但只在 lint 生效会让“检查通过”与“运行期行为”脱节；执行点继续放 REST 边界以保持引擎不透明。`required-at-archive` 必须在进入 Archive 的唯一转换（consume）上拦，否则归档后无法补救；归档检查只读钉版字段，避免规则收紧后历史 token 永久无法归档（fail-open 于写入规则、fail-closed 于钉版）。ContractCard 的等价字段需要先解决“卡片从哪加载”，故不并入本轮。 |
 | D47 | 物引契约卡运行期加载与版本不可变（FR32，2026-10-29 定案；2026-10-30 已实现） | daemon 新增可选 `[ref_contracts].paths`（文件或目录，可重复；目录展开 `.yaml`/`.yml`/`.json`，规则同 `[ref_bindings]`）；启动时用 `pact-ref-spec::ContractCard::validate` 校验，并以 `contract_id()`（`metadata.id@version`）建索引。**按数据触发**：任一 RefBindings 有效规则声明 `contract` ⇒ 必须配置且每个引用可解析，否则启动失败；无 `contract` 引用 ⇒ 不要求配置。**同版本不可变**：同一 `contract_id()` 出现两次（无论内容是否相同）⇒ 启动失败。**只加严**：consume 的有效钉版要求 = 绑定 `pinning` ∪ 卡片 `reference.pinning.requiredForArchive` / `artifact.digestPolicy: required-at-archive`，卡片不得放宽绑定；判定与错误码沿用 D46（`ThingRefUnpinned`）。首版不读 `artifact.kind`/`mediaType`、不做 `lifecycle` 运行期检查，也不做热更新（D48）。 | 卡片已被绑定声明、被 lint 检查，运行期不读会让“检查通过”与“归档行为”脱节；索引键必须与绑定 `contract` 的 `id@version` 一致，否则同一引用在不同层指向不同版本。按数据触发让不使用契约的部署零迁移，同时保证一旦使用就 fail-closed。同版本不可变比“重启/重载”更底层：否则同一部署在不同时刻对同一 token 给出不同判定且不留痕迹。卡片只加严，避免“卡片与绑定谁优先”的歧义；artifact/mediaType 需要票面携带 media type，当前不推断，避免把不可判定的事做成检查。 |
 | D48 | 物引契约卡与绑定显式重载（FR33，2026-10-29 定案；2026-10-30 已实现） | 新增 `POST /ref/reload`（body `{"dryRun": bool}`，缺省 false）与 CLI `pact ref reload [--dry-run] [--json]`；不提供 MCP 工具。重载把 `[ref_contracts]` 与 `[ref_bindings]` 作为**同一事务**：读取配置源 → 解析/规范校验 → 校验所有 `contract` 引用可解析 → 计算影响报告 → 写控制面审计 → 原子替换内存索引与规则；任一步失败保持旧状态，不做部分生效。并发重载单飞，冲突 `409 RefReloadBusy`；校验失败 `400 RefReloadInvalid`；审计写失败 `500`。`dryRun=true` 完成校验与影响报告但不替换；报告按 `(domain,instance,type)` 统计换绑后因缺摘要而无法归档的存量 Counter token 数，不输出票面值。审计写 `<data_dir>/ref-reload.jsonl`（append+fsync）：`ts`/`by`（无身份为 null）/`dryRun`/`outcome`/`files[{path,sha256,kind}]`/卡片与绑定计数/可选 `error`。认证：配置任何身份后必须认证；ACL 启用时调用者须对当前与新的绑定索引中每个域持有 `{domain}/*`，索引为空时只需认证；信任声明模式放行匿名。实现上 daemon 启动注入 `RefReloadConfig`（绑定/卡片路径与审计路径），每次重载**重新读取**配置源，`VisibilityProfiles` 记录本次实际读取文件的 `sha256`（审计摘要与生效内容同源）；索引以 `RwLock<Arc<VisibilityProfiles>>` 原子换指针，请求处理期间取同一快照。未注入配置 → `500 RefReloadUnavailable`；影响预检引擎错误 → `500 RefReloadFailed`；审计写失败统一 `500 RefReloadAuditFailed`（覆盖原错误）；认证失败与并发冲突不写审计。不做文件监听、SIGHUP、自动回滚与按域灰度。 | 卡片不含状态、不进事件日志，不能照搬 D39 的交接；版本化 + 显式激活即可获得“新版本服务新工作、旧版本仍可解析”的效果，而无需迁移状态。卡片与绑定必须同事务，否则中间态会出现“绑定引用了尚未加载的新版本”或反之。原子换指针（在途请求持旧快照）避免读到半套规则。默认不监听文件，避免半写文件、跨文件依赖竞态与不可审计的版本漂移；`dryRun` 让“收紧钉版会阻断存量归档”在生效前可见。审计先于替换写盘，保证每次行为变化都有可追溯记录。 |
-| D49 | 域声明语义接口摘要 `declarationDigest` v1（FR34，2026-10-31 用户确认；第一步已实现，运行期待做） | **摘要对象 = 语义接口**：域名（`load_domain` 的 `name`；CLI 取 `--name`，缺省文件 stem）+ `types` + `preconditions` + `gates`（含条件表达式）+ `seed_authority`；注释/空白/段内顺序/文件名/实例名/卡片与绑定内容不参与。**规范化**冻结在 `spec/ref/v1/declaration-digest.md`：UTF-8 紧凑 JSON（无缩进、无尾换行），顶层固定 `{"kind":"pact.declaration.interface","v":1,…}`，集合按字符串字典序、`gates` 按 `(participant, action, type)`（action 用字符串而非枚举序），条件用自定文法文本而非 `serde` 派生表示；摘要 = `sha256:` + 小写 hex。**实现落点**：`pact-analysis::digest` 纯函数（CLI 与未来 `pact-http` 共用），`pact-ref-spec` 保持零 `pact-core` 依赖。**第一步（已实现）**：`pact ref digest <file.pact> [--name N] [--json]`；`pact ref lint --declaration` 比对绑定摘要——缺失 warning `ref.bindings.digest_missing`，已记录且不一致 error `ref.bindings.digest_mismatch`（退出 1）。**第二步（未实现）**：`[ref_digest] mode = off|warn|enforce`（默认 `warn`），仅在 `POST /domains`（`load_domain`）比对；绑定未记录或该域无绑定时不比较；`enforce` 仅“摘要存在且不一致”返回 `400`（错误码另行登记）；启动恢复不比较，显式重载（D48）不复核已登记声明。 | 语义接口比原文/规范化 AST 更小、更接近治理关心的契约面：格式变化不误报，而类型/前置/gate 条件/种子权的变化必然改变摘要（这正是期望行为）。工具与 lint 先行让“真实漂移”在提交前被拦，避免运行期 `enforce` 把误算直接变成域不可加载；默认 `warn` 保留后续收紧空间。条件使用自定文法而非 `serde` 派生表示，避免序列化器升级静默改变全量摘要。格式保持 `sha256:<64hex>`，不新增 schema 字段，未来换义必须新规范版本与新编号。 |
+| D49 | 域声明语义接口摘要 `declarationDigest` v1（FR34，2026-10-31 用户确认；两步均已实现） | **摘要对象 = 语义接口**：域名（`load_domain` 的 `name`；CLI 取 `--name`，缺省文件 stem）+ `types` + `preconditions` + `gates`（含条件表达式）+ `seed_authority`；注释/空白/段内顺序/文件名/实例名/卡片与绑定内容不参与。**规范化**冻结在 `spec/ref/v1/declaration-digest.md`：UTF-8 紧凑 JSON（无缩进、无尾换行），顶层固定 `{"kind":"pact.declaration.interface","v":1,…}`，集合按字符串字典序、`gates` 按 `(participant, action, type)`（action 用字符串而非枚举序），条件用自定文法文本而非 `serde` 派生表示；摘要 = `sha256:` + 小写 hex。**实现落点**：`pact-analysis::digest` 纯函数（CLI 与 `pact-http` 共用），`pact-ref-spec` 保持零 `pact-core` 依赖。**第一步（已实现）**：`pact ref digest <file.pact> [--name N] [--json]`；`pact ref lint --declaration` 比对绑定摘要——缺失 warning `ref.bindings.digest_missing`，已记录且不一致 error `ref.bindings.digest_mismatch`（退出 1）。**第二步（已实现）**：`[ref_digest] mode = off\|warn\|enforce`（缺省 `warn`），仅在 `POST /domains` 进入引擎前比对；绑定未记录或该域无绑定不比较；`warn` 写警告日志并放行，`enforce` 仅“摘要存在且不一致”返回 `400 DeclarationDigestMismatch`；声明解析失败保留既有 `Syntax`/`WellFormedness`；启动恢复不比较，显式重载（D48）不复核已登记声明。 | 语义接口比原文/规范化 AST 更小、更接近治理关心的契约面：格式变化不误报，而类型/前置/gate 条件/种子权的变化必然改变摘要（这正是期望行为）。工具与 lint 先行让“真实漂移”在提交前被拦，运行期默认 `warn` 保留后续收紧空间；`enforce` 显式开启，避免误算直接变成域不可加载。条件使用自定文法而非 `serde` 派生表示，避免序列化器升级静默改变全量摘要。格式保持 `sha256:<64hex>`，不新增 schema 字段，未来换义必须新规范版本与新编号。 |
 
 ## 1. 总体结构
 
@@ -800,6 +800,10 @@ compact_keep_last = 0              # 可选：自动压缩保留的尾部事件�
 read_audit = false                 # 可选：持久化读审计（Rule-R + 视图记录，D25 子项 3 / D43；fail-closed）
 pid_file = "/run/pactd.pid"        # 可选
 
+# D49 第二步：运行期声明摘要比对（缺省 warn；enforce 才拒绝不一致的 load_domain）
+[ref_digest]
+mode = "warn"                      # off | warn | enforce
+
 # D34：TLS 终止（缺省关闭）；client_ca 存在即要求客户端证书（mTLS）
 [tls]
 certificate = "/etc/pact/server-chain.pem"
@@ -1000,7 +1004,7 @@ spec:
 
 **行为变化**：一旦某域加载了 RefBindings，该域默认只接受 URI——旧 Identifier 需要在绑定里显式 `allowIdentifier: true`；未加载绑定的域只做结构规则，Identifier 仍可写入（回归锚点）。
 
-**未覆盖路径**：`pact-wasm` 的 `prepare_seed`/`prepare_produce` 直接构造 `ThingRef`，未接本校验；`pact-runtime` 的进程内 REST 客户端继承本校验。归档钉版、`onUnknownScheme`、`RefRule.value` 见 §9.13（D46）；ContractCard 运行期加载见 §9.14（D47）；`declarationDigest` 的离线计算与 lint 比对见 §9.16（D49 第一步），运行期比对尚未启用。
+**未覆盖路径**：`pact-wasm` 的 `prepare_seed`/`prepare_produce` 直接构造 `ThingRef`，未接本校验；`pact-runtime` 的进程内 REST 客户端继承本校验。归档钉版、`onUnknownScheme`、`RefRule.value` 见 §9.13（D46）；ContractCard 运行期加载见 §9.14（D47）；`declarationDigest` 的离线计算与 lint 比对、运行期 `[ref_digest]` 比对见 §9.16（D49）。
 
 **测试**：`pact-ref-spec` 单测（userinfo、Identifier 文法、长度、规范化）；`pact-http` 单测（三态、绑定策略）；`crates/pact-http/tests/visibility_e2e.rs` 端到端（原始 HTTP 缺失字段、显式 `null`、userinfo、裸路径、空格 Identifier、超长、大写 scheme、`required` 拒绝 `∅`、Identifier/scheme/maxLength 拒绝）。
 
@@ -1059,7 +1063,7 @@ spec:
 
 **测试**：`pact-http` 单测（审计 JSONL 与 fsync、审计目标为目录时失败、锁被占时 `409`）；`ref_reload_e2e`（dryRun 报告与确认后生效、非法绑定保持旧快照、审计失败保持旧快照、令牌模式匿名 `401`、信任模式匿名放行、ACL 覆盖当前与新域、未注入配置 `500`）；CLI e2e（真实二进制 `pact ref reload --dry-run` → 应用 → 新规则阻断写入）。
 
-### 9.16 域声明语义接口摘要（D49，第一步已实现）
+### 9.16 域声明语义接口摘要（D49，已实现）
 
 **规范真源**：`spec/ref/v1/declaration-digest.md`（v1）冻结摘要对象、规范化 JSON、条件文本与 golden 向量。实现是 `pact-analysis::digest` 的纯函数：
 
@@ -1070,7 +1074,7 @@ pub fn declaration_digest(domain: &str, ast: &Domain) -> String; // sha256:<64he
 pub fn declaration_interface_json(domain: &str, ast: &Domain) -> String;
 ```
 
-`pact-analysis` 已依赖 `pact-core`，本轮新增 workspace 既有的 `serde_json` 与 `sha2`；`pact-ref-spec` 不新增依赖、仍可编译到 wasm32。CLI 与未来 `pact-http` 共用同一函数，避免两套规范化。
+`pact-analysis` 已依赖 `pact-core`，本轮新增 workspace 既有的 `serde_json` 与 `sha2`；`pact-ref-spec` 不新增依赖、仍可编译到 wasm32。CLI 与 `pact-http` 共用同一函数，避免两套规范化。
 
 **规范化要点**：
 
@@ -1083,20 +1087,20 @@ pub fn declaration_interface_json(domain: &str, ast: &Domain) -> String;
 - `pact ref digest <file.pact> [--name <domain>] [--json]`：读取并解析声明 → 域名取 `--name` 或文件 stem → 校验 `[A-Za-z0-9_-]{1,128}`（非法 → `Config` 错误）→ 输出摘要。JSON 为 `{"declarationDigest":…,"algorithm":"sha256","digestVersion":1}`；人类模式只打印摘要。
 - `pact ref lint --declaration`：能确定域名（`--name` 或声明文件 stem）时计算摘要并比对。绑定缺失摘要 → warning `ref.bindings.digest_missing`（`--strict` 失败）；已记录且不一致 → error `ref.bindings.digest_mismatch`（退出 1）。无法确定域名或声明解析失败时不计算，保留原缺失提示。
 
-**第二步（未实现）**：`[ref_digest] mode = off|warn|enforce`（默认 `warn`），仅在 `POST /domains`（`load_domain`）比对；绑定未记录或该域无绑定时不比较；`warn` 写结构化日志且加载成功，`enforce` 仅“摘要存在且不一致”返回 `400`（错误码须先登记）；启动恢复不比较（既有实例持声明快照，D27），显式重载（D48）不复核已登记声明。启用前须先登记配置项与错误码编号。
+**第二步（运行期比对，已实现）**：daemon 配置新增 `[ref_digest] mode = off|warn|enforce`（缺省 `warn`）。`ServerState` 启动时注入模式（`configure_ref_digest`）；`POST /domains`（`load_domain`）在授权后、进入引擎前调用 `digest_mismatch`：读取当前 `VisibilityProfiles` 快照中该域绑定的 `metadata.declarationDigest`，用 `pact_parser::load_domain` 解析声明并由 `pact_analysis::digest` 计算实际摘要。绑定未记录或该域无绑定 → 不比较；声明解析失败 → 不按摘要拒绝，交由引擎返回既有 `Syntax`/`WellFormedness`。`warn` 不一致写 stderr 警告并继续加载；`enforce` 不一致返回 `400 DeclarationDigestMismatch`（`detail` 含 `domain`/`expected`/`actual`/`digestVersion`），且拒绝发生在引擎调用前，不留下已加载域。启动恢复不比较（既有实例持声明快照，D27），显式重载（D48）不复核已登记声明。配置项与错误码登记于 `docs/architecture.md` 附录 A（第 87 轮）。
 
 **边界**：摘要不进入引擎、存储、事件日志、`seq`、重放或 Rule-T；不证明票面可达、不验证卡片内容；格式保持 `sha256:<64hex>`，v1 语义冻结，未来换义须新规范版本与新编号。
 
-**测试**：`pact-analysis` 单测 5 项（格式/子句顺序不变、语义变化改变摘要、规范化 JSON 形状冻结、条件文本、golden 向量）；`pact-cli` 单测（缺失 warning / 不一致 error）；`ref_lint_e2e`（真实二进制 `ref digest` 的 JSON 与人类输出、`--name` 参与摘要、非法域名、lint 不一致退出 1、缺失默认成功/`--strict` 失败）。
+**测试**：`pact-analysis` 单测 5 项（格式/子句顺序不变、语义变化改变摘要、规范化 JSON 形状冻结、条件文本、golden 向量）；`pact-cli` 单测（缺失 warning / 不一致 error）；`ref_lint_e2e`（真实二进制 `ref digest` 的 JSON 与人类输出、`--name` 参与摘要、非法域名、lint 不一致退出 1、缺失默认成功/`--strict` 失败）；`pact-http` 单测（三模式、缺失/一致/不一致、解析失败不改错误码）；`ref_digest_e2e`（`enforce` 匹配放行、`enforce` 不一致 `400` 且域未加载、`warn`/`off` 放行、未记录摘要与无绑定不比较、非法声明保留既有错误码）。
 
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本与 golden 向量** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
 | 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）** | crates/tests |
-| 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码**；**D47 卡片钉版归档与重复版本拒绝**；**D48 显式重载（dryRun 报告、失败保持旧状态、审计/ACL/认证）与真实二进制 `pact ref reload`** | 阶段 4/5 的 e2e 测试 |
+| 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码**；**D47 卡片钉版归档与重复版本拒绝**；**D48 显式重载（dryRun 报告、失败保持旧状态、审计/ACL/认证）与真实二进制 `pact ref reload`**；**D49 运行期摘要比对（`off`/`warn`/`enforce`、未记录摘要与无绑定不比较、`enforce` 拒绝且不加载）** | 阶段 4/5 的 e2e 测试 |
 | v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
 | WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试 | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |
 | 依赖安全审计 | `cargo audit --file Cargo.lock`：RustSec 漏洞（vulnerability）即失败；unmaintained/unsound 仅告警，保持可见不阻断；`cargo-audit` 版本固定并缓存 | `.github/workflows/ci.yml` 的 `audit` job |

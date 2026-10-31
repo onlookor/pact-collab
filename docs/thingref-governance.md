@@ -302,7 +302,7 @@ Token { domain, type, thing_ref }
 | `pact-store-model` | 可不变 | 字段形状不变；若要彻底不兼容才 bump 版本 |
 | `pact-engine-kernel` | 零改动 | 只透传字符串 |
 | `pact-engine` | 零改动 | 不解析、不 fetch、不校验存在性 |
-| `pact-http` | 入口校验 + 视图可见性 + 视图审计 | `/seeds`、`/tokens` 校验；`/counter`、`/archive` 已实现默认 `read-gate` 过滤，RefBindings 的 `domain`/`hidden` 覆盖（FR28/D42）；视图级读审计已实现（`read_audit` 记录 `kind=view`，D43）；`declarationDigest` 运行期比对尚未启用（D49 第二步） |
+| `pact-http` | 入口校验 + 视图可见性 + 视图审计 + 摘要比对 | `/seeds`、`/tokens` 校验；`/counter`、`/archive` 已实现默认 `read-gate` 过滤，RefBindings 的 `domain`/`hidden` 覆盖（FR28/D42）；视图级读审计已实现（`read_audit` 记录 `kind=view`，D43）；`POST /domains` 的 `declarationDigest` 运行期比对已实现（D49 第二步，`[ref_digest] mode = off/warn/enforce`） |
 | `pact-mcp` | 入口校验 | 与 REST 同一套校验；不新增治理语义 |
 | `pact-cli` | 校验 + 离线 lint + 摘要 | `--thing-ref` 校验；`pact ref lint` 已实现（FR27/D41），离线读 RefBindings/ContractCard/`.pact`；`pact ref digest` 与 lint 摘要比对已实现（FR34/D49 第一步） |
 | `pact-wasm` | 纯校验 | URI 解析/绑定匹配可进 WASM；解析器/调用器不进 |
@@ -313,7 +313,8 @@ Token { domain, type, thing_ref }
 
 现状（2026-10-31）：`pact-http` 已实现入口与归档校验——`POST /seeds`、`POST /tokens` 在引擎调用前完成三态判定、URI profile 与 RefBindings 策略（FR30/D45）；`POST /consume` 在进入 Archive 前强制 `pinning: required-at-archive`（FR31/D46）与绑定引用卡片的归档钉版要求（FR32/D47）；`value` 与 `onUnknownScheme` 也在写入时生效。
 `/counter`、`/archive` 的视图过滤与视图审计已实现（FR28/D42、D43）。`pact-cli` 的离线 `ref lint` 已实现（FR27/D41）；`declarationDigest` 的计算工具与 lint 漂移比对已实现（FR34/D49 第一步，规范见 `spec/ref/v1/declaration-digest.md`）。
-仍未接入：`pact-wasm` 本地宿主（直接构造 `ThingRef`）；`declarationDigest` 的运行期比对（D49 第二步）。
+运行期比对已实现于 `POST /domains`（FR34/D49 第二步，`[ref_digest] mode = off/warn/enforce`；`enforce` 不一致返回 `400 DeclarationDigestMismatch`）。
+仍未接入：`pact-wasm` 本地宿主（直接构造 `ThingRef`）。
 待做项与优先级见 `todo.md`（与 §13.1 对齐）。
 
 ### 8.2 单 WASM 是否仍能支撑
@@ -1001,11 +1002,11 @@ spec:
 1. **静态阶段（已完成，2026-10-27）**：`pact-ref-spec` 纯 crate + `spec/ref/v1/`（URI profile、两份 schema、OpenAPI）已落地，
    18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 46 项测试通过）；`pact ref lint` 已实现（FR27/D41），
    覆盖绑定/契约/声明一致性与退出码。
-   **待做**：`refd` 的 resolve/describe 端点；`pact-wasm` 本地宿主的入口校验；`declarationDigest` 运行期比对（D49 第二步）。
+   **待做**：`refd` 的 resolve/describe 端点；`pact-wasm` 本地宿主的入口校验。
    **已完成（2026-10-28）**：REST 写入路径入口校验（FR30/D45）——`POST /seeds`、`POST /tokens` 区分缺失/`null`/字符串，执行 URI profile 与 RefBindings 策略，错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef`；CLI/MCP 经 REST 继承。
    **已完成（2026-10-29）**：`value`、`onUnknownScheme` 与钉版运行期强制（FR31/D46）——`pinning: required` 写入即拦，`required-at-archive` 在 consume 进入 Archive 前拦，错误码 `ThingRefUnpinned`。
    **已完成（2026-10-30）**：ContractCard 运行期加载与版本不可变（FR32/D47）——`[ref_contracts]` 启动加载、`contract_id()` 索引、按数据触发闭环、重复 `id@version` 拒绝、consume 钉版并集（只加严）；卡片与绑定显式重载（FR33/D48）——`POST /ref/reload` 与 `pact ref reload`、同事务原子换快照、`dryRun` 影响报告、审计与 ACL 覆盖。
-   **已完成（2026-10-31）**：`declarationDigest` v1（FR34/D49 第一步）——`pact ref digest` 工具、`pact ref lint` 漂移比对（缺失 warning / 不一致 error）、规范 `spec/ref/v1/declaration-digest.md` 与 golden 向量；运行期比对留待第二步。
+   **已完成（2026-10-31）**：`declarationDigest` v1（FR34/D49 第一步）——`pact ref digest` 工具、`pact ref lint` 漂移比对（缺失 warning / 不一致 error）、规范 `spec/ref/v1/declaration-digest.md` 与 golden 向量；同日完成第二步——`[ref_digest] mode = off/warn/enforce`（默认 `warn`）在 `POST /domains` 进入引擎前比对，`enforce` 不一致返回 `400 DeclarationDigestMismatch`，启动恢复与 `ref reload` 不比对。
 2. **可见性阶段（已完成，2026-10-27）**：Counter/Archive 返回前过滤 `thing_ref`（FR28/D42）；
    默认 `read-gate`（无条件 `reads`/`consumes`），RefBindings 的 `domain`/`hidden` 显式覆盖；
    daemon `[ref_bindings].paths` 加载 profile，失败 fail-closed；令牌/签名模式下视图要求身份。
@@ -1041,7 +1042,7 @@ spec:
 
 ### 13.4 待决方案分析（2026-10-29）
 
-两项治理缺口先以“选项、收益与代价”定案：B0（卡片加载，`FR32`/`D47`）已实现；`declarationDigest` 已于 2026-10-31 确认并完成第一步（`FR34`/`D49`），运行期比对留待第二步。
+两项治理缺口先以“选项、收益与代价”定案：B0（卡片加载，`FR32`/`D47`）已实现；`declarationDigest` 已于 2026-10-31 确认并完成两步（`FR34`/`D49`：工具/lint 与运行期 `[ref_digest]` 比对）。
 
 #### 13.4.1 ContractCard 是否在运行期加载（B0 已实现，2026-10-30）
 
@@ -1071,9 +1072,9 @@ spec:
 
 **已确认（2026-10-29）**：采纳“按数据触发闭环”的 C（声明 contract ⇒ 必须挂卡且解析，否则启动失败；未声明 contract ⇒ 无需配置）；首版接受重启加载，作为激活机制而非终身约束。实现编号为 `FR32` / `D47`（B0 加载与不可变）；显式重载见 §13.5 的 B1（`FR33` / `D48`）。
 
-#### 13.4.2 `declarationDigest` 的摘要对象与规范化（已确认 2026-10-31；第一步已实现）
+#### 13.4.2 `declarationDigest` 的摘要对象与规范化（已确认 2026-10-31；两步均已实现）
 
-**现状（2026-10-31 起）**：`pact ref digest` 可按 v1 规范计算摘要，`pact ref lint` 在能读到 `.pact` 时计算并比对绑定摘要——缺失为 warning `ref.bindings.digest_missing`，已记录且不一致为 error `ref.bindings.digest_mismatch`。运行期加载域时仍不比对（D49 第二步待做）。
+**现状（2026-10-31 起）**：`pact ref digest` 可按 v1 规范计算摘要，`pact ref lint` 在能读到 `.pact` 时计算并比对绑定摘要——缺失为 warning `ref.bindings.digest_missing`，已记录且不一致为 error `ref.bindings.digest_mismatch`。运行期 `POST /domains` 按 `[ref_digest] mode`（默认 `warn`）比对；`enforce` 不一致返回 `400 DeclarationDigestMismatch`，启动恢复与 `ref reload` 不比对（D49 第二步已实现）。
 
 | 选项 | 收益 | 代价 |
 |---|---|---|
@@ -1091,9 +1092,9 @@ spec:
    |---|---|
    | `off` | 只计算不比对，等同 A 的现状 |
    | `warn`（默认） | 不一致写结构化 `WARN`（`expected` / `actual` / 摘要算法版本），`load_domain` 照常成功 |
-   | `enforce`（显式开启） | 仅对“声明了非空 `declarationDigest`”的域，不一致返回 `400`（新错误码，编号先登记） |
+   | `enforce`（显式开启） | 仅对“声明了非空 `declarationDigest`”的域，不一致返回 `400 DeclarationDigestMismatch` |
 
-   三条边界：绑定未写 `declarationDigest` ⇒ 任何模式都不阻塞；摘要算法版本不受运行时支持 ⇒ 按“不可比对”处理（`warn`），不当作“不一致”；daemon 启动恢复既有域时只 `warn`，`enforce` 仅作用于新的 `load_domain`，避免单域绑定笔误导致整个 daemon 无法启动。
+   三条边界：绑定未写 `declarationDigest` ⇒ 任何模式都不阻塞；摘要算法版本不受运行时支持 ⇒ 按“不可比对”处理（`warn`），不当作“不一致”；**启动恢复与 `ref reload` 不比较**，`enforce` 仅作用于新的 `load_domain`，避免单域绑定笔误导致整个 daemon 无法启动（D49 第二步已按此实现）。
 
 #### 13.4.3 摘要误算会不会直接阻塞域加载
 
@@ -1112,11 +1113,11 @@ spec:
 
 所以顺序上先 `warn`：先让工具与运行时在同一实现上稳定，并用 lint 把“摘要是否最新”变成提交前检查；等 golden/conformance 覆盖稳定后再把 `enforce` 变成可选开关，最后才考虑默认开启。这样“真实漂移”在 lint 阶段就被拦，“误算”不会直接变成域不可加载。
 
-**已确认（2026-10-31）**：摘要对象 C（语义接口）、两步走（工具/lint 先行）、运行期默认 `warn` 且 `enforce` 显式开启、字段保持 `sha256:<64 hex>`；编号为 `FR34` / `D49`，规范落点为 `spec/ref/v1/declaration-digest.md`，实现落点为 `pact-analysis::digest` 与 `pact-cli`。第一步已实现；第二步的 `[ref_digest].mode` 配置项与错误码须先登记再实现。详见 §13.4.2.1。
+**已确认（2026-10-31）**：摘要对象 C（语义接口）、两步走（工具/lint 先行）、运行期默认 `warn` 且 `enforce` 显式开启、字段保持 `sha256:<64 hex>`；编号为 `FR34` / `D49`，规范落点为 `spec/ref/v1/declaration-digest.md`，实现落点为 `pact-analysis::digest`、`pact-cli` 与 `pact-http`。两步均已实现；`[ref_digest].mode` 与 `DeclarationDigestMismatch` 已登记于 `docs/architecture.md` 附录 A（第 87 轮）。详见 §13.4.2.1。
 
-**依赖关系**：13.4.1 与 13.4.2 相互独立；卡片加载已完成（D47/D48），摘要第一步已完成。摘要运行期若启用 `enforce`，`[ref_digest].mode` 需先登记配置项与错误码编号。
+**依赖关系**：13.4.1 与 13.4.2 相互独立；卡片加载已完成（D47/D48），摘要两步均已完成。`[ref_digest].mode` 与 `DeclarationDigestMismatch` 已先登记再实现。
 
-#### 13.4.2.1 定义 v1（2026-10-31 已确认；第一步已实现，第二步待做）
+#### 13.4.2.1 定义 v1（2026-10-31 已确认；两步均已实现）
 
 **摘要对象（已确认 C：语义接口）**：只覆盖域声明中影响绑定匹配、可见性与准入判定的语义面；注释、空白、文件路径、字段书写顺序、实例名与分析结果都不参与。
 
@@ -1142,16 +1143,16 @@ spec:
    - 新增 `pact ref digest <file.pact> [--name <domain>] [--json]`，输出 `sha256:<hex>`（JSON 另含 `algorithm`/`digestVersion`）。
    - `pact ref lint --declaration` 时计算并与绑定 `metadata.declarationDigest` 比对：**不一致 → error `ref.bindings.digest_mismatch`（退出码 1）**；缺失仍为现有 warning `ref.bindings.digest_missing`。已确定不一致按 error 处理，不保留“降级为 warning”的子选项。
    - 新增 `spec/ref/v1/declaration-digest.md` 冻结上述对象、规范化与 golden 向量；该文档不参与 `vendor/pact-ref-spec` 快照同步（`scripts/sync-spec.sh` 只同步 crate），本轮无 `pact-ref` 代码改动。
-2. **第二步（运行期，另行登记编号后再做）**
-   - 配置 `[ref_digest] mode = "warn" | "enforce" | "off"`，**默认 `warn`**。
-   - 比较点：`POST /domains`（`load_domain`）解析声明后，与该域当前加载绑定的 `metadata.declarationDigest` 比对；绑定未记录或该域无绑定 → 不比较。
-   - `warn`：写结构化日志（`expected`/`actual`/`digestVersion`），`load_domain` 照常成功，不改变响应语义；`enforce`：仅“摘要存在且不一致” → `400`（新错误码先登记）。
-   - 启动恢复不比较（既有实例持声明快照，D27）；显式重载（D48）不比对已登记声明——摘要约束的是“声明注册时对应哪版绑定”，既有实例不受换绑影响；若将来需要重载复核，另立事项。
+2. **第二步（运行期，已实现）**
+   - 配置 `[ref_digest] mode = "warn" | "enforce" | "off"`，**默认 `warn`**；整段可省，`deny_unknown_fields` 拒绝未知键与未知模式。
+   - 比较点：`POST /domains`（`load_domain`）授权后、**进入引擎前**，与该域当前加载绑定的 `metadata.declarationDigest` 比对；绑定未记录或该域无绑定 → 不比较；声明解析失败 → 保留既有 `Syntax`/`WellFormedness`。
+   - `warn`：写一条 stderr 警告（`expected`/`actual`/`digestVersion`），`load_domain` 照常成功；`enforce`：仅“摘要存在且不一致” → `400 DeclarationDigestMismatch`（`detail` 含 `domain`/`expected`/`actual`/`digestVersion`），拒绝时域未装载、无事件写入。
+   - 启动恢复不比较（既有实例持声明快照，D27）；显式重载（D48）不比对已登记声明——摘要约束的是“声明注册时对应哪版绑定”，既有实例不受换绑影响。
    - **版本**：字段保持 `sha256:<64hex>`，v1 语义固定在上面的规范文档；不新增版本字段、不改 schema。未来规范化变更必须引入新规范版本与新字段/新编号，禁止在同一字段静默换义；因此运行期只需实现 v1，不存在“算法版本不受支持”的比对分支。
 
 **收益**：摘要只随语义变化，格式重排不误报；工具与 daemon 共用同一实现，golden 向量可锁一致性；lint 在提交前拦住真实漂移，运行期默认 `warn` 不会让误算直接阻断域加载。**代价**：需冻结规范化与条件文法并维护 golden；`gates` 条件参与意味着“只改条件”也要更新摘要（这是有意的：条件改变准入行为）。
 
-**确认结果（2026-10-31）**：① 摘要对象按上表（语义接口，含 `gates` 条件与域名）；② 启用方式按“工具 + lint 先行（不一致 = error）、运行期后置且默认 `warn`、`enforce` 显式开启”；③ 摘要字符串保持 `sha256:<64hex>`（v1 固定在规范文档）。已登记 `FR34` / `D49`，第一步已实现；配置项与错误码在第二步开工前登记。
+**确认结果（2026-10-31）**：① 摘要对象按上表（语义接口，含 `gates` 条件与域名）；② 启用方式按“工具 + lint 先行（不一致 = error）、运行期后置且默认 `warn`、`enforce` 显式开启”；③ 摘要字符串保持 `sha256:<64hex>`（v1 固定在规范文档）。已登记 `FR34` / `D49`；两步均已实现，`[ref_digest]` 与 `DeclarationDigestMismatch` 已登记于 `docs/architecture.md` 附录 A。
 
 ### 13.5 ContractCard 生命周期：重启、显式重载与版本化（2026-10-29 定案；B0/B1 已实现）
 

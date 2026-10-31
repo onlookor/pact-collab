@@ -22,6 +22,10 @@ listen_tcp = "0.0.0.0:8787"
 
 # D48：修改上述文件后用 `pact ref reload [--dry-run]` 显式重载，无需重启 daemon
 
+# D49 第二步：运行期声明摘要比对（可选；缺省 warn）
+# [ref_digest]
+# mode = "warn"                      # off | warn | enforce；enforce 才拒绝不一致的 load_domain
+
 # [auth]
 # [auth.tokens]
 # architect = "…"

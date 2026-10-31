@@ -43,6 +43,9 @@ pub struct Config {
     /// D47：ContractCard 来源（文件或目录）；仅声明了 `contract` 的部署需要配置。
     #[serde(default)]
     pub ref_contracts: Option<RefContractsConfig>,
+    /// D49 第二步：运行期声明摘要比对模式；缺省 `warn`。
+    #[serde(default)]
+    pub ref_digest: Option<RefDigestConfig>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
     /// D34：TCP 监听的可选 TLS 终止配置；缺省关闭。
@@ -76,6 +79,43 @@ pub struct RefContractsConfig {
     /// 文件或目录；目录会展开 `.yaml` / `.yml` / `.json`。
     #[serde(default)]
     pub paths: Vec<PathBuf>,
+}
+
+/// D49 第二步：运行期声明摘要比对模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RefDigestMode {
+    /// 不比对（只保留离线工具与 lint）。
+    Off,
+    /// 不一致写警告日志，域照常加载（缺省）。
+    #[default]
+    Warn,
+    /// 绑定已记录摘要且不一致时拒绝加载（`400 DeclarationDigestMismatch`）。
+    Enforce,
+}
+
+impl RefDigestMode {
+    /// 配置值文本（用于启动日志与测试断言）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Warn => "warn",
+            Self::Enforce => "enforce",
+        }
+    }
+}
+
+/// D49 第二步：`[ref_digest]` 配置表。
+///
+/// ```toml
+/// [ref_digest]
+/// mode = "warn"   # off | warn | enforce
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RefDigestConfig {
+    #[serde(default)]
+    pub mode: RefDigestMode,
 }
 
 /// D34：TLS 证书与可选 mTLS。
@@ -305,6 +345,14 @@ impl Config {
             .as_ref()
             .map(|config| config.paths.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// D49 第二步：运行期摘要比对模式（缺省 `warn`）。
+    pub fn ref_digest_mode(&self) -> RefDigestMode {
+        self.ref_digest
+            .as_ref()
+            .map(|config| config.mode)
+            .unwrap_or_default()
     }
 
     /// D36：MCP 对外基址（RFC 9728 元数据与 `WWW-Authenticate`）。
@@ -629,6 +677,7 @@ mod tests {
         assert!(!c.compact_on_start());
         assert_eq!(c.compact_keep_last(), 0);
         assert!(!c.read_audit());
+        assert_eq!(c.ref_digest_mode(), RefDigestMode::Warn);
         assert!(c.auth_tokens().is_empty());
         assert!(c.acl().is_empty());
         c.validate().expect("缺省配置合法");
@@ -653,6 +702,9 @@ paths = ["/etc/pact/refs/", "se_lifecycle.refs.yaml"]
 
 [ref_contracts]
 paths = ["/etc/pact/contracts/", "se_design.contract.yaml"]
+
+[ref_digest]
+mode = "enforce"
 
 [auth]
 [auth.tokens]
@@ -689,9 +741,29 @@ reviewer = ["proj/review"]
             ]
         );
         assert!(c.read_audit());
+        assert_eq!(c.ref_digest_mode(), RefDigestMode::Enforce);
         assert_eq!(c.auth_tokens()["architect"], "sekret");
         assert_eq!(c.acl()["architect"], vec!["proj/*", "other/default"]);
         c.validate().expect("完整配置合法");
+    }
+
+    #[test]
+    fn ref_digest_mode_defaults_and_parses() {
+        assert_eq!(Config::default().ref_digest_mode(), RefDigestMode::Warn);
+        for (text, expected) in [
+            ("", RefDigestMode::Warn),
+            ("[ref_digest]\n", RefDigestMode::Warn),
+            ("[ref_digest]\nmode = \"off\"\n", RefDigestMode::Off),
+            ("[ref_digest]\nmode = \"warn\"\n", RefDigestMode::Warn),
+            ("[ref_digest]\nmode = \"enforce\"\n", RefDigestMode::Enforce),
+        ] {
+            let config: Config = toml::from_str(text).unwrap();
+            assert_eq!(config.ref_digest_mode(), expected, "input={text:?}");
+        }
+        assert!(
+            toml::from_str::<Config>("[ref_digest]\nmode = \"strict\"\n").is_err(),
+            "未知模式必须被拒绝"
+        );
     }
 
     #[test]

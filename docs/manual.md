@@ -200,6 +200,10 @@ listen_unix = "./pact.sock"       # 默认监听；单机安全
 
 # D48：显式重载会重新读取上面两个配置源；无需重启 daemon（见 §7.12）
 
+# D49 第二步：运行期声明摘要比对（可选；缺省 warn）
+# [ref_digest]
+# mode = "warn"                   # off | warn | enforce；enforce 才拒绝不一致的 load_domain
+
 # NFR6 v2：TLS / mTLS（可选；仅对 listen_tcp 生效）
 # [tls]
 # certificate = "/etc/pact/server-chain.pem"   # PEM 证书链
@@ -238,7 +242,7 @@ architect = "sekret"              # 参与者 → 令牌，请求头 Authorizati
 缺省语义（文件不存在或字段缺省时）：`data_dir = "./data"`、`listen_unix = "./pact.sock"`、
 无 TCP、无 TLS、无签名公钥表、无令牌表、无 ACL、无 PID 文件、不自动压缩（`compact_on_start = false`、`compact_keep_last = 0`）、
 不写读审计（`read_audit = false`）、`[mcp].enabled = false`、无 OIDC、无 RefBindings（所有票面走默认
-`read-gate`）、无 ContractCard（未声明 `contract` 的部署无需配置）。几个易踩点：
+`read-gate`）、无 ContractCard（未声明 `contract` 的部署无需配置）、`[ref_digest].mode = "warn"`。几个易踩点：
 
 - 配置用 `deny_unknown_fields`，**写错键名会直接报错**，不会静默忽略。
 - `listen_unix = ""`（空串）= 禁用 unix socket；只写 `listen_tcp` 而不写 `listen_unix`，
@@ -247,6 +251,7 @@ architect = "sekret"              # 参与者 → 令牌，请求头 Authorizati
 - `[ref_bindings]` 一旦出现，`paths` 不能为空；任一 RefBindings 读取/解析/校验失败或同域重复声明，daemon 拒绝启动（fail-closed）。
 - `[ref_contracts]` 一旦出现，`paths` 不能为空；卡片读取/解析/校验失败或同一 `id@version` 重复，daemon 拒绝启动。绑定声明了 `contract` 却未配置或引用不可解析，同样拒绝启动（D47）。
 - 修改 `[ref_bindings]` / `[ref_contracts]` 指向的文件后，无需重启：调用 `pact ref reload`（或 `POST /ref/reload`）原子生效（D48，见 §7.12）。
+- `[ref_digest]` 一旦出现，`mode` 只能是 `off` / `warn` / `enforce`（大小写敏感）；写错值拒绝启动。缺省整段或省 `mode` 均为 `warn`（见 §7.14）。
 
 ### 2.3 启动与停止 daemon
 
@@ -1155,7 +1160,7 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 
 **错误码**：`ThingRefMissing` / `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`，均为 `400`，错误体同 §6.3（`error.code` + `error.detail` + `error.message`）。
 
-**未生效**：`declarationDigest` 的运行期比对（加载域时不比对，见 §7.13 第二步）、卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除；WASM 本地宿主不经过 REST，尚无该校验。显式重载见 §7.12。
+**未生效**：卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除；WASM 本地宿主不经过 REST，尚无该校验。`declarationDigest` 的运行期比对已由 D49 第二步在 `POST /domains` 实现（见 §7.14）；显式重载见 §7.12。
 
 ### 7.12 物引配置显式重载（D48）
 
@@ -1183,7 +1188,7 @@ REST 等价入口：`POST /ref/reload`，请求体 `{"dryRun": true}` 或 `{"dry
 
 **错误码**：`RefReloadInvalid`（`400`，解析/校验/重复版本/引用不可解析）、`RefReloadBusy`（`409`，已有重载进行中）、`Forbidden`（`403`，ACL 未覆盖）、`Unauthorized`（`401`）；内部错误 `RefReloadUnavailable` / `RefReloadFailed` / `RefReloadAuditFailed` 均为 `500`。
 
-### 7.13 声明摘要 `declarationDigest`（D49，离线第一步）
+### 7.13 声明摘要 `declarationDigest`（D49 第一步：离线生成与 lint）
 
 `RefBindings.metadata.declarationDigest` 记录“这份绑定对应哪一版域声明”。摘要对象是声明的**语义接口**：域名 + 类型 + 前置条件 + gates（含条件表达式）+ 种子授权；注释、空白、段内顺序、文件名都不参与。规范与 golden 向量见 `spec/ref/v1/declaration-digest.md`（v1）。
 
@@ -1209,7 +1214,35 @@ spec: { … }
 - **域名参与摘要**：同一正文换域名会得到不同摘要，防止跨域复用绑定；`--name` 缺省取声明文件 stem（不含 `.pact`）。
 - **lint 比对**：`pact ref lint --declaration …` 时，未记录摘要 → warning `ref.bindings.digest_missing`（`--strict` 失败）；已记录且不一致 → error `ref.bindings.digest_mismatch`（退出 1）。声明改动后先跑 `pact ref digest` 更新绑定，再提交。
 - **不做**：不证明票面可达、不验证卡片内容、不进入引擎/事件日志；摘要格式固定 `sha256:<64hex>`，v1 语义冻结，未来换义必须新规范版本。
-- **第二步（尚未启用）**：daemon 计划在 `POST /domains`（`load_domain`）时按 `[ref_digest].mode`（默认 `warn`，可选 `enforce`）比对；`enforce` 仅“摘要存在且不一致”返回 `400`。启动恢复与 `ref reload` 不比对。当前加载域不做摘要检查。
+
+### 7.14 运行期声明摘要比对（D49 第二步）
+
+daemon 在 `POST /domains`（REST `load_domain`）**进入引擎前**比对绑定记录的摘要；配置项 `[ref_digest].mode` 决定严格程度：
+
+| mode | 行为 |
+|------|------|
+| `off` | 不比较，行为与未引入 D49 时相同 |
+| `warn`（缺省） | 摘要存在且不一致时向 stderr 写一条警告，**照常加载**；生产预演期推荐 |
+| `enforce` | 摘要存在且不一致时返回 `400 DeclarationDigestMismatch`，**不加载域**（无任何副作用） |
+
+比较边界：
+
+- **触发点唯一**：只有 `POST /domains`（及 CLI `domain load` / `domain handoff` 经该接口）会比较；**启动恢复**与 `pact ref reload` **不比较**——历史声明可以继续重放，重载只更新绑定规则。
+- **只比“有摘要”的域**：该域没有绑定，或绑定的 `metadata.declarationDigest` 缺省/为空 → 任何 mode 都不比较。这样未启用摘要的部署不会被强制要求填写。
+- **解析失败不按摘要拒绝**：声明本身语法/良构失败时返回既有 `Syntax` / `WellFormedness`（`400`），不会改写成 `DeclarationDigestMismatch`。
+- **拒绝无副作用**：`enforce` 的比对在引擎调用之前完成，被拒时域未装载、不写事件日志。
+
+错误体（`400`）：
+
+```json
+{ "error": { "code": "DeclarationDigestMismatch",
+             "detail": { "domain": "se_lifecycle",
+                         "expected": "sha256:…", "actual": "sha256:…",
+                         "digestVersion": 1 },
+             "message": "域 se_lifecycle 的声明与绑定 declarationDigest 不一致：…" } }
+```
+
+处置：若声明是有意变更，先 `pact ref digest <file> --name <domain>` 重新生成摘要、更新绑定（或用 `pact ref reload` 生效），再重试加载；若绑定已过期，回退绑定或无摘要加载。`warn` 模式的警告只用于发现漂移，不会阻断加载。
 
 ---
 
@@ -1280,7 +1313,7 @@ spec: { … }
 | 方法与路径 | 请求体 | 成功响应 |
 |-----------|--------|----------|
 | `POST /validate` | `{declaration}` | `200` `{ok, types[], participants[], gates, seed_authority}` |
-| `POST /domains` | `{name, declaration[, instance][, force]}` | `201` `DomainSummary{name, instance, types, gates, seed_authority, last_seq}`（declare + instantiate，缺省实例 `default`） |
+| `POST /domains` | `{name, declaration[, instance][, force]}` | `201` `DomainSummary{name, instance, types, gates, seed_authority, last_seq}`（declare + instantiate，缺省实例 `default`；D49 `enforce` 时先比对摘要） |
 | `GET /domains` | — | `200` `{domains: [{name, instances[], active?}]}`（无活动指针时省略 `active`） |
 | `POST /domains/{d}/instances` | `{instance}` | `201` `DomainSummary`（在同一域声明下新建实例，D27） |
 | `GET /domains/{d}` | — | `200` `{name, counter_size, archive_size, terminated}`（活动实例；无指针为 `default`） |
@@ -1316,6 +1349,8 @@ spec: { … }
 **票面写入校验（D45/D46/D47）**：`POST .../seeds` 与 `POST .../tokens` 的 `thing_ref` 支持三态——字段缺失 → `400 ThingRefMissing`、显式 `null` → `∅`、字符串 → 校验后写入规范化值；URI profile、RefBindings 形态/未知 scheme/钉版策略在引擎调用前强制执行。`POST .../consume` 对声明 `pinning: required-at-archive` 的类型、以及绑定引用的 ContractCard 要求归档钉版的类型，要求票面已钉版。详见 §7.11。
 
 **物引配置重载（D48）**：`POST /ref/reload` 把 `[ref_bindings]` 与 `[ref_contracts]` 作为同一事务重新读取、校验并原子替换内存规则；`dryRun` 只校验与预检。审计写 `<data_dir>/ref-reload.jsonl`；ACL 启用时要求调用者对当前与新索引中每个绑定域持有 `{d}/*`。详见 §7.12。
+
+**运行期摘要比对（D49）**：`POST /domains` 在授权后、进入引擎前按 `[ref_digest].mode` 比对绑定 `metadata.declarationDigest`。`off` 不比较；`warn`（缺省）只写警告并放行；`enforce` 在“摘要存在且不一致”时返回 `400 DeclarationDigestMismatch`（`detail` 含 `domain` / `expected` / `actual` / `digestVersion`），被拒时域未装载、无事件写入。无绑定、绑定无摘要或声明解析失败时不比较（解析失败仍返回 `Syntax` / `WellFormedness`）。启动恢复与 `ref/reload` 不比较。详见 §7.14。
 
 **运维端点（D25，免身份）**：`GET /health`（存活，`{status:"ok"}`）、`GET /ready`（就绪，引擎不可应答时 `503`）、`GET /metrics`（Prometheus 文本格式）。三者仅供本地/内网探活与抓取，**不校验身份**、也不用 §6 线上格式（详见 §2.3.1）。**`POST .../compact`** 在未启用 ACL 时不做域级授权（但启用签名时仍需签名；破坏性运维操作，会丢弃已入快照的审计前缀），启用 ACL 后按实例授权，暴露边界见 §2.3.1。
 
@@ -1425,6 +1460,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `DomainBusy` | 409 | 对**非空实例**（含 `Imported` 接手状态）再加载；须显式 `force` 才重置并解冻 |
 | `InvalidDomainName` | 400 | 域名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
 | `InvalidInstanceName` | 400 | 实例名不匹配 `[A-Za-z0-9_-]{1,128}`（防路径穿越） |
+| `DeclarationDigestMismatch` | 400 | `POST /domains` 时绑定摘要存在且与声明计算值不一致（仅 `[ref_digest] mode = "enforce"`；`detail` 含 `domain`/`expected`/`actual`/`digestVersion`，D49） |
 | `Unauthorized` | 401 | 令牌/签名缺失或不匹配；签名身份与请求 `participant` 不一致；`/mcp` 的 OIDC 令牌缺失/非法/claim 不合规 |
 | `Forbidden` | 403 | ACL 拒绝：身份有效但无该 `(domain, instance)` 授权；`ref/reload` 还要求当前与新索引中每个绑定域都有 `{d}/*` |
 | `RefReloadInvalid` | 400 | 物引配置重载解析/规范校验失败、重复 `contract_id()` 或引用不可解析（D48） |
@@ -1465,6 +1501,8 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | `analyze` 说 `unreachable` 但域能跑 | 片段单独分析时缺少 `SeedAuthority` | 组合后再分析（示例 §1.2） |
 | 启动报 `Store` / `LegacyLayoutDetected` | `data_dir` 顶层有旧版单层文件（`<domain>.events.jsonl`） | 手工迁移到 `<domain>/default.events.jsonl` 后重启（§7.1，不自动迁移） |
 | `DomainBusy` | 对非空实例再 `load`（会重置 Counter） | 确认要替换则加 `--force`（CLI）/ `force: true`（REST）；否则换实例名 |
+| `400 DeclarationDigestMismatch` | 声明与绑定的 `metadata.declarationDigest` 不一致，且 `[ref_digest] mode = "enforce"` | 声明有意变更：`pact ref digest <file> --name <domain>` 更新绑定后重试；否则改用 `mode = "warn"` 或修正绑定（§7.14） |
+| `pactd: 警告：域 … 声明与绑定 declarationDigest 不一致` | `mode = "warn"`（缺省）检测到漂移，照常加载 | 按提示更新绑定摘要；确需严格拦截再改 `mode = "enforce"`（§7.14） |
 | daemon 启动即退出（锁冲突） | 同一 `data_dir` 已有另一 daemon | 停掉旧实例，或换 `data_dir`（`pactd.lock` 独占，§7.1） |
 | 启动报 `UnsupportedSchemaVersion` | 数据由更新版 pactd 写入（事件 schema 版本更高） | 升级 pactd 或按新版格式迁移；**不可**期望旧版静默重放（§7.3） |
 | 启动报 `SnapshotRequiredForCompactedLog` | 日志已被压缩截断，但快照缺失/未覆盖 `base_seq` | 从备份恢复 `<instance>.snapshot.json`；勿手工删除快照（§7.4） |
