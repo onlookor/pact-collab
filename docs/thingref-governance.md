@@ -1111,9 +1111,46 @@ spec:
 
 所以顺序上先 `warn`：先让工具与运行时在同一实现上稳定，并用 lint 把“摘要是否最新”变成提交前检查；等 golden/conformance 覆盖稳定后再把 `enforce` 变成可选开关，最后才考虑默认开启。这样“真实漂移”在 lint 阶段就被拦，“误算”不会直接变成域不可加载。
 
-**需要用户确认**：摘要对象选 C（语义接口）还是 B（规范化 AST）；是否接受“lint/工具先行、运行期后置”的两步走；运行期首版默认 `warn`、`enforce` 可选是否可接受；摘要字符串是否继续用 `sha256:<64 hex>`（算法版本写在字段/文档中）还是改成带版本前缀的新格式（需 schema 变更与新编号）。
+**需要用户确认**：摘要对象选 C（语义接口）还是 B（规范化 AST）；是否接受“lint/工具先行、运行期后置”的两步走；运行期首版默认 `warn`、`enforce` 可选是否可接受；摘要字符串是否继续用 `sha256:<64 hex>`（算法版本写在字段/文档中）还是改成带版本前缀的新格式（需 schema 变更与新编号）。以上四项的候选答案见 §13.4.2.1。
 
 **依赖关系**：13.4.1 与 13.4.2 相互独立；若两者都要做，先卡片加载（纯配置/索引），再摘要（需规范与工具），避免一次性引入两类失败模式。摘要运行期若启用 `enforce`，`[ref_digest].mode` 需先登记配置项与错误码编号。
+
+#### 13.4.2.1 候选定义 v1（2026-10-31，待用户确认，未实现）
+
+**摘要对象（推荐 C：语义接口）**：只覆盖域声明中影响绑定匹配、可见性与准入判定的语义面；注释、空白、文件路径、字段书写顺序、实例名与分析结果都不参与。
+
+| 字段 | 参与 | 理由 |
+|---|---|---|
+| 域名（`load_domain` 的 `name`；CLI 取 `--name`，缺省文件 stem） | 是 | 防止同一正文在不同域名下复用摘要；绑定以 `metadata.domain` 为键 |
+| `types` | 是（排序去重） | 绑定按类型键匹配，类型集合是接口主轴 |
+| `preconditions` | 是（rhs → 排序后的前驱集合） | 决定源类型与 Rule-P 前置，影响 `seed_authority` 的必要性 |
+| `gates` | 是（按 `(participant, action, type)` 排序；含条件表达式） | read/consume 的条件决定视图暴露与归档路径，是 `visibility`/`pinning` 的作用面 |
+| `seed_authority` | 是（按 `(participant, type)` 排序） | 决定谁可点火 |
+| 注释、空白、换行/缩进、字段顺序、文件名、`.pact` 原文 | 否 | 格式变化不是语义漂移 |
+| 实例名、分析结果、RefBindings/ContractCard 内容 | 否 | 不属于声明接口；卡片与绑定的生命周期独立 |
+
+**规范化**：UTF-8 紧凑 JSON（无缩进、无尾换行），顶层固定为
+`{"kind":"pact.declaration.interface","v":1,"domain":…,"types":[…],"preconditions":{…},"gates":[…],"seed":[…]}`；
+类型/参与者用字符串；条件表达式用自定文法文本 `via(T)` / `exists(T)` / `count(T,>=,n)` / `and(A,B)` / `or(A,B)` / `not(A)`，不使用 Rust `serde` 派生枚举的表示（派生细节不是协议）。摘要 = `sha256:` + 上述字节的小写十六进制 SHA-256。
+
+**实现落点**：`pact-analysis` 新增纯函数 `declaration_digest(domain_name, &pact_core::Domain) -> String`（该 crate 已依赖 `pact-core`；新增 `serde_json` 与 `sha2` 为 workspace 既有依赖）；CLI 与 `pact-http` 共用，不进入 `pact-ref-spec`（后者保持零 `pact-core` 依赖，可编译到 wasm32）。
+
+**启用方式（推荐两步）**：
+
+1. **第一步（工具 + lint，不改运行期）**
+   - 新增 `pact ref digest <file.pact> [--name <domain>] [--json]`，输出 `sha256:<hex>`（JSON 另含 `algorithm`/`digestVersion`）。
+   - `pact ref lint --declaration` 时计算并与绑定 `metadata.declarationDigest` 比对：**不一致 → error `ref.bindings.digest_mismatch`（退出码 1）**；缺失仍为现有 warning `ref.bindings.digest_missing`。若希望先只告警，可把 mismatch 降为 warning（`--strict` 仍失败），这是启用方式的子选项。
+   - 新增 `spec/ref/v1/declaration-digest.md` 冻结上述对象、规范化与 golden 向量；`pact-ref` 侧同步该规范文档（跨仓库项登记台账，不涉及 `pact-ref-spec` 代码）。
+2. **第二步（运行期，另行登记编号后再做）**
+   - 配置 `[ref_digest] mode = "warn" | "enforce" | "off"`，**默认 `warn`**。
+   - 比较点：`POST /domains`（`load_domain`）解析声明后，与该域当前加载绑定的 `metadata.declarationDigest` 比对；绑定未记录或该域无绑定 → 不比较。
+   - `warn`：写结构化日志（`expected`/`actual`/`digestVersion`），`load_domain` 照常成功，不改变响应语义；`enforce`：仅“摘要存在且不一致” → `400`（新错误码先登记）。
+   - 启动恢复不比较（既有实例持声明快照，D27）；显式重载（D48）不比对已登记声明——摘要约束的是“声明注册时对应哪版绑定”，既有实例不受换绑影响；若将来需要重载复核，另立事项。
+   - **版本**：字段保持 `sha256:<64hex>`，v1 语义固定在上面的规范文档；不新增版本字段、不改 schema。未来规范化变更必须引入新规范版本与新字段/新编号，禁止在同一字段静默换义；因此运行期只需实现 v1，不存在“算法版本不受支持”的比对分支。
+
+**收益**：摘要只随语义变化，格式重排不误报；工具与 daemon 共用同一实现，golden 向量可锁一致性；lint 在提交前拦住真实漂移，运行期默认 `warn` 不会让误算直接阻断域加载。**代价**：需冻结规范化与条件文法并维护 golden；`gates` 条件参与意味着“只改条件”也要更新摘要（这是有意的：条件改变准入行为）。
+
+**待确认**：① 摘要对象按上表（语义接口，含 `gates` 条件与域名）；② 启用方式按“工具 + lint 先行（不一致 = error）、运行期后置且默认 `warn`、`enforce` 显式开启”；③ 摘要字符串保持 `sha256:<64hex>`（v1 固定在规范文档）。确认后再登记 FR/D 编号、配置项与错误码。
 
 ### 13.5 ContractCard 生命周期：重启、显式重载与版本化（2026-10-29 定案；B0/B1 已实现）
 

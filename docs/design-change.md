@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 85 轮，`declarationDigest` 候选定义，待确认；无代码变更）
+
+- **触发**：用户要求先确认摘要对象与启用方式，再进入实现。
+- **候选定义**：写入 `docs/thingref-governance.md` §13.4.2.1。摘要对象取“语义接口”（域名 + `types` + `preconditions` + `gates`（含条件表达式）+ `seed_authority`），规范化 UTF-8 紧凑 JSON，条件用自定文法文本而非 `serde` 派生表示；摘要 = `sha256:` + 小写 hex。注释、空白、字段顺序、文件名、实例名、绑定/卡片内容不参与。
+- **候选启用方式**：第一步 `pact ref digest` + `pact ref lint` 比对（摘要存在且不一致 = error）；第二步运行期 `[ref_digest].mode`（默认 `warn`、`enforce` 显式开启），仅在 `load_domain` 比较；启动恢复与 D48 重载不比较。
+- **格式**：字段保持 `sha256:<64hex>`，v1 语义冻结在待新增的 `spec/ref/v1/declaration-digest.md`；不改 schema、不加版本字段，未来换义须新规范版本与新字段/编号。
+- **未做**：未登记新 FR/D、配置项或错误码，未改代码；确认后再登记。预计落点 `pact-analysis`（纯函数）、`pact-cli`（digest 子命令与 lint 比对）、`pact-http`（第二步运行期）、`spec/ref/v1`（规范与 golden），并需在台账标注 `pact-ref` 规范文档同步。
+- **文档**：治理 §13.4.2.1 与 §13.4.2 的确认指引；`todo.md` 仍为 `[!]`，证据补“候选已给出，待用户确认”。
+
 ## 2026-10-30（第 84 轮，B1 显式重载实现）
 
 - **实现（FR33/D48）**：新增 `pact-http::reload` 模块与 `POST /ref/reload`；daemon 启动注入 `RefReloadConfig`（绑定/卡片路径 + `<data_dir>/ref-reload.jsonl`）。事务顺序固定为认证 → 当前域 ACL → 加载校验 → 新域 ACL → 影响预检 → 审计 → 原子替换；`dryRun` 在审计后停止。

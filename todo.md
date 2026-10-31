@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-30，第 84 轮）：P0 入口校验、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）与 B1 显式重载（FR33/D48）已落地并回归通过；剩余 `declarationDigest`（待确认摘要对象）待决策。WASM 入口、`refd` 与动态阶段未开始。下一轮按 `declarationDigest` → P2 → P3 顺序推进。
+当前状态（2026-10-31，第 85 轮）：P0 入口校验、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）与 B1 显式重载（FR33/D48）已落地并回归通过；`declarationDigest` 已给出候选 v1（治理 §13.4.2.1），**待用户确认**摘要对象、启用方式与格式。WASM 入口、`refd` 与动态阶段未开始。下一轮按 `declarationDigest` → P2 → P3 顺序推进。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -43,7 +43,7 @@
 | [x] | `RefRule.value`（`none`/`uri`/`identifier`）语义落地 | FR31 / D46 / `ref-bindings.schema.json` | 入口强校验 + 单测；`required=true` 与 `value=none` 由绑定校验拒绝 |
 | [x] | B0：ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载；daemon 新增 `[ref_contracts].paths`，按 `contract_id()` 建索引；声明 `contract` 的部署缺卡即拒绝启动；重复 `id@version` 即拒绝启动 | FR32 / D47 | 单测：加载/索引、按数据触发、重复 `id@version`、钉版并集只加严；e2e：卡片钉版阻断未钉版 consume（`ThingRefUnpinned`）、重复版本拒绝启动；`pact-http` 全绿，全量 338 passed；提交 `4b42778` |
 | [x] | B1：显式重载 `POST /ref/reload` + `pact ref reload`；卡片与绑定同事务、原子换索引、`dryRun` 影响报告、`ref-reload.jsonl` 审计、ACL 覆盖绑定域；不做文件监听 | FR33 / D48 | 单测 3 项（审计 JSONL、审计失败、并发 `409 RefReloadBusy`）；`ref_reload_e2e` 7 项（`dryRun` 报告、成功重载后新规则生效、失败保持旧状态、ACL 当前/新域、认证/信任模式、未配置 500）；CLI e2e 1 项；全量 349 passed；`fmt`/`clippy` 通过；提交 `a514380` |
-| [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 方案与收益/代价见治理 §13.4.2；推荐语义接口摘要（C）+ 工具/lint 先行，运行期首版默认 `warn`、`enforce` 可选（误算不直接阻塞 `load_domain`，见 §13.4.3）；**待用户确认**摘要对象、是否分两步、摘要字符串格式 |
+| [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 方案与收益/代价见治理 §13.4.2；候选 v1（语义接口含 gates 条件与域名、紧凑 JSON 规范化、`sha256:<hex>` 格式不变、工具+lint 先行、运行期默认 `warn`/`enforce` 可选）见 §13.4.2.1；**候选已给出（2026-10-31），待用户确认**摘要对象、启用方式与格式 |
 
 ### P2 跨仓库与快照
 
@@ -77,6 +77,7 @@
 | [x] | 第 82 轮：登记 `FR32`/`D47`（B0）与 `FR33`/`D48`（B1）；`requirements.md` 新增两节、`requirements-change.md` 第 40 轮；`design.md` §0 新增 D47/D48；治理 §13.4.1/§13.5 标注已确认与编号；`architecture.md` 附录 A 登记；`architecture-change.md` 第 40 轮 | 编号先登记后引用；仅文档，无需回归；提交 `f98c698` |
 | [x] | 第 83 轮：B0 实现同步——`requirements.md` FR32 状态、`design.md` §9.14 与 D47、`manual.md` §2.2/§7.11、治理 §8.1/§13.1/§13.4.1/§13.5、`architecture.md` 正文；`design-change.md` 第 83 轮、`architecture-change.md` 第 41 轮 | 与代码及测试逐条对照；全量 338 passed |
 | [x] | 第 84 轮：B1 实现同步——`requirements.md` FR33 状态、`design.md` §9.15 与 D48、`manual.md` §2.2/§7.11/§7.12/§8.1/§8.2/§9.4、治理 §8.1/§13.1/§13.4.1/§13.5、`architecture.md` 正文、`dist/pact.container.toml`；`requirements-change.md` 第 41 轮、`design-change.md` 第 84 轮、`architecture-change.md` 第 42 轮 | 与代码及测试逐条对照；全量 349 passed |
+| [x] | 第 85 轮：`declarationDigest` 候选 v1（语义接口、紧凑 JSON 规范化、工具+lint 先行、运行期 `warn`/`enforce`）写入治理 §13.4.2.1；`design-change.md` 第 85 轮 | 仅文档，无代码变更，无需回归；**待用户确认后再登记 FR/D、配置项与错误码** |
 
 ### 验证与交付
 
