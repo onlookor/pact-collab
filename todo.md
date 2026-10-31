@@ -79,7 +79,7 @@
 | [x] | 第 83 轮：B0 实现同步——`requirements.md` FR32 状态、`design.md` §9.14 与 D47、`manual.md` §2.2/§7.11、治理 §8.1/§13.1/§13.4.1/§13.5、`architecture.md` 正文；`design-change.md` 第 83 轮、`architecture-change.md` 第 41 轮 | 与代码及测试逐条对照；全量 338 passed |
 | [x] | 第 84 轮：B1 实现同步——`requirements.md` FR33 状态、`design.md` §9.15 与 D48、`manual.md` §2.2/§7.11/§7.12/§8.1/§8.2/§9.4、治理 §8.1/§13.1/§13.4.1/§13.5、`architecture.md` 正文、`dist/pact.container.toml`；`requirements-change.md` 第 41 轮、`design-change.md` 第 84 轮、`architecture-change.md` 第 42 轮 | 与代码及测试逐条对照；全量 349 passed |
 | [x] | 第 85 轮：`declarationDigest` 候选 v1（语义接口、紧凑 JSON 规范化、工具+lint 先行、运行期 `warn`/`enforce`）写入治理 §13.4.2.1；`design-change.md` 第 85 轮 | 仅文档，无代码变更，无需回归；**待用户确认后再登记 FR/D、配置项与错误码** |
-| [x] | 第 86 轮：登记 `FR34`/`D49`（`architecture.md` 附录 A）；新增 `spec/ref/v1/declaration-digest.md` 与 schema `description`；`requirements.md` FR34、FR27/FR30 边界、`requirements-change.md` 第 42 轮；`design.md` D49/§9.16/D41/§9.12/§10、`design-change.md` 第 86 轮；`manual.md` §7.8/§7.11/§7.13/§8.1；治理 §8.1/§13.1/§13.4.2/§13.4.2.1；`architecture-change.md` 第 43 轮 | 编号先登记后引用；文档与代码/测试逐条对照；跨仓库标注：无 `pact-ref` 代码改动 |
+| [x] | 第 86 轮：登记 `FR34`/`D49`（`architecture.md` 附录 A）；新增 `spec/ref/v1/declaration-digest.md` 与 schema `description`；`requirements.md` FR34、FR27/FR30 边界、`requirements-change.md` 第 42 轮；`design.md` D49/§9.16/D41/§9.12/§10、`design-change.md` 第 86 轮；`manual.md` §7.8/§7.11/§7.13/§8.1；治理 §8.1/§13.1/§13.4.2/§13.4.2.1；`architecture-change.md` 第 43 轮 | 编号先登记后引用；文档与代码/测试逐条对照；跨仓库标注：无 `pact-ref` 代码改动；提交 `2bffcd8` |
 
 ### 验证与交付
 
@@ -103,6 +103,7 @@
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
+| 2026-10-31 | `declarationDigest` v1 第一步：语义接口摘要工具与 lint 漂移比对 | FR34 / D49 / `spec/ref/v1/declaration-digest.md` | `pact-analysis` 单测 5（含 golden）、`pact-cli` 单测 1、`ref_lint_e2e` 1；356 passed；`fmt`/`clippy` 通过；CI `41162194383` 成功；`2bffcd8` |
 | 2026-10-30 | B0：ContractCard 运行期加载、版本不可变与归档钉版并集 | FR32 / D47 | `pact-http` 单测 + e2e；338 passed；`fmt`/`clippy` 通过；`4b42778` |
 | 2026-10-30 | B1：RefBindings/ContractCard 显式重载（`POST /ref/reload` + CLI，`dryRun`/审计/ACL/原子快照） | FR33 / D48 | 单测 3 + `ref_reload_e2e` 7 + CLI e2e 1；349 passed；`fmt`/`clippy` 通过；`a514380` |
 | 2026-10-28 | ThingRef 写入路径校验（三态、URI profile、RefBindings 策略） | FR30 / D45 | `pact` `9893541`；317 passed；`pact-ref` `b8e759c` 46 passed |
