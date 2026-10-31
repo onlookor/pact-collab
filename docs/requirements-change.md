@@ -2,6 +2,20 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 47 轮，`refd` 动态写调用契约，FR37/D53）
+
+- **新增 FR37（D53，契约已定案，实现待做）**：`refd` 新增 `POST /v1/mutate`，把「执行外部写动作」收进治理平面，并用本地幂等台账保证写操作「至多生效一次、结果可追溯、崩溃不猜测」。`/v1/invoke` 保持只读，两者互不接受对方的 `sideEffect`。
+- **授权与分离**：端点 scope `ref:mutate` + 对象 ACL operation `mutate`，与 `ref:invoke`/`invoke` 完全分离；只读授权不自动升级为写授权。主体仍只来自验证后的凭据。
+- **`mcp-mutating` profile 必填**：`capability.tool.inputSchemaDigest`、`capability.idempotency {key, semantics}`、`capability.result.materialization ∈ {required, optional}`、`capability.auth.audience`、非空 `capability.failure`；缺一即 `403` 且不触达上游。`reference` 必须严格等于 `<server.id>/<tool.name>`，`operation` 必须等于 `tool.name`。
+- **请求与响应**：必填 `domain`/`type`/`reference`/`operation`/`idempotencyKey`，可选 `input` 与 `pactTokenId`；成功 `200` 返回 `{status: "succeeded", resultRef?, resultDigest?, replayed}`，`replayed=true` 表示结论来自台账重放。
+- **幂等台账**：`[mutate].journal` append-only JSONL；先写 `intent` 并 fsync 再调用上游，调用后写 `result` 并 fsync。同键同摘要重放、`in-doubt` 返回 `409 IdempotencyInDoubt`、同键异摘要 `409 IdempotencyConflict`、满额 `503 JournalFull`、台账不可用 `500 JournalUnavailable`。
+- **审计**：每次写 attempt 两条（`intent`/`result`）；`intent` 审计失败即拒绝且不触达上游，`result` 审计失败返回 `500 AuditUnavailable` 但台账保留结论。
+- **witness 与 compensation**：成功写后仍由参与者经 `/v1/resolve` 取引用并正常 `seed`/`produce` 产生 witness token；`failure.compensation` 仅为保留键，不做自动 saga/补偿，撤销也不在本轮。
+- **配置与启动 fail-closed**：`[mutate].journal`（存在 mutating profile 时必需）、`[mutate].max_entries`（缺省 10000，1..=1000000）；台账不可读/非法行或必填 profile 字段缺失即拒绝启动或请求。
+- **编号登记**：`FR37`/`D53`/`ref:mutate`/`mutate`/`[mutate]` 及子项/四个错误码已于本轮先登记到 `docs/architecture.md` 附录 A 再引用。
+- **测试（待实现）**：台账单元测试与 `refd` 集成测试见 `docs/design.md` §9.20 与 §10。
+- 其余 FR1–FR36、NFR1–NFR7 不变。
+
 ## 2026-10-31（第 46 轮，`refd` 动态只读调用，FR36/D52）
 
 - **新增 FR36（D52）**：`refd` 新增 `POST /v1/invoke`，把「读取外部制品」这一步收进治理平面：调用前按卡片声明的只读能力校验，调用后把结果物化为新的静态引用（`file://` + `sha256:`），后续参与者照常经 `POST /v1/resolve` 读取该引用，并以 witness token 记录物化确认。`resolve` 保持纯静态解析，不承担调用。

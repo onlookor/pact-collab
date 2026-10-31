@@ -1017,7 +1017,7 @@ spec:
    已在规范层收紧校验（FR29/D44）；新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查。
    **已完成**：可发现性 lint——对 `required=true` 检查 hidden、视图读取路径、Rule-R/consume 路径、保留证据与删除可区分性（5 个 warning code，`--strict` 视为失败）。
 4. **动态只读阶段（已完成，2026-10-31）**：`mcp-read` profile 校验、`refd` 的 `POST /v1/invoke`、`mcp` adapter（JSON-RPC `tools/call`）与内容寻址物化（FR36/D52）；结果经 `file://` 引用回到 `/v1/resolve`，参与者以正常 `seed`/`produce` 产生 witness token。动态写阶段与 `revoke` 仍未开始。
-5. **动态写阶段**：`mcp-mutating` profile；审计边车；witness/compensation。
+5. **动态写阶段（契约已定案，2026-10-31；实现待做）**：`mcp-mutating` profile、`POST /v1/mutate` 与幂等台账、两阶段审计、witness/compensation 边界（FR37/D53，§13.8）。
 6. **可选注册表**：只做发现，不做真相源。
 
 ### 13.2 测试
@@ -1468,6 +1468,159 @@ JWT/JWKS 验签、声明校验、`scope` 映射与统一 `401`；JWKS 文件/HTT
 - 不做本地幂等表、结果缓存、轮询或自动重试。
 - 不接受 Identifier 作为 `reference`；不做跨服务路由或服务发现。
 - 不把上游响应直接透传给调用方；调用方只拿到物化引用与摘要。
+
+### 13.8 `POST /v1/mutate`：动态写调用与幂等台账（2026-10-31 定案，实现待做）
+
+`mutate` 是 §13.1 阶段 5 的落点（FR37/D53）。目标：为 `mcp-mutating` 能力提供与只读调用**完全分离**的写入通道，使写操作「至多生效一次、结果可追溯、崩溃不猜测」；`refd` 仍不写 PACT 状态。
+
+#### 13.8.1 不变量
+
+1. **端点与授权分离**：写只走 `/v1/mutate`，端点 scope `ref:mutate`，对象 ACL operation `mutate`。`/v1/invoke` 与 `/v1/mutate` 互不接受对方的 `sideEffect`；只读授权不自动升级为写授权。
+2. **写意声明**：仅接受 `capability.sideEffect = mutating`；`read-only` 一律 `403`。
+3. **严格归属**：`reference` 必须**严格等于** `<capability.server.id>/<capability.tool.name>`，`operation` 必须等于 `capability.tool.name`；比只读的前缀匹配更严，写不允许任意工具路径。不满足 `400 InvalidReference`。
+4. **台账先于上游**：任何写 attempt 必须先落 `intent` 并 `fsync`，再调用上游；台账不可用即拒绝（`500 JournalUnavailable`），绝不「无台账写上游」。
+5. **不写 PACT**：不产生 token、不改 Counter/Archive、不校验 PACT read gate；witness 由参与者正常 `seed`/`produce` 产生。
+6. **不猜测**：崩溃窗口内的写标为 `in-doubt` 并阻断同键重试，宁可人工核对也不自动重试。
+
+#### 13.8.2 `mcp-mutating` profile 必填字段
+
+缺一即 `403 Forbidden`，且不触达上游：
+
+| 字段 | 要求 |
+|---|---|
+| `capability.kind` | 非空 |
+| `capability.sideEffect` | `mutating` |
+| `capability.server.id` | 已登记于 `[[mcp_servers]]` |
+| `capability.tool.name` | 非空，且 `reference`/`operation` 与之一致 |
+| `capability.tool.inputSchemaDigest` | `sha256:<64hex>`，写输入契约必须可钉版 |
+| `capability.idempotency.key` / `semantics` | 均非空；声明上游幂等键名与语义 |
+| `capability.result.materialization` | `required` 或 `optional`；写结果必须声明是否物化 |
+| `capability.auth.audience` | 非空；写操作必须声明目标受众 |
+| `capability.failure` | 非空；写失败必须可解释，可含保留键 `compensation` |
+
+#### 13.8.3 请求与响应
+
+```json
+{
+  "domain": "order",
+  "type": "shipment",
+  "reference": "mcp://erp.example/ship.create",
+  "operation": "ship.create",
+  "idempotencyKey": "order-42-ship-1",
+  "input": { "orderId": "42" },
+  "pactTokenId": "tok-..."
+}
+```
+
+| 字段 | 规则 |
+|---|---|
+| `domain` / `type` | 1–255 字符，非控制字符；不解释语义 |
+| `reference` | 非空 URI，≤ 65536；严格等于 `<server.id>/<tool.name>` |
+| `operation` | 1–255 字符，非控制字符；必须等于 `capability.tool.name` |
+| `idempotencyKey` | 必需，1–128，`[A-Za-z0-9._:-]`；**本地台账去重**，不只是透传 |
+| `input` | 可选对象，缺省按空对象；参与 `requestDigest`，原样传给 MCP `tools/call` |
+| `pactTokenId` | 可选，仅用于审计关联，永不用于授权 |
+
+成功响应 `200`：
+
+```json
+{ "status": "succeeded",
+  "resultRef": "file:///var/lib/refd/materialized/<sha256>.json",
+  "resultDigest": "sha256:<64hex>",
+  "replayed": false }
+```
+
+- `replayed=true` 表示该结论来自台账重放（上游未被再次调用）。
+- `materialization = required` 时物化失败视为该次写失败；`optional` 时允许无 `resultRef`（仅 `status`）。
+
+#### 13.8.4 授权与执行顺序
+
+固定顺序，先授权、后上游；台账先于上游：
+
+1. 解析 JSON（拒绝未知字段）→ 选择器与 `idempotencyKey` 校验 → 引用必须为绝对 URI；
+2. 认证（§13.6.3）→ 端点 scope `ref:mutate`；
+3. 对象 ACL operation `mutate`（§13.6.4）；
+4. profile 存在 → scheme 在卡片白名单 → `capability` 存在且 `sideEffect = mutating`；
+5. `mcp-mutating` profile 必填字段齐全（§13.8.2）→ 严格归属校验（§13.8.1 第 3 条）；
+6. 构造 `requestDigest` → 台账查询（冲突/在途直接应答）；
+7. 写 `intent` 并 `fsync` → 审计 intent（失败即中止，不触达上游）；
+8. 调用 `InvokerRegistry` → `mcp` adapter（`spawn_blocking`，单次上限 30s）；
+9. 物化（按 `materialization`）→ 写 `result` 并 `fsync` → 审计 result → 应答。
+
+#### 13.8.5 幂等台账与崩溃窗口
+
+- 文件：`[mutate].journal`（append-only JSONL，单写者，`O_APPEND` + 每次 `fsync`）。
+- 记录：`intent { key_scope, request_digest, ts }` 与 `result { key_scope, request_digest, status, result_ref?, result_digest?, ts }`。
+- 键作用域：`(actor, domain, type, reference, operation, idempotencyKey)`。
+- 请求摘要：`sha256` over 紧凑 JSON（键按字典序）`{domain,type,reference,operation,input}`。
+- 判定：
+
+| 台账状态 | 行为 |
+|---|---|
+| 无记录 | 正常执行 |
+| `intent` 无 `result` | `409 IdempotencyInDoubt`（不调上游、不重试） |
+| `result` 且摘要相同、`succeeded` | 重放 `resultRef`/`resultDigest`，`replayed=true` |
+| `result` 且摘要相同、`failed` | 重放失败结论 `502 UpstreamFailure`，`replayed=true` |
+| 有记录但摘要不同 | `409 IdempotencyConflict` |
+| 条目数达 `[mutate].max_entries` | `503 JournalFull`（不自动裁剪） |
+
+- 崩溃窗口（显式接受，不自动修复）：
+
+| 崩溃点 | 重启后状态 | 行为 |
+|---|---|---|
+| `intent` fsync 之前 | 无记录 | 上游未被调用，同键可重新执行 |
+| `intent` 之后、上游返回前 | `intent` 无 `result` | `409 IdempotencyInDoubt` |
+| 上游已执行、`result` fsync 之前 | `intent` 无 `result` | 同上（可能已生效，不猜测、不重试） |
+| `result` fsync 之后 | 终态 | 重放该结论 |
+
+- 启动：逐行解析，尾部半行（崩溃残留）截断并告警；完整非法行 ⇒ 拒绝启动。
+
+#### 13.8.6 两阶段审计
+
+- 沿用 §13.6.8 字段，`operation = "mutate"`；每次写 attempt 两条：`intent`（`status=ok`，仅记键摘要与 `requestDigest`）与 `result`（`status=ok|failed`，成功记 `resultDigest`）。
+- `intent` 审计写失败 ⇒ 拒绝请求且**不触达上游**；`result` 审计写失败 ⇒ `500 AuditUnavailable`，但台账已落 `result`，重放仍可得确定结论。
+- 不记录 `input`、上游响应正文与任何 bearer 令牌。
+
+#### 13.8.7 witness 与 compensation
+
+- 成功写后前端以 `resultRef` 调 `/v1/resolve` 取句柄，再由参与者在 PACT 侧 `seed`/`produce` 产出 witness token；`refd` 不写 PACT。
+- `failure.compensation` 只是保留键，**不做自动 saga / 自动补偿**：补偿是另一张 `mutating` 卡片加域内规则显式调用，承担「补偿失败」的语义由域负责。
+- 不提供撤销（`revoke`）；撤销若需要，是另一张写卡片。
+
+#### 13.8.8 配置
+
+```toml
+[mutate]
+journal = "/var/lib/refd/mutate-journal.jsonl"  # 存在 mutating profile 时必需
+max_entries = 10000                            # 1..=1000000
+```
+
+- 复用 `[materialize]` 与 `[[mcp_servers]]`（§13.7.4）。
+- 启动 fail-closed：存在 `mcp-mutating` profile 时，必须配置 `[mutate].journal`（父目录存在且可写）、`[materialize]`，且 `capability.server.id` 已登记；台账不可读/非法行或 `max_entries` 越界 ⇒ 拒绝启动。
+
+#### 13.8.9 错误模型
+
+| HTTP | `code` | 触发 |
+|---|---|---|
+| 400 | `InvalidRequest` | 未知字段、选择器非法、`idempotencyKey` 非法 |
+| 400 | `InvalidReference` | 引用非 URI、scheme 越界、归属或 `operation` 不符 |
+| 403 | `Forbidden` | 缺 `ref:mutate`、ACL 未命中、`sideEffect` 非 mutating、profile 必填字段缺失 |
+| 404 | `NotFound` | profile 不存在 |
+| 409 | `IdempotencyConflict` | 同键异摘要 |
+| 409 | `IdempotencyInDoubt` | 同键上次结果不确定 |
+| 500 | `JournalUnavailable` | 台账不可打开/追加/fsync |
+| 500 | `AuditUnavailable` | 审计写失败（intent 阶段则不触达上游） |
+| 502 | `UpstreamFailure` | 上游明确失败（审计 `status=failed`） |
+| 503 | `JournalFull` | 台账条目达到上限 |
+| 504 | `UpstreamTimeout` | 上游或总时限超时 |
+
+#### 13.8.10 明确不做
+
+- 不自动重试、不轮询上游、不做自动 saga/补偿、不提供 `revoke`。
+- 不复用 `/v1/invoke` 承载写；不把 `ref:invoke` 视为写授权。
+- 不做跨服务路由或服务发现。
+- 不把上游响应直接透传给调用方；调用方只拿到物化引用与摘要。
+- 台账不进入 PACT 事件日志，也不参与重放/压缩。
 
 ---
 

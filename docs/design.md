@@ -58,6 +58,7 @@
 | D50 | WASM 本地入口票面校验与绑定注入（FR30，2026-10-31，用户要求继续推进） | 把 `pact-http` 已有的入口校验语义抽为 `pact-ref-spec::validate_entry` 纯函数（三态输入、URI profile、`required`/`allowIdentifier`/`schemes`/`onUnknownScheme`/`value`/`maxLength`/`pinning: required`），REST 与 WASM 共用，避免两套规范化。`PactHost` 新增 `set_ref_bindings` / `remove_ref_bindings` / `clear_ref_bindings`：宿主以 **JSON 字符串**注入 RefBindings（解析后立即 `validate`，按 `metadata.domain` 累积），不在 WASM 内读文件；`prepare_seed` / `prepare_produce` 在进入 kernel 前校验，成功写规范化票面。JS `thing_ref` 省略与 `null` 都表示 `∅`（无“字段缺失”态），因此不产生 `ThingRefMissing`；错误码沿用 `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`。绑定注入是可选能力：未注入时只做结构校验，行为与本轮之前一致。ContractCard 运行期钉版与 Archive 检查不在本轮范围（仍只在 REST 边界）。 | 入口校验必须与 REST 同一语义，否则同一 `.pact` + 同一绑定在两种分发形态下判定不同；抽纯函数是最小共享面。绑定由宿主注入而非 WASM 读文件，守住“WASM 无 IO、持久化归宿主”的既有边界，也避免把 YAML 解析器拉进 wasm。JS 无法表达“缺失”三态，强行区分只会在宿主层制造假语义，故省略即 `∅`，与 MCP 省略语义一致。绑定缺省时保持旧行为，避免要求所有嵌入部署先配绑定。 |
 | D51 | `refd` OIDC 验证器分层（FR35，2026-10-31，用户要求继续推进） | `ref-auth` 定义 `JwksSource`（`fetch() -> Result<Vec<u8>, String>`）与 `OidcAuthenticator`：只做 JWT 验签、声明校验、`sub`→actor 与 `scope` claim 解析，持有有界缓存（≤ 64 密钥、按 `cache_ttl_seconds` 复用）；未知 `kid` 触发一次强制刷新，30s 窗口内限频并复用当前缓存。`refd` 注入 `FileJwksSource`（常规文件、≤ 1 MiB）或 `HttpJwksSource`（`ureq` + rustls、超时、不跟随重定向、2xx、响应 ≤ 1 MiB），网络 IO 不进认证库。算法白名单 `RS256`/`ES256`/`EdDSA`（白名单外含 `none`/`HS*` 拒绝），`crit` 非空拒绝，无 `kid` 仅唯一可用密钥接受；`iss`/`aud`/`exp`/`nbf` 由 `jsonwebtoken` 校验（`leeway ≤ 60`）。认证调用在 `spawn_blocking` 执行；任何失败一律 `AuthError::Invalid` → `401` + `WWW-Authenticate: Bearer realm="pact-ref"`。 | OIDC 只做验证不做签发/discovery，避免把 `refd` 变成 IdP 代理；JWKS 来源由 `refd` 注入，让认证库保持无网络、可用假源做单测。未知 `kid` 必须可刷新（IdP 轮换密钥），但不能每个请求都拉取（放大型 SSRF/DoS），故限频并复用缓存。算法白名单与“无 `kid` 需唯一密钥”封住算法混淆；`crit` 一律拒绝，因为当前没有可协商的扩展。失败原因不细分且统一 `401`，避免给令牌探测提供侧信道；阻塞线程池防止网络 JWKS 卡住异步运行时。 |
 | D52 | `refd` 动态只读调用与物化分层（FR36，2026-10-31，用户要求继续推进） | 新增 `POST /v1/invoke`：端点 scope `ref:invoke`，对象 ACL operation `invoke`，仅接受 `capability.sideEffect = read-only`；`reference` 必须以 `capability.server.id + "/"` 开头且工具路径非空。`refd` 引入 `InvokerRegistry` 与 `mcp` adapter：JSON-RPC 2.0 `tools/call`，上游失败映射 `502 UpstreamFailure` 且审计 `status=failed`；成功结果按内容寻址写入 `[materialize].dir/<sha256>.json`（`.tmp` + rename 原子写），返回 `resultRef`（`file://`）与 `resultDigest`。启动 fail-closed：只读能力 profile 的 `server.id` 必须登记于 `[[mcp_servers]]` 且必须配置 `[materialize]`；`endpoint` 默认只允许 `https://`，仅回环主机可经 `allow_plaintext` 放宽；`bearer_token_env` 缺失或为空拒绝启动。调用走 `spawn_blocking`，总上限 30s。 | 动态调用必须落成静态引用才能进入 PACT 证据链：治理平面不写 PACT 状态，物化 + 现有 `/v1/resolve` 让参与者用正常 `seed`/`produce` 产生 witness token，避免在治理面引入第二套状态。只读闸门与引用归属校验把“调用任意工具”收窄为“调用卡片声明的工具”。上游失败不细分并统一 502，避免泄露上游详情；不重试、不轮询，保持确定性。`allow_plaintext` 仅回环且显式开启，既让本地假 MCP 服务可测，又不放宽生产默认。结果内容寻址使重复调用天然幂等，且可直接被 `resolve` 消费。 |
+| D53 | `refd` 动态写调用与幂等台账分层（FR37，2026-10-31 定案；实现待做） | 新增 `POST /v1/mutate`：端点 scope `ref:mutate`、对象 ACL operation `mutate`，仅接受 `capability.sideEffect = mutating`；`/v1/invoke` 与 `/v1/mutate` 互不接受对方的 `sideEffect`，只读授权不自动升级为写授权。`refd` 新增 `mcp-mutating` profile 校验（`tool.inputSchemaDigest`、`idempotency`、`result.materialization`、`auth.audience`、非空 `failure` 必填）与 `[mutate].journal` append-only 幂等台账：先写 `intent`（键 + 请求摘要）fsync，调用后写 `result`（`succeeded`/`failed`/`in-doubt`）fsync；同键同摘要成功重放、失败重放、`in-doubt` 返回 `409 IdempotencyInDoubt`，同键异摘要 `409 IdempotencyConflict`，台账满 `503 JournalFull`。审计边车改为每次写 attempt 两条：`intent` 失败即拒绝且不触达上游，`result` 失败返回 `500 AuditUnavailable` 但台账保留结果。`reference` 必须严格等于 `<server.id>/<tool.name>`，`operation` 必须等于 `tool.name`；补偿不做自动 saga，`failure.compensation` 只是保留键，实际补偿由另一张 `mutating` 卡片加域内规则显式调用。 | 写操作的风险与只读不同，复用 `/v1/invoke` 会让既有 `ref:invoke` 授权静默获得写能力；独立端点、scope 与 ACL operation 把最小权限落到实处。mutating 上游可能已执行而响应丢失，因此必须有本地两阶段台账：`intent` 先于上游、`result` 后于上游，崩溃窗口一律标为 `in-doubt` 并阻断同键重试，宁可人工核对也不猜测性重试。审计与台账分离：审计面向可观测与追责（fail-closed），台账面向幂等与崩溃恢复；两者都不进入 PACT 事件日志，witness 仍由参与者正常 `seed`/`produce` 产生。补偿属于领域语义，治理平面只执行被显式调用的能力，避免在治理层引入第二套编排状态。 |
 
 ## 1. 总体结构
 
@@ -1220,13 +1221,108 @@ allow_plaintext = false             # 仅回环主机可设 true
 
 **测试**：`adapters/mcp` 单测覆盖 `tools/call` 请求形状、HTTP 非 2xx、JSON-RPC error、超限与物化摘要；`refd` 集成测试覆盖 invoke 成功 → `file://` → `/v1/resolve` 闭环、mutating `403`、缺 ACL `403`、上游失败 `502` 且审计 `failed`、缺 `[[mcp_servers]]`/缺 `[materialize]` 启动失败、非回环 `http://` 拒绝。
 
+### 9.20 refd 动态写调用与幂等台账（D53，契约已定案、实现待做）
+
+**目标**：为 `mcp-mutating` 能力提供一条与只读调用**完全分离**的写入通道，使写操作「至多生效一次、结果可追溯、崩溃不猜测」；`refd` 仍不写 PACT 状态，witness 由参与者正常 `seed`/`produce` 产生。
+
+**分层**：
+
+| 层 | 职责 |
+|---|---|
+| `ref-core` | 新增 `MutateRequest { domain, type_name, reference, actor, operation, idempotency_key, input }`、`Mutation { status, result_ref?, result_digest?, replayed }`、`MutationStatus::{Succeeded, Failed}`（复用 `InvocationStatus` 语义，不复用 `InvokeRequest`，避免端点混用） |
+| `ref-auth` | 新增 `SCOPE_MUTATE = "ref:mutate"`；ACL operation `mutate`（与 `invoke` 互不蕴含） |
+| `refd`（新增 journal 模块） | append-only JSONL 幂等台账：`intent`/`result` 两阶段、键作用域、请求摘要、重放与冲突判定；启动时校验并读到末尾 |
+| `adapters/mcp` | 复用 `McpAdapter` 的 `tools/call` 与物化实现；`mcp-mutating` 不新增 adapter 代码路径，仅多一层 profile 校验与台账包装 |
+| `refd`（handler） | `POST /v1/mutate` 的认证、scope、ACL、mutating 闸门、profile 校验、台账两阶段、审计两阶段与错误映射 |
+
+**`mcp-mutating` profile 必填字段**（缺一即 `403 Forbidden`，不触达上游）：
+
+- `capability.kind`、`capability.sideEffect = mutating`；
+- `capability.server.id`（须登记于 `[[mcp_servers]]`）与 `capability.tool.name`；
+- `capability.tool.inputSchemaDigest`（`sha256:<64hex>`）——写操作的输入契约必须可钉版；
+- `capability.idempotency { key, semantics }`——声明上游的幂等键名与语义，`semantics` 非空；
+- `capability.result.materialization ∈ { required, optional }`——写结果必须声明是否物化；
+- `capability.auth.audience`——写操作必须声明目标受众；
+- `capability.failure` 非空——写失败必须可解释（可含保留键 `compensation`）。
+
+`reference` 必须**严格等于** `<capability.server.id>/<capability.tool.name>`（比只读的前缀匹配更严，写不允许任意工具路径）；`operation` 必须等于 `capability.tool.name`。任一不符 → `400 InvalidReference`。
+
+**请求/响应**（与 OpenAPI `MutateRequest` / `Mutation` 一致）：
+
+```json
+// 请求
+{ "domain": "order", "type": "shipment", "reference": "mcp://erp.example/ship.create",
+  "operation": "ship.create", "idempotencyKey": "order-42-ship-1",
+  "input": { "orderId": "42" }, "pactTokenId": "tok-..." }
+// 成功（首次执行）
+{ "status": "succeeded", "resultRef": "file:///var/lib/refd/materialized/<sha256>.json",
+  "resultDigest": "sha256:<64hex>", "replayed": false }
+// 成功（同键同摘要重放）
+{ "status": "succeeded", "resultRef": "file:///var/lib/refd/materialized/<sha256>.json",
+  "resultDigest": "sha256:<64hex>", "replayed": true }
+```
+
+**固定处理顺序**（先授权、后上游；台账先于上游）：解析 JSON（拒绝未知字段）→ `domain`/`type`/`operation` 选择器校验 → `idempotencyKey` 格式校验（`^[A-Za-z0-9._:-]{1,128}$`）→ 引用必须为绝对 URI → 端点 scope `ref:mutate` → 对象 ACL `mutate` → profile 必须存在 → scheme 必须在卡片白名单 → `capability` 存在且 `sideEffect == mutating` → `mcp-mutating` profile 必填字段齐全 → `reference` 严格等于 `<server.id>/<tool.name>`、`operation == tool.name` → 构造 `requestDigest` → 台账查询（冲突/在途→直接应答）→ 写 `intent` 并 fsync → **审计 intent**（失败则中止，不触达上游）→ 调用 invoker（`spawn_blocking`，单次上限 30s）→ 物化（`materialization = required` 时物化失败视为该次写失败）→ 写 `result` 并 fsync → 审计 result → 应答。
+
+**幂等台账**：
+
+- 文件：`[mutate].journal` 指向的路径（append-only JSONL，单写者，`O_APPEND` + 每次 `fsync`）。
+- 记录两种 `kind`：`intent { key_scope, request_digest, ts }` 与 `result { key_scope, request_digest, status, result_ref?, result_digest?, ts }`。
+- 键作用域 `key_scope = (actor, domain, type, reference, operation, idempotencyKey)`；`requestDigest = sha256(canonicalJson({domain,type,reference,operation,input}))`（紧凑 JSON、键按字典序，沿用 D49 的规范化风格）。
+- 判定：
+  - 有 `intent` 无 `result` ⇒ 上次进程在调用上游窗口内崩溃 → `409 IdempotencyInDoubt`，不重试、不调上游；
+  - 有 `result` 且 `requestDigest` 相同：`succeeded` 重放原 `resultRef`/`resultDigest` 且 `replayed=true`；`failed` 重放失败结论（`502 UpstreamFailure`，`replayed=true`）；
+  - 有 `result` 或 `intent` 但 `requestDigest` 不同 ⇒ `409 IdempotencyConflict`；
+  - 无记录 ⇒ 正常执行。
+- 容错：台账文件无法打开/追加/fsync ⇒ `500 JournalUnavailable`（fail-closed，绝不「无台账写上游」）；条目数达到 `[mutate].max_entries` ⇒ `503 JournalFull`（不自动裁剪，需运维归档）。启动时逐行解析，半行尾部（崩溃残留）截断并告警，非法完整行 ⇒ 拒绝启动。
+
+**崩溃窗口**（显式接受，不自动修复）：
+
+| 崩溃点 | 重启后状态 | 行为 |
+|---|---|---|
+| `intent` fsync 之前 | 无记录 | 上游未被调用，同键可重新执行 |
+| `intent` 之后、上游返回前 | `intent` 无 `result` | `409 IdempotencyInDoubt`，需人工核对上游 |
+| 上游已执行、`result` fsync 之前 | `intent` 无 `result` | 同上（可能已生效，不猜测、不重试） |
+| `result` fsync 之后 | 终态 | 重放该结论 |
+
+**两阶段审计**：沿用 `ref-core::AuditEvent`，`operation = "mutate"`。每次写 attempt 两条：`intent`（`status = ok`，仅记键摘要与 `requestDigest`）与 `result`（`status = ok|failed`，成功记 `resultDigest`）。`intent` 审计写失败 ⇒ 拒绝请求且**不触达上游**；`result` 审计写失败 ⇒ 返回 `500 AuditUnavailable`，但台账已落 `result`，重放仍可得到确定结论。不记录 `input`、上游响应正文与 bearer 令牌。
+
+**配置**：
+
+```toml
+[materialize]
+dir = "/var/lib/refd/materialized"
+max_bytes = 1048576
+
+[[mcp_servers]]
+id = "mcp://erp.example"
+endpoint = "https://erp.example/mcp"
+timeout_ms = 10000
+bearer_token_env = "ERP_TOKEN"
+allow_plaintext = false
+
+[mutate]
+journal = "/var/lib/refd/mutate-journal.jsonl"  # 存在 mutating profile 时必需
+max_entries = 10000                            # 1..=1000000
+```
+
+**启动 fail-closed**：存在 `mcp-mutating` 能力 profile 时，必须配置 `[mutate].journal`（父目录存在且可写）、`[materialize]`，且 `capability.server.id` 必须登记于 `[[mcp_servers]]`；台账不可读/非法行 ⇒ 拒绝启动；`max_entries` 越界 ⇒ 拒绝启动。
+
+**错误映射**：同键异摘要 → `409 IdempotencyConflict`；同键 `in-doubt` → `409 IdempotencyInDoubt`；台账不可用 → `500 JournalUnavailable`；台账满 → `503 JournalFull`；审计写失败 → `500 AuditUnavailable`；上游明确失败 → `502 UpstreamFailure`（`retryable=false`，消息固定）；总时限超时 → `504 UpstreamTimeout`；scope/ACL/mutating 闸门或 profile 缺失 → `403`；引用/归属/operation 不符 → `400 InvalidReference`；未知字段与幂等键非法 → `400 InvalidRequest`。
+
+**witness 与 compensation**：成功写后前端以 `resultRef` 调 `/v1/resolve` 取句柄，再由参与者在 PACT 侧 `seed`/`produce` 产出 witness token；`refd` 不写 PACT。`failure.compensation` 只是保留键，**不做自动 saga / 自动补偿**：补偿是另一张 `mutating` 卡片加域内规则显式调用，承担「补偿失败」的语义由域负责。
+
+**边界**：v1 不自动重试、不轮询上游、不提供撤销（revoke）；`capability.timeoutMs` 不参与执行；`/v1/invoke` 与 `/v1/mutate` 互不接受对方 `sideEffect`；台账不进入 PACT 事件日志，也不参与重放/压缩。
+
+**测试**：台账单测覆盖 intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断恢复与非法行拒绝启动；`refd` 集成测试覆盖 mutate 成功 → `file://` → `/v1/resolve` 闭环、同键重放 `replayed=true` 且上游仅被调用一次、只读授权访问 `/v1/mutate` `403`、`mcp-read` 卡片 `403`、intent 审计失败时上游未被调用、result 审计失败返回 `500` 但重放可得结论、缺 `[mutate].journal`/缺必填 profile 字段启动或请求失败。
+
 ## 10. 测试策略（FR13，四层）
 
 | 层次 | 范围 | 位置 |
 |------|------|------|
-| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验**；**D51 OIDC 算法白名单、`crit` 拒绝、`kid` 选键、未知 `kid` 限频刷新与 JWKS 失败**；**D52 mcp adapter `tools/call` 请求形状、错误分类与内容寻址物化** | 各 crate `#[cfg(test)]` |
+| 单元测试 | core 规则函数/GateExpr 求值/validate_domain；parser 文法与错误报告；analysis/compose；store 读写；**读审计 schema（D43 旧/新记录兼容、视图计数往返）**；**D44 retention 语法、生命周期策略组合、Tombstone 字段与时间戳校验、可发现性五类 warning code**；**D45 URI profile / Identifier 文法 / 三态 / 绑定策略**；**D46 未知 scheme 三分支 / value 形态 / 钉版判定（写入与归档）**；**D47 卡片加载/索引/闭环；D48 审计 JSONL、审计失败与并发单飞**；**D49 摘要规范化、条件文本、golden 向量与运行期三模式**；**D50 共享入口纯函数、WASM 绑定注入与写入前校验**；**D51 OIDC 算法白名单、`crit` 拒绝、`kid` 选键、未知 `kid` 限频刷新与 JWKS 失败**；**D52 mcp adapter `tools/call` 请求形状、错误分类与内容寻址物化**；**D53 幂等台账（intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断与非法行拒绝启动）** | 各 crate `#[cfg(test)]` |
 | 属性测试 | Rule-R 后 Counter 逐字节不变；Rule-P 后前驱仍在 Counter；Rule-E 只影响目标 token 与 Archive；GateExpr 求值不改状态（纯度）；apply+重放等价 | pact-core proptest |
-| 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）**、**D51 `refd` OIDC（有效令牌 200、过期/错误 `aud`/`iss` 401 带 `WWW-Authenticate`、无端点 scope 403）**；**D52 `refd` invoke（成功→`file://`→resolve 闭环、mutating/ACL 403、上游失败 502 审计 failed、启动 fail-closed）** | crates/tests |
+| 集成测试 | 引擎命令流（多域、并发命令串行化）、store 崩溃恢复（JSONL 半行截断、索引重建）、订阅通知时序、**Rule-E 幂等（request_id 去重与跨重启生效）**、**D43 视图审计（开关、按类型计数、写失败 fail-closed）**、**D45 入口校验（原始 HTTP 缺失字段、显式 `null`、绑定策略拒绝）**、**D51 `refd` OIDC（有效令牌 200、过期/错误 `aud`/`iss` 401 带 `WWW-Authenticate`、无端点 scope 403）**；**D52 `refd` invoke（成功→`file://`→resolve 闭环、mutating/ACL 403、上游失败 502 审计 failed、启动 fail-closed）**；**D53 `refd` mutate（成功→resolve 闭环、同键重放 `replayed=true` 且上游仅调用一次、只读授权 403、`mcp-read` 卡片 403、intent 审计失败时上游未被调用、result 审计失败 500 但重放可得结论、缺 `[mutate].journal` 启动失败）** | crates/tests |
 | 端到端 + 回归 | 黄金轨迹逐事件比对：软件工程生命周期 t₀–t₁₀、医疗路径 t₁–t₁₃（via 全部通过点）、ReAct 循环（循环拓扑 + Counter O(1)）、**§4.2 区分性场景 State A/B**（via 溯源敏感性回归锚点）；MCP 与 REST 契约等价；无人值守全流程；**Counter/Archive 视图审计（D43：按类型暴露计数、匿名、写失败 500）**；**`pact ref lint --tombstones` 目录展开、JSON/人类输出与退出码（D44）**；**可发现性告警在真实二进制上的 JSON 输出与 `--strict` 退出码**；**D47 卡片钉版归档与重复版本拒绝**；**D48 显式重载（dryRun 报告、失败保持旧状态、审计/ACL/认证）与真实二进制 `pact ref reload`**；**D49 运行期摘要比对（`off`/`warn`/`enforce`、未记录摘要与无绑定不比较、`enforce` 拒绝且不加载）** | 阶段 4/5 的 e2e 测试 |
 | v2 接口安全 | TLS/mTLS 握手与自定义 CA、Ed25519 签名正/负（请求体篡改、nonce 重放、参与者不匹配）、`/mcp` 静态 Bearer/信任模式、OIDC 正/负（iss/aud/exp/nbf/alg/crit/claim 映射/未知 kid）、RFC 9728 元数据、IdP 不可达 503、内部能力令牌不泄露 | `crates/pact-http/tests/nfr6_v2.rs`（含本地 TLS/mTLS 与 mock IdP） |
 | WASM 门禁 | `wasm32-unknown-unknown` 构建 + wasm 目标 clippy + ABI 版本断言 + 最小语义冒烟（validate/analyze）+ 体积上限（raw ≤ 600 KiB、gzip ≤ 200 KiB）+ Node 持久化测试（含 D50 绑定注入与写入前校验） | `.github/workflows/ci.yml` 的 `wasm` job；脚本 `crates/pact-wasm/js/ci-smoke.js` |

@@ -6,12 +6,13 @@ info:
     ThingRef 的解析与描述接口。治理平面不读写 PACT Counter/Archive，也不校验 PACT
     的 read gate；参与者凭 PACT token 取得票面后调用本平面，两边权限都需满足。
 
-    首版包含 resolve / describe / invoke。invoke 仅接受 `capability.sideEffect =
-    read-only` 的卡片，结果必须物化为新的静态引用（`resultRef` + `resultDigest`）；
-    mutating 能力与 revoke 随动态写阶段另行定案。治理侧不解释 PACT 语义：domain /
-    type 只用于选择 profile 与 ACL。
+    首版包含 resolve / describe / invoke / mutate。invoke 仅接受 `capability.sideEffect =
+    read-only` 的卡片，结果必须物化为新的静态引用（`resultRef` + `resultDigest`）；mutate
+    仅接受 `capability.sideEffect = mutating` 的卡片，经本地幂等台账保证「至多生效一次」，
+    与 invoke 的 scope 和 ACL operation 完全分离。mutate 的契约定案于动态写阶段（FR37/D53），
+    实现待做。治理侧不解释 PACT 语义：domain / type 只用于选择 profile 与 ACL。
 
-    设计依据见 `docs/thingref-governance.md` §13.6。
+    设计依据见 `docs/thingref-governance.md` §13.6–§13.8。
 servers:
   - url: https://ref.example.com
 security:
@@ -149,6 +150,49 @@ paths:
         "502": { $ref: "#/components/responses/UpstreamFailure" }
         "503": { $ref: "#/components/responses/Unavailable" }
         "504": { $ref: "#/components/responses/UpstreamTimeout" }
+  /v1/mutate:
+    post:
+      operationId: mutateCapability
+      summary: 调用写能力并经幂等台账返回确定结论
+      description: |
+        需要 scope `ref:mutate` 与匹配的对象 ACL（operation `mutate`）。仅接受
+        `capability.sideEffect = mutating` 的卡片；只读卡片返回 403。`reference` 必须
+        严格等于 `<server.id>/<tool.name>`，`operation` 必须等于 `tool.name`。请求必须
+        携带 `idempotencyKey`：服务先写 `intent` 并 fsync 再调用上游，上游返回后写
+        `result`；同键同摘要的重放返回 `replayed=true` 且不再调用上游，同键异摘要返回
+        409 `IdempotencyConflict`，上次崩溃于上游窗口内返回 409 `IdempotencyInDoubt`。
+        结果按 `capability.result.materialization` 物化为 `file://` 引用。v1 不自动重试、
+        不轮询、不做 saga/自动补偿。契约见 `docs/thingref-governance.md` §13.8（实现待做）。
+      parameters:
+        - $ref: "#/components/parameters/TraceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MutateRequest" }
+      responses:
+        "200":
+          description: mutated or replayed
+          headers:
+            X-Trace-Id:
+              $ref: "#/components/headers/TraceId"
+            Cache-Control:
+              description: 固定为 no-store
+              schema: { type: string, const: "no-store" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Mutation" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/IdempotencyConflict" }
+        "413": { $ref: "#/components/responses/RequestTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "502": { $ref: "#/components/responses/UpstreamFailure" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
 components:
   securitySchemes:
     bearerAuth:
@@ -158,7 +202,8 @@ components:
       description: |
         OIDC JWT 或受控静态令牌。主体取自验证后的 `sub`，请求体不接受 `actor`。
         端点 scope：`ref:resolve`（/v1/resolve）、`ref:describe`（/v1/describe）、
-        `ref:invoke`（/v1/invoke）。
+        `ref:invoke`（/v1/invoke）、`ref:mutate`（/v1/mutate）。`ref:invoke` 与
+        `ref:mutate` 互不蕴含，只读授权不自动升级为写授权。
   parameters:
     TraceId:
       name: X-Trace-Id
@@ -245,6 +290,13 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     UpstreamTimeout:
       description: adapter 超时
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    IdempotencyConflict:
+      description: |
+        幂等冲突。`IdempotencyConflict` 表示同键不同请求摘要；
+        `IdempotencyInDoubt` 表示同键上一次写已越过 intent 但结论未知（不自动重试）。
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -472,6 +524,67 @@ components:
           type: string
           pattern: "^sha256:[0-9a-f]{64}$"
           description: 与 `resultRef` 一致的内容摘要
+    MutateRequest:
+      type: object
+      additionalProperties: false
+      required: [domain, type, reference, operation, idempotencyKey]
+      properties:
+        domain:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+        type:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+        reference:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: 必须严格等于 `<server.id>/<tool.name>`
+        operation:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+          description: 必须等于 `capability.tool.name`
+        idempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: "^[A-Za-z0-9._:-]+$"
+          description: 必需；本地幂等台账去重，参与 `requestDigest`
+        input:
+          description: 传给 MCP 工具的参数对象；缺省按空对象处理，参与 `requestDigest`
+          type: object
+          additionalProperties: true
+        pactTokenId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: "^[A-Za-z0-9._:-]+$"
+          description: 可选，仅用于审计关联，永不用于授权
+    Mutation:
+      type: object
+      additionalProperties: false
+      required: [status, replayed]
+      properties:
+        status:
+          type: string
+          enum: [succeeded]
+        resultRef:
+          type: string
+          minLength: 1
+          description: 物化结果的 `file://` 引用；`materialization=optional` 时可缺省
+        resultDigest:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: 与 `resultRef` 一致的内容摘要
+        replayed:
+          type: boolean
+          description: true 表示结论来自幂等台账重放，上游未被再次调用
     Error:
       type: object
       additionalProperties: false
@@ -496,6 +609,10 @@ components:
             - UpstreamFailure
             - Unavailable
             - UpstreamTimeout
+            - IdempotencyConflict
+            - IdempotencyInDoubt
+            - JournalUnavailable
+            - JournalFull
         message: { type: string, minLength: 1 }
         traceId:
           type: string

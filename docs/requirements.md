@@ -335,6 +335,19 @@
 - **启动约束（fail-closed）**：存在只读能力 profile 时，其 `capability.server.id` 必须已登记于 `[[mcp_servers]]`，且必须配置 `[materialize]`；`bearer_token_env` 未设置或为空拒绝启动。
 - **边界**：`mcp-mutating`（动态写阶段）、审计边车、witness/compensation 不在本需求；`refd` 不提供写操作执行路径。
 
+### FR37 refd 动态写调用与幂等台账（D53）
+
+- **定位**：`refd` 新增 `POST /v1/mutate`，执行卡片声明为 `capability.sideEffect = mutating` 的能力；结果仍物化为静态引用，witness token 由参与者以正常 `seed`/`produce` 产生。治理平面仍不写 PACT Counter/Archive，也不校验 PACT gate。
+- **授权（两层，独立于只读）**：端点 scope `ref:mutate`；对象 ACL operation `mutate`。`ref:invoke` 不蕴含 `ref:mutate`，`/v1/invoke` 与 `/v1/mutate` 互不接受对方的 `sideEffect`；任一层不满足返回 `403`。
+- **`mcp-mutating` profile**：卡片必须声明 `capability.kind`、`server.id`、`tool.name`、`tool.inputSchemaDigest`、`sideEffect = mutating`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience` 与非空 `failure`；缺失或不满足在启动与请求期均拒绝（fail-closed）。`failure` 中保留键 `compensation` 可给出补偿能力引用，但 `refd` 不解析、不自动触发。
+- **请求**：`{domain, type, reference, operation, idempotencyKey, input?, pactTokenId?}`；`reference` 必须严格等于 `<capability.server.id>/<capability.tool.name>`；`operation` 必须等于 `capability.tool.name`；`pactTokenId` 仅作审计关联，`refd` 不校验其在 PACT 中的存在性；未知字段拒绝（`400 InvalidRequest`）。
+- **幂等台账**：`[mutate].journal` 为 append-only JSONL，每条 attempt 先写 `intent`（键 + 请求摘要）fsync，再写 `result`（`succeeded` / `failed` / `in-doubt`）fsync；键作用域为 `(actor, domain, type, reference, operation, idempotencyKey)`。同键同摘要：`succeeded` 返回原结果（`replayed=true`），`failed` 重放原失败，`in-doubt` 返回 `409 IdempotencyInDoubt`；同键异摘要返回 `409 IdempotencyConflict`；台账达到 `max_entries` 返回 `503 JournalFull`。
+- **崩溃语义**：`intent` 落盘后、`result` 落盘前崩溃（含上游超时或连接中断）→ 同键后续请求 `409 IdempotencyInDoubt`；`refd` 不自动重试、不猜测上游是否已执行、不提供自动对账；`result` 落盘后崩溃 → 同键可安全重放。
+- **审计边车**：沿用 `ref-audit`，每次写 attempt 记 `intent` 与 `result` 两条，含 `operation = "mutate"`、`sideEffect = mutating`、`settlement`、`idempotencyKey`、`resultDigest`；不记录 `input`、上游响应正文、物化内容或 bearer 令牌。`intent` 写失败 → `500 AuditUnavailable` 且不触达上游；`result` 写失败 → `500 AuditUnavailable`，台账保留可核对结果。
+- **失败语义**：上游明确失败 → `502 UpstreamFailure`（台账 `failed`，审计 `status=failed`）；超时或连接中断 → `504 UpstreamTimeout`（台账与审计 `in-doubt`）；物化超限或写入失败 → 不返回部分结果。
+- **启动约束（fail-closed）**：存在 `mutating` 能力 profile 时，必须配置 `[mutate].journal`（父目录存在、可解析、条目数 ≤ `max_entries`）与 `[materialize]`，`capability.server.id` 必须登记于 `[[mcp_servers]]`；台账中同键异摘要或非法行拒绝启动。
+- **边界**：不做自动重试、轮询、后台任务、跨服务路由、自动 saga/compensation 或结果缓存清理；`revoke`、可选注册表与 conformance runner 不在本需求。
+
 ## 5. 非功能需求
 
 - **NFR1 语义保真**：核心规则实现为纯函数；以论文中的执行轨迹（软件工程生命周期、医疗路径、ReAct 循环、§4.2 区分性场景 State A/B）作为黄金测试用例。

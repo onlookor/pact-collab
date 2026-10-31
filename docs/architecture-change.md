@@ -2,6 +2,17 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 49 轮，治理平面动态写调用契约，FR37/D53）
+
+- 附录 A 已登记 `FR37`、`D53`、`ref:mutate`、`mutate`、`[mutate]` 及子项、`IdempotencyConflict`/`IdempotencyInDoubt`/`JournalUnavailable`/`JournalFull`（权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0 / §9.20）。
+- 架构正文新增 §2.9「治理平面动态写调用（FR37/D53，契约已定案、实现待做）」：给出 mutate 调用链（认证 → 端点 scope `ref:mutate` → 请求校验 → 对象 ACL `mutate` → profile → 幂等台账 intent → 审计 intent → `InvokerRegistry` → `mcp` adapter → 物化 → 台账 result → 审计 result），并明确五条边界——端点与授权分离、台账先于上游、上游失败统一 `502`、启动 fail-closed、witness 由参与者产生。
+- 组件视图（契约层）：`refd` 将新增幂等台账模块；`ref-core` 增加 `MutateRequest`/`Mutation`；`ref-auth` 增加 `ref:mutate` 端点 scope 与 `mutate` ACL 操作；`refd` 配置增加 `[mutate]`。依赖方向不变：`refd → ref-invoker / adapter-mcp / ref-core / ref-auth / ref-audit`，治理平面仍不访问 PACT 存储。
+- 分配视图：台账落在 `[mutate].journal`（运维配置的本地文件），物化仍落在 `[materialize].dir`，均不进入 PACT `data_dir`。
+- 质量属性：写路径有 30s 单次上限；台账每次 fsync 换取崩溃可判定性；满额 `503` 且不自动裁剪，保留可审计性。
+- 无其他结构性变更：引擎层、存储层、接口层与 `pactd` / `refd` 的进程边界不变；`pactd` 仍不调用 `refd`。
+- 跨仓库：本轮为契约与文档，无代码；实现将落在 `pact-ref`（台账、handler、scope、类型）与本仓库规范层 mutating 卡片校验。
+- 验证：OpenAPI YAML 解析通过，6 条 path、9 个 schema、本地 `$ref` 全部可解析；本轮无代码变更，回归基线保持 `pact` 378 passed、`pact-ref` 120 passed。
+
 ## 2026-10-31（第 48 轮，治理平面动态只读调用，FR36/D52）
 
 - 附录 A 已登记 `FR36`、`D52`、`[materialize]` 及子项、`[[mcp_servers]]` 及子项（权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0 / §9.19）。

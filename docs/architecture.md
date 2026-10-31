@@ -201,6 +201,24 @@ ACL 与审计均位于接口层与引擎 actor 边界，`pact-core` 不感知；
 - 启动 fail-closed：存在只读能力 profile 时，`capability.server.id` 必须在 `[[mcp_servers]]` 登记，且必须配置 `[materialize]`；`[[mcp_servers]].endpoint` 默认只允许 `https://`，仅回环主机可显式开启明文。
 - 动态写阶段（`mcp-mutating`）不在本层；`refd` 不为写操作提供执行路径。
 
+### 2.9 治理平面动态写调用（FR37/D53，契约已定案、实现待做）
+
+```
+参与者（持 PACT token）──POST /v1/mutate（ref:mutate）──► refd
+   authenticate → 端点 scope ref:mutate → 请求体/选择器/引用校验
+   → 对象 ACL（operation = "mutate"）→ profile（mutating 能力卡片）
+   → 幂等台账查找（同键同摘要重放；异摘要 409；在途/超时 409）
+   → 审计 intent（fail-closed）→ 上游调用（JSON-RPC tools/call）
+   → 内容寻址物化 → 台账 result（fsync）→ 审计 result
+   → 200 {status: "succeeded", resultRef, resultDigest, replayed}
+```
+
+- 写端点与只读端点分离：`/v1/invoke` 继续只接受 `sideEffect = read-only`，`/v1/mutate` 只接受 `mutating`；`ref:mutate` scope 与 ACL operation `mutate` 独立，已有只读授权不会自动获得写能力。
+- 幂等台账（`[mutate].journal`）是治理平面自己的 append-only 证据，不进入 PACT 事件日志；`intent`/`result` 两阶段落盘，崩溃窗口内同键请求返回 `409 IdempotencyInDoubt`，不自动重试、不猜测上游是否执行。
+- 审计沿用 `ref-audit` 边车，写操作每 attempt 记 `intent` 与 `result` 两条；`intent` 写失败即拒绝且不触达上游，`result` 写失败返回 `500 AuditUnavailable` 且台账保留可核对结果。
+- `resultRef` 仍是新的静态引用；witness token 由参与者以正常 `seed`/`produce` 产生。compensation 不做自动 saga：补偿是另一张 `mutating` 卡片加域内规则，`refd` 只执行被显式调用的能力。
+- 启动 fail-closed：存在 `mutating` 能力 profile 时，必须配置 `[mutate].journal` 与 `[materialize]`，服务已登记于 `[[mcp_servers]]`，卡片满足 `mcp-mutating` 必填字段，台账可解析且条目数不超过 `max_entries`。
+
 ## 3. 进程与部署视图
 
 ```
@@ -462,6 +480,22 @@ DSH 宿主进程
 | `[[mcp_servers]].allow_plaintext` | 同上 | 仅回环主机（`localhost`/`127.0.0.0/8`/`::1`）允许明文 `http://`；缺省 false |
 | `[[mcp_servers]].timeout_ms` | 同上 | 单次上游调用超时，缺省 10000，必须 > 0 且 ≤ 30000 |
 | `[[mcp_servers]].bearer_token_env` | 同上 | 上游 bearer 令牌所在环境变量名；未设置或为空则拒绝启动 |
+
+2026-10-31（第 94 轮）新增的具体编号、配置项、scope、operation 与错误码：
+
+| 名称 | 权威定义位置 | 含义 |
+|---|---|---|
+| `FR37` | `docs/requirements.md` §4 | `refd` 动态写调用：`mcp-mutating` 能力、`POST /v1/mutate`、幂等台账与两阶段审计 |
+| `D53` | `docs/design.md` §0 / §9.20 | 动态写分层：独立 `ref:mutate` scope + ACL、幂等台账崩溃窗口、两阶段审计、witness/compensation 边界 |
+| `ref:mutate` | `docs/thingref-governance.md` §13.8、OpenAPI `bearerAuth` | 动态写端点 scope；与只读 `ref:invoke` 分离，不随只读授权自动获得 |
+| `mutate` | 同上 §13.8.4 | 对象 ACL operation 名称，与 `resolve:read`/`resolve:verify`/`describe`/`invoke` 并列 |
+| `[mutate]` | `docs/design.md` §9.20、`pact-ref/docs/architecture.md` | `refd` 动态写配置表；存在 `mutating` 能力 profile 时必需 |
+| `[mutate].journal` | 同上 | 幂等台账文件（append-only JSONL）；父目录必须存在，文件缺失时创建 |
+| `[mutate].max_entries` | 同上 | 台账条目上限，缺省 10000，必须 > 0 且 ≤ 1000000；超限拒绝启动 |
+| `IdempotencyConflict` | `docs/thingref-governance.md` §13.8.9 | 同键但请求摘要不同；HTTP `409` |
+| `IdempotencyInDoubt` | 同上 | 同键存在 `intent` 无 `result`、上游超时或物化结果缺失；HTTP `409`，需人工核对 |
+| `JournalUnavailable` | 同上 | 台账追加或 fsync 失败；HTTP `500`，不触达上游 |
+| `JournalFull` | 同上 | 台账达到 `max_entries`，拒绝新键；HTTP `503` |
 
 约定：
 

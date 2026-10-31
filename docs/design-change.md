@@ -2,6 +2,21 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 94 轮，动态写阶段契约定案，FR37/D53；无代码变更）
+
+- **决策 D53 / 新增 §9.20**：动态写与只读**端点分离**——`POST /v1/mutate`、scope `ref:mutate`、ACL operation `mutate`；`/v1/invoke` 与 `/v1/mutate` 互不接受对方 `sideEffect`，只读授权不自动升级为写授权。
+- **`mcp-mutating` profile**：必填 `tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`；`reference` 严格等于 `<server.id>/<tool.name>`，`operation == tool.name`（比只读前缀匹配更严）。
+- **幂等台账**：`[mutate].journal` append-only JSONL（单写者，`O_APPEND` + 每记录 fsync）；`intent` → 上游 → `result` 两阶段；键作用域 `(actor, domain, type, reference, operation, idempotencyKey)`，`requestDigest` 为紧凑 JSON 的 sha256。同键同摘要成功/失败重放、`in-doubt` 阻断、同键异摘要冲突、满额拒绝；崩溃窗口显式接受为 `in-doubt`，不自动重试。
+- **两阶段审计**：每次写 attempt 两条（`intent`/`result`）；`intent` 失败不触达上游，`result` 失败返回 `500 AuditUnavailable` 但台账保留结论。不记录 `input`、上游正文与令牌。
+- **witness/compensation 边界**：写成功后仍经 `/v1/resolve` + 参与者 `seed`/`produce` 产生 witness；`failure.compensation` 只是保留键，不做自动 saga/补偿，撤销另立写卡片。
+- **配置与启动**：`[mutate].journal`（mutating profile 存在时必需）、`[mutate].max_entries`（缺省 10000，1..=1000000）；复用 `[materialize]`/`[[mcp_servers]]`；台账不可读/非法行、必填字段缺失、满额越界均 fail-closed。
+- **规范层**：`contract-card.schema.json` 本轮不收紧（`mutating` 必填校验放在实现轮的 profile 校验），避免在无实现时先制造 schema 与运行期判定不一致。
+- **文档落点**：`docs/requirements.md` FR37、`docs/design.md` §0 D53 与 §9.20、§10 测试表；`docs/thingref-governance.md` §13.1 阶段 5 与 §13.8；`docs/architecture.md` 附录 A 与 §2.9；`spec/ref/v1/reference-plane.openapi.yaml` 新增 `/v1/mutate`、`MutateRequest`、`Mutation`、409 响应与四个错误码。
+- **合同校验**：OpenAPI 6 条 path、9 个 schema、14 个 response，本地 `$ref` 全部可解析（YAML 解析通过）。
+- **跨仓库**：本轮无代码变更；实现将落在 `pact-ref`（台账模块、handler、`ref-auth` scope、`ref-core` 类型）与本仓库 `pact-ref-spec` 的 mutating 卡片校验，需在台账单独标注。
+- **未决**：台账文件格式细节（记录字段命名/版本）、是否复用 `ref-audit` 的既有 sink、`max_entries` 满额后的运维归档方式，留待实现轮定案。
+- **其余**：D1–D52 与 FR1–FR36 无实质变更；母本未改动。
+
 ## 2026-10-31（第 93 轮，`refd` 动态只读调用实现，FR36/D52）
 
 - **跨仓库**：代码全部在 `pact-ref`（`crates/ref-core`、`ref-auth`、`ref-invoker`、`ref-client`、`adapters/mcp`、`services/refd` 与 vendored 快照）；本仓库改动为 `spec/ref/v1/reference-plane.openapi.yaml`、`crates/pact-ref-spec/src/contract.rs` 的只读卡片校验，以及需求/设计/架构/治理与台账。
