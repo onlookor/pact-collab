@@ -1,10 +1,15 @@
 openapi: 3.1.0
 info:
   title: PACT Reference Plane v1
-  version: 0.1.0
+  version: 1.0.0
   description: |
-    ThingRef 的解析、描述、调用与撤销接口。治理平面不读写 PACT Counter/Archive；
-    参与者凭 PACT token 取得票面后调用本平面。
+    ThingRef 的解析与描述接口。治理平面不读写 PACT Counter/Archive，也不校验 PACT
+    的 read gate；参与者凭 PACT token 取得票面后调用本平面，两边权限都需满足。
+
+    首版只包含 resolve / describe。invoke / revoke 随动态阶段另行定案，届时新增路径
+    或升版本。治理侧不解释 PACT 语义：domain / type 只用于选择 profile 与 ACL。
+
+    设计依据见 `docs/thingref-governance.md` §13.6。
 servers:
   - url: https://ref.example.com
 security:
@@ -14,18 +19,27 @@ paths:
     get:
       security: []
       operationId: healthz
+      summary: 进程存活探针
       responses:
         "200": { description: alive }
   /readyz:
     get:
       security: []
       operationId: readyz
+      summary: 就绪探针（配置、审计、JWKS）
       responses:
         "200": { description: ready }
         "503": { description: not ready }
-  /resolve:
+  /v1/resolve:
     post:
       operationId: resolveReference
+      summary: 解析 URI 票面并取得短时句柄或校验摘要
+      description: |
+        需要 scope `ref:resolve` 与匹配的对象 ACL。v1 只接受 URI；`∅`、Identifier
+        与裸路径返回 400。`intent=read` 返回 `handle` 与 `expiresAt`；
+        `intent=verify` 只做存在性与摘要校验，禁止返回 `handle`。
+      parameters:
+        - $ref: "#/components/parameters/TraceId"
       requestBody:
         required: true
         content:
@@ -34,33 +48,37 @@ paths:
       responses:
         "200":
           description: resolved
+          headers:
+            X-Trace-Id:
+              $ref: "#/components/headers/TraceId"
+            Cache-Control:
+              description: 固定为 no-store
+              schema: { type: string, const: "no-store" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Resolution" }
         "400": { $ref: "#/components/responses/InvalidReference" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/DigestMismatch" }
         "410": { $ref: "#/components/responses/Expired" }
-  /invoke:
-    post:
-      operationId: invokeCapability
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/InvokeRequest" }
-      responses:
-        "200":
-          description: invoked
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Invocation" }
-        "400": { $ref: "#/components/responses/InvalidReference" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "409": { description: idempotency key conflict }
-  /describe:
+        "413": { $ref: "#/components/responses/RequestTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "502": { $ref: "#/components/responses/UpstreamFailure" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
+  /v1/describe:
     post:
       operationId: describeReference
+      summary: 返回 ContractCard 的消费者投影
+      description: |
+        需要 scope `ref:describe` 与匹配的对象 ACL。响应是白名单投影，不是整张
+        ContractCard：不含 owner、parties、内部 endpoint、credentialSource，
+        也不自动透出未来新增字段。
+      parameters:
+        - $ref: "#/components/parameters/TraceId"
       requestBody:
         required: true
         content:
@@ -69,45 +87,115 @@ paths:
       responses:
         "200":
           description: contract descriptor
+          headers:
+            X-Trace-Id:
+              $ref: "#/components/headers/TraceId"
+            Cache-Control:
+              description: 固定为 no-store
+              schema: { type: string, const: "no-store" }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ContractDescriptor" }
-        "404": { $ref: "#/components/responses/NotFound" }
-  /revoke:
-    post:
-      operationId: revokeReference
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/RevokeRequest" }
-      responses:
-        "204": { description: revoked }
+        "400": { $ref: "#/components/responses/InvalidReference" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/RequestTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "502": { $ref: "#/components/responses/UpstreamFailure" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/UpstreamTimeout" }
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: |
+        OIDC JWT 或受控静态令牌。主体取自验证后的 `sub`，请求体不接受 `actor`。
+        端点 scope：`ref:resolve`（/v1/resolve）、`ref:describe`（/v1/describe）。
+  parameters:
+    TraceId:
+      name: X-Trace-Id
+      in: header
+      required: false
+      description: 可选相关 ID；缺省由服务生成并在响应头回显
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._:-]{1,128}$"
+  headers:
+    TraceId:
+      description: 本次请求的相关 ID
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9._:-]{1,128}$"
   responses:
     InvalidReference:
-      description: reference is missing, malformed, or violates the URI profile
+      description: 引用为空、为 `∅`、是 Identifier、是裸路径或违反 URI profile
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
-      description: caller is not allowed to resolve or invoke
+      description: 缺少或无法验证凭据
+      headers:
+        WWW-Authenticate:
+          description: 固定为 `Bearer realm="pact-ref"`
+          schema: { type: string }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: 凭据有效，但缺少端点 scope 或对象 ACL 未命中
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
-      description: reference is not registered or no longer present
+      description: 引用未被注册，或制品已不存在
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    DigestMismatch:
+      description: 实际摘要与 expectedDigest 不一致
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Expired:
-      description: resolution has expired
+      description: 句柄已过期
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RequestTooLarge:
+      description: 请求体超过 64 KiB
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnsupportedMediaType:
+      description: 仅接受 application/json
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Internal:
+      description: 内部错误或审计不可用
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UpstreamFailure:
+      description: adapter 上游失败
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unavailable:
+      description: 服务启动中或排空中
+      headers:
+        Retry-After:
+          description: 建议重试秒数
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UpstreamTimeout:
+      description: adapter 超时
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -115,88 +203,204 @@ components:
     ResolveRequest:
       type: object
       additionalProperties: false
-      required: [domain, type, reference, actor, intent]
+      required: [domain, type, reference, intent]
       properties:
-        domain: { type: string }
-        type: { type: string }
+        domain:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+        type:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
         reference:
-          oneOf:
-            - type: string
-            - type: "null"
-        actor: { type: string }
-        intent: { enum: [read, verify] }
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: URI 票面；v1 不接受 Identifier 或 `∅`
+        intent:
+          type: string
+          enum: [read, verify]
+        expectedDigest:
+          type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: 可选；与实际不一致返回 409 DigestMismatch
+        pactTokenId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: "^[A-Za-z0-9._:-]+$"
+          description: 可选，仅用于审计关联，永不用于授权
     Resolution:
       type: object
       additionalProperties: false
-      required: [contractId, version, mediaType, handle]
+      required: [contractId, version, mediaType]
       properties:
-        contractId: { type: string }
-        version: { type: string }
-        mediaType: { type: string }
+        contractId: { type: string, minLength: 1 }
+        version: { type: string, minLength: 1 }
+        mediaType: { type: string, minLength: 1 }
         digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
         expiresAt: { type: string, format: date-time }
-        handle: { type: string, description: opaque fetch handle or URL }
-    InvokeRequest:
-      type: object
-      additionalProperties: false
-      required: [domain, type, reference, actor, operation, idempotencyKey]
-      properties:
-        domain: { type: string }
-        type: { type: string }
-        reference:
-          oneOf:
-            - type: string
-            - type: "null"
-        actor: { type: string }
-        operation: { type: string }
-        idempotencyKey: { type: string }
-        input:
-          type: object
-          additionalProperties: true
-    Invocation:
-      type: object
-      additionalProperties: false
-      required: [status]
-      properties:
-        status: { enum: [succeeded, failed, pending] }
-        resultRef:
-          oneOf:
-            - type: string
-            - type: "null"
-        resultDigest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
-        error: { type: string }
+        handle:
+          type: string
+          minLength: 1
+          description: 不透明短时句柄；intent=read 时必需，intent=verify 时禁止出现
     DescribeRequest:
       type: object
       additionalProperties: false
       required: [domain, type, reference]
       properties:
-        domain: { type: string }
-        type: { type: string }
+        domain:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
+        type:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[^\u0000-\u001F\u007F]+$'
         reference:
-          oneOf:
-            - type: string
-            - type: "null"
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: URI 票面；v1 不接受 Identifier 或 `∅`
     ContractDescriptor:
       type: object
       additionalProperties: false
-      required: [contractId, version, mediaType]
+      required: [contractId, version, mediaType, reference, lifecycle]
+      description: |
+        消费者投影白名单。未列出的 ContractCard 字段一律不出现；新增字段需显式改
+        schema 与 `docs/thingref-governance.md` §13.6.6。
       properties:
-        contractId: { type: string }
-        version: { type: string }
-        mediaType: { type: string }
-    RevokeRequest:
-      type: object
-      additionalProperties: false
-      required: [reference, reason]
-      properties:
-        reference: { type: string }
-        reason: { type: string }
-        effectiveAt: { type: string, format: date-time }
+        contractId: { type: string, minLength: 1 }
+        version: { type: string, minLength: 1 }
+        status:
+          type: string
+          enum: [draft, active, deprecated, retired]
+        mediaType: { type: string, minLength: 1 }
+        artifact:
+          type: object
+          additionalProperties: false
+          required: [kind, mediaType, digestPolicy]
+          properties:
+            kind: { type: string, minLength: 1 }
+            mediaType: { type: string, minLength: 1 }
+            schema: { type: string, minLength: 1 }
+            schemaDigest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+            digestPolicy:
+              type: string
+              enum: [required-at-archive, optional, never]
+        capability:
+          type: object
+          additionalProperties: false
+          required: [kind, sideEffect]
+          properties:
+            kind: { type: string, minLength: 1 }
+            sideEffect:
+              type: string
+              enum: [read-only, mutating]
+            timeoutMs: { type: integer, minimum: 1 }
+            tool:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1 }
+                version: { type: string, minLength: 1 }
+        auth:
+          type: object
+          additionalProperties: false
+          properties:
+            audience: { type: string, minLength: 1 }
+            scopes:
+              type: array
+              items: { type: string, minLength: 1 }
+        reference:
+          type: object
+          additionalProperties: false
+          required: [schemes]
+          properties:
+            schemes:
+              type: array
+              minItems: 1
+              uniqueItems: true
+              items:
+                type: string
+                pattern: "^[a-z][a-z0-9+.-]{0,31}$"
+            uriPattern: { type: string, minLength: 1 }
+            mutableAllowed: { type: boolean }
+            pinning:
+              type: object
+              additionalProperties: false
+              required: [requiredForArchive]
+              properties:
+                requiredForArchive: { type: boolean }
+                accepted:
+                  type: array
+                  items: { type: string, minLength: 1 }
+        lifecycle:
+          type: object
+          additionalProperties: false
+          required: [retention, deletionPolicy]
+          properties:
+            retention:
+              type: string
+              pattern: "^(permanent|P(?=[0-9T])(?:[0-9]+Y)?(?:[0-9]+M)?(?:[0-9]+W)?(?:[0-9]+D)?(?:T(?=[0-9])(?:[0-9]+H)?(?:[0-9]+M)?(?:[0-9]+S)?)?)$"
+            deletionPolicy:
+              type: string
+              enum: [retain, delete, tombstone-then-delete]
+            tombstoneRef: { type: string, minLength: 1 }
+        failure:
+          type: object
+          propertyNames: { minLength: 1 }
+          additionalProperties: { type: string, minLength: 1 }
+        verification:
+          type: object
+          additionalProperties: false
+          properties:
+            conformance:
+              type: array
+              items: { type: string, minLength: 1 }
+            suite: { type: string, minLength: 1 }
+        consumerScope: { type: string, minLength: 1 }
+      oneOf:
+        - required: [artifact]
+          not: { required: [capability] }
+        - required: [capability]
+          not: { required: [artifact] }
     Error:
       type: object
       additionalProperties: false
-      required: [code, message]
+      required: [code, message, traceId, retryable]
       properties:
-        code: { type: string }
-        message: { type: string }
-        traceId: { type: string }
+        code:
+          type: string
+          enum:
+            - InvalidRequest
+            - InvalidReference
+            - Unauthorized
+            - Forbidden
+            - NotFound
+            - MethodNotAllowed
+            - DigestMismatch
+            - Expired
+            - RequestTooLarge
+            - UnsupportedMediaType
+            - RateLimited
+            - Internal
+            - AuditUnavailable
+            - UpstreamFailure
+            - Unavailable
+            - UpstreamTimeout
+        message: { type: string, minLength: 1 }
+        traceId:
+          type: string
+          pattern: "^[A-Za-z0-9._:-]{1,128}$"
+        retryable: { type: boolean }
+        detail:
+          type: object
+          additionalProperties: true
+          description: 可选结构化上下文；不得包含正文、凭据、handle 或内部 URL

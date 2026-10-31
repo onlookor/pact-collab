@@ -2,6 +2,22 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 90 轮，`refd` resolve/describe 端点契约与鉴权定案）
+
+- **解除台账阻塞**：P3 首项原为“`refd` resolve/describe 端点 / 阻塞于端点契约与鉴权设计”。本轮定案端点契约与鉴权，规范产物为 `spec/ref/v1/reference-plane.openapi.yaml`，设计定案写入 `docs/thingref-governance.md` §13.6。
+- **六条不变量**：`refd` 永不调用 `pactd`；主体来自验证后的凭据 `sub`，请求体不接受 `actor`；`domain`/`type` 对 `refd` 不透明；v1 只解析 URI（`∅`/`null`/Identifier/裸路径 → `400 InvalidReference`）；响应不含制品正文、内部 endpoint、凭据；默认拒绝。
+- **传输与版本**：业务端点 `/v1/resolve`、`/v1/describe`；`/healthz`、`/readyz` 不带版本；wire 版本仍为 `pact.ref/v1`，破坏性变更升 `/v2` 并同步 `API_VERSION`。仅 `application/json`（`415`），请求体 ≤ 64 KiB（`413`），单请求 30s（`504`），`Cache-Control: no-store`，`X-Trace-Id` 头（`[A-Za-z0-9._:-]{1,128}`）。
+- **身份与凭据**：`oidc`（JWKS、校验 `iss`/`aud`/`exp`/`nbf`、算法白名单 RS256/ES256/EdDSA）、`static`（显式 `allow = true`，常量时间比较）、默认 `deny`；生产要求 TLS，401 带 `WWW-Authenticate: Bearer realm="pact-ref"`。
+- **授权两层**：端点 scope `ref:resolve` / `ref:describe`，加上对象 ACL（维度 `(principal, domain, type, scheme, operation)`，operation ∈ `resolve:read` / `resolve:verify` / `describe`），并集允许、默认拒绝。PACT token read gate 与制品 ACL 独立，参与者必须同时满足。
+- **describe 白名单投影**：只透出 `contractId`/`version`/`mediaType`/`reference`/`lifecycle` 及可选 `status`/`artifact`/`capability`/`failure`/`verification`/`consumerScope`；不透出 `metadata.owner|labels|description`、`parties`、`capability.server`、`capability.auth.credentialSource`、`resolution.endpoint`，也不自动透出未来新增字段。
+- **错误模型**：统一信封 `{code, message, traceId, retryable, detail?}`；`401`（凭据无效）与 `403`（scope/ACL 拒绝）严格区分，`403` 不透露对象存在性；`intent=verify` 只校验存在性与摘要，禁止返回 `handle`。
+- **审计 fail-closed**：每条已认证请求一条 `AuditEvent`，不记录 handle 明文、`Authorization`、请求体、内部 endpoint；审计写失败 → `500 AuditUnavailable`（`[audit] fail_open = true` 需显式配置）。
+- **OpenAPI 重写**：删除旧的 `/resolve`、`/invoke`、`/revoke` 与请求体 `actor`；新增 `/healthz`、`/readyz` 与 v1 组件（`ResolveRequest`/`Resolution`/`DescribeRequest`/`ContractDescriptor`/`Error` 及 12 个错误响应组件）；invoke/revoke 延后到动态阶段另行定案。
+- **实现映射与未决项**：`ref-core` 移除请求体 `actor`、`Resolution.handle` 改 `Option`、`ContractDescriptor` 扩为投影；`ref-auth` 新增 OIDC/静态/ACL；`refd` 建议 `axum` + `tokio`（需单独依赖与安全审视）。限流、mTLS、配置热加载、Identifier 注册表不在 v1。
+- **无代码变更**：本轮仅文档与规范；跨仓库仅有 `pact-ref/docs/architecture.md` 的 API 段落与“引导阶段下一步”同步（不涉及 `pact-ref` 代码与 vendored 快照）。
+- **验证**：`yaml.safe_load` 解析通过（paths 4 项、schemas 5 项），遍历全部 `$ref` 均解析成功；无代码回归，沿用第 88 轮 373 passed 基线。
+- **安全审视**：无新增依赖、无代码、无网络/进程/文件写变化；设计层面明确默认拒绝、凭据不入请求体、审计 fail-closed；`cargo audit` 0 vulnerability / 2 unmaintained（沿用）。
+
 ## 2026-10-31（第 89 轮，物引治理 skill；规范文档纠偏）
 
 - **新增 `skills/pact-thingref-governance/SKILL.md`**（`name: pact-thingref-governance`，v0.1.0）：面向使用者的物引治理技能，覆盖绑定、契约卡、tombstone、可见性、`declarationDigest` 与显式重载六个主题；含适用闸门（不启用项与去向）、六条不变量、每主题的最小骨架与验收命令、工具探测、采集槽位、lint/digest 闭环、完成标准、输出模板、失败模式与不承诺边界。

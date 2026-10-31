@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 89 轮）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）与物引治理 SKILL 均已落地并回归通过。`refd` 与动态阶段未开始（`refd` 阻塞于端点契约与鉴权设计）。下一轮按 P3 治理平面/动态阶段推进，先解阻 `refd` 端点契约或从动态只读阶段的前置条件入手。
+当前状态（2026-10-31，第 90 轮）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）与物引治理 SKILL 均已落地并回归通过。`refd` 的端点契约与鉴权已于本轮定案（治理 §13.6、`spec/ref/v1/reference-plane.openapi.yaml`），实现待做；动态阶段未开始。下一轮按 P3 实现 `refd` 的 `/v1/resolve` 与 `/v1/describe`（含身份/ACL/审计）。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -58,7 +58,8 @@
 
 | 状态 | 事项 | 依据 | 验收方式 |
 |---|---|---|---|
-| [!] | `refd` resolve/describe 端点 | `thingref-governance.md` §13.1 阶段 1 待做 | 阻塞于端点契约与鉴权设计；属治理平面仓库 |
+| [x] | `refd` resolve/describe 端点契约与鉴权定案（路径、请求/响应、错误模型、身份/ACL/审计、版本） | `thingref-governance.md` §13.6 / `spec/ref/v1/reference-plane.openapi.yaml` | 治理 §13.6 十小节定案；OpenAPI 重写为 `/healthz`、`/readyz`、`/v1/resolve`、`/v1/describe`；`yaml.safe_load` 与全部 `$ref` 校验通过 |
+| [ ] | `refd` 实现 `/v1/resolve` 与 `/v1/describe`（身份、scope + ACL、审计 fail-closed、file/https adapter） | 同上 §13.6.9 实现映射 | 端点可按 OpenAPI 契约调用；401/403/400/409/500 分支有测试；审计记录用例；跨仓库 `pact-ref` |
 | [ ] | 动态只读阶段（`mcp-read` profile、resolve 适配器、物化结果） | `thingref-governance.md` §13.1 阶段 4 | 端到端：resolve → witness token |
 | [ ] | 动态写阶段（`mcp-mutating` profile、审计边车、witness/compensation） | 同上阶段 5 | 审计边车用例 |
 | [ ] | 可选注册表（只做发现，不做真相源） | 同上阶段 6 | 触发条件满足后再开 |
@@ -83,6 +84,7 @@
 | [x] | 第 87 轮：登记 `[ref_digest]`/`[ref_digest].mode`/`DeclarationDigestMismatch`（`architecture.md` 附录 A）；`requirements.md` FR34 第二步与 FR30、`requirements-change.md` 第 43 轮；`design.md` D49/§9.4/§9.16/§10、`design-change.md` 第 87 轮；`manual.md` §2.2/§7.11/§7.13/§7.14/§8.2/§9.4/§10；治理 §8.1/§13.1/§13.4.2/§13.4.3/§13.4.2.1；`architecture.md` 正文、`architecture-change.md` 第 44 轮；`dist/pact.container.toml` | 配置项与错误码先登记后引用；文档与代码/e2e 逐条对照；跨仓库标注：无 `pact-ref` 代码改动；提交 `505e81d` |
 | [x] | 第 88 轮：登记 `D50`（`architecture.md` 附录 A）；`requirements.md` FR21/FR30/FR31、`requirements-change.md` 第 44 轮；`design.md` D50/§9.12/§9.17/§10/§16.4、`design-change.md` 第 88 轮；`manual.md` §2.7/§7.11；治理 §8.1/§8.2/§13.1/§13.2；`architecture.md` 正文、`architecture-change.md` 第 45 轮；README 中英文本地嵌入改为用途视角；`todo.md` 新增 P4 物引治理 SKILL | 编号先登记后引用；文档与代码/测试逐条对照；跨仓库：`pact-ref/vendor/pact-ref-spec` 已同步，`pact-ref` 57 passed |
 | [x] | 第 89 轮：新增 `skills/pact-thingref-governance/SKILL.md`（六主题、适用闸门、不变量、闭环验收、输出模板、边界）；`design-change.md` 第 89 轮；纠偏 `spec/ref/v1/declaration-digest.md` §4“运行期比对尚未启用” | 技能不引入新编号（不占用 `S0`–`S7`）；命令与 `docs/manual.md` §7.8–§7.14 逐条对齐；规范文档与 D49 第二步实现一致 |
+| [x] | 第 90 轮：治理新增 §13.6“refd 的 resolve/describe 端点与鉴权”（十小节）；§9.2/§13.1 状态改为“契约已定案、实现待做”；重写 `spec/ref/v1/reference-plane.openapi.yaml`；`design-change.md` 第 90 轮；跨仓库同步 `pact-ref/docs/architecture.md` 的 API 段落与引导阶段 | 契约与卡片 schema 逐字段对照；`$ref` 全部可解析；跨仓库改动已在 `design-change.md` 标注 |
 
 ### 验证与交付
 
@@ -113,6 +115,9 @@
 | [x] | 第 89 轮回归基线 `cargo test -p pact-cli --test ref_lint_e2e --locked` | **3 passed / 0 failed**（无代码变更，全量回归沿用第 88 轮 373 passed） |
 | [x] | 第 89 轮推送前安全审视 | 仅新增 Markdown 技能与文档修改，无代码、无依赖、无网络/进程/文件写变化；`cargo audit` 0 vulnerability / 2 unmaintained（沿用） |
 | [x] | 第 89 轮提交（`e88ee28`） | 4 files changed（新增 SKILL.md 386 行、`design-change.md`、`declaration-digest.md` 纠偏、`todo.md`）；尚未推送 |
+| [x] | 第 90 轮契约校验：`yaml.safe_load` + `$ref` 遍历 | paths 为 `/healthz`、`/readyz`、`/v1/resolve`、`/v1/describe`；schemas 5 项；`all $ref resolve OK` |
+| [x] | 第 90 轮回归基线：无代码变更 | 沿用第 88 轮全量 **373 passed / 0 failed**；`pact-ref` 仅文档改动 |
+| [x] | 第 90 轮推送前安全审视 | 无新增依赖、无代码、无网络/进程/文件写变化；设计层面默认拒绝、凭据不入请求体、审计 fail-closed；`cargo audit` 结论沿用 |
 
 ## 已完成归档区
 

@@ -511,7 +511,7 @@ Counter/Archive 可见性已实现（FR28/D42）：daemon `[ref_bindings]` 加�
 可发现性 lint 落地与推送前安全审视：`pact` `eb86654`（2026-10-28），`pact-ref` 无新改动；
 `scripts/sync-spec.sh --check` 通过。记录见 `docs/design-change.md` 第 74–75 轮。
 `pact-ref` 远端：<https://github.com/onlookor/pact-ref>（公开）。
-下一步是 `refd` 的 resolve/describe 端点。
+下一步是 `refd` 的 resolve/describe 端点；其契约与鉴权已于 2026-10-31 定案（§13.6），实现待做。
 
 ### 9.3 `pact-ref` 仓库结构
 
@@ -1003,7 +1003,7 @@ spec:
 1. **静态阶段（已完成，2026-10-27）**：`pact-ref-spec` 纯 crate + `spec/ref/v1/`（URI profile、两份 schema、OpenAPI）已落地，
    18 项单测与 wasm32 构建通过；`pact-ref` 已切换消费（当前 46 项测试通过）；`pact ref lint` 已实现（FR27/D41），
    覆盖绑定/契约/声明一致性与退出码。
-   **待做**：`refd` 的 resolve/describe 端点。
+   **待做**：`refd` 的 resolve/describe 端点。**契约与鉴权已定案（2026-10-31，§13.6）**，实现待做。
    **已完成（2026-10-28）**：REST 写入路径入口校验（FR30/D45）——`POST /seeds`、`POST /tokens` 区分缺失/`null`/字符串，执行 URI profile 与 RefBindings 策略，错误码 `ThingRefMissing`/`ThingRefRequired`/`InvalidThingRef`；CLI/MCP 经 REST 继承。
    **已完成（2026-10-29）**：`value`、`onUnknownScheme` 与钉版运行期强制（FR31/D46）——`pinning: required` 写入即拦，`required-at-archive` 在 consume 进入 Archive 前拦，错误码 `ThingRefUnpinned`。
    **已完成（2026-10-30）**：ContractCard 运行期加载与版本不可变（FR32/D47）——`[ref_contracts]` 启动加载、`contract_id()` 索引、按数据触发闭环、重复 `id@version` 拒绝、consume 钉版并集（只加严）；卡片与绑定显式重载（FR33/D48）——`POST /ref/reload` 与 `pact ref reload`、同事务原子换快照、`dryRun` 影响报告、审计与 ACL 覆盖。
@@ -1197,6 +1197,188 @@ spec:
 5. B2（按实例冻结）暂不立项，出现“按 token 追责到卡版本”的审计需求时再登记。
 
 **依赖关系**：B0 与 §13.4.1 强绑定；B1 独立，但依赖 B0 的不可变性与 `contract_id()` 索引；B1 的重载校验必须与 `pact ref lint` 共用 `pact-ref-spec`，避免双实现漂移。域声明的 D27/D39 机制不变——卡片版本切换不触发交接，也不需要交接。
+
+### 13.6 `refd` 的 resolve/describe 端点与鉴权（2026-10-31 定案）
+
+本节解阻 §13.1 第 1 条的“`refd` 的 resolve/describe 端点”。规范产物是 `spec/ref/v1/reference-plane.openapi.yaml`；本节记录取舍与不变量。`invoke` / `revoke` 不在首版范围，随动态阶段（§13.1 第 4–5 步）另行定案。
+
+#### 13.6.1 不变量
+
+1. **`refd` 不调用 `pactd`，`pactd` 也不调用 `refd`**（§8.6）。`refd` 看不到 PACT 的 read gate；参与者必须同时满足 PACT 的读权限与制品 ACL。
+2. **`actor` 不来自请求体。** 主体由凭据验证后得出；请求体出现 `actor` 视为未知字段直接拒绝，避免自报身份与审计伪造。
+3. **票面只用于选择 profile 与 adapter。** `domain` / `type` 是不透明选择器，只做长度与控制字符校验，不解释 PACT 语义。
+4. **v1 只解析 URI；Identifier 是 `400 InvalidReference`。** 解析 Identifier 需要注册表，属后续可选阶段；拒绝而不是猜测。
+5. **响应不含制品正文、内部端点或凭据。** `handle` 对参与者是不透明、短时的 bearer 值；服务端日志与审计不记录其明文。
+6. **默认拒绝。** 未配置认证器时服务拒绝一切业务请求；ACL 未命中即拒绝；审计不可用时请求失败（fail-closed，可用显式配置放宽）。
+
+#### 13.6.2 传输与版本
+
+| 项 | 约定 |
+|---|---|
+| 路径 | 业务端点 `POST /v1/resolve`、`POST /v1/describe`；探针 `/healthz`、`/readyz` 不带版本 |
+| 版本 | 破坏性变更升 `/v2`；v1 内只允许新增可选响应字段，客户端必须忽略未知响应字段，服务端拒绝未知请求字段 |
+| 编码 | 仅 `application/json`（UTF-8）；其他 `415` |
+| 大小 / 时限 | 请求体 ≤ 64 KiB（`413`）；单请求 30s 上限，adapter 超时映射 `504` |
+| 缓存 | 业务响应 `Cache-Control: no-store`；`handle` 默认 300s 过期，且不得晚于 adapter 允许值 |
+| 相关 ID | 可选请求头 `X-Trace-Id`（`[A-Za-z0-9._:-]{1,128}`）；缺省由服务生成，响应头回显，错误体同时携带 `traceId` |
+
+#### 13.6.3 身份与凭据
+
+认证模式由 `refd.toml` 的 `[auth] mode` 选择，**默认 `deny`**：
+
+| 模式 | 用途 | 规则 |
+|---|---|---|
+| `oidc` | 生产默认 | JWT bearer；校验签名（JWKS，仅 HTTPS）、`iss`、`aud`（默认 `pact-ref`）、`exp`/`nbf`（偏差 ≤ 60s）；算法白名单 `RS256`/`ES256`/`EdDSA`，拒绝 `none` 与算法混淆；`sub` 作为主体；JWKS 有界缓存，遇未知 `kid` 刷新一次 |
+| `static` | 仅引导/受控内网 | `[auth.static]` 必须显式 `allow = true`，否则启动失败；密钥常量时间比较；启动打印告警；变更需重启 |
+| `deny` | 缺省 | 全部业务请求 `401`；服务仍启动以便探针与配置排错 |
+
+- **不接受 PACT API key 作为 `refd` 凭据**：两者是不同受众。需要联合身份时用 OIDC / token exchange，不在请求体或 `ThingRef` 里传凭据。
+- TLS 必须启用；只有绑定回环地址且显式 `allow_plaintext = true` 时才允许明文。
+- 凭据解析失败一律 `401`，响应带 `WWW-Authenticate: Bearer realm="pact-ref"`，不区分“过期/签名错/未知主体”。
+
+#### 13.6.4 授权
+
+两层，顺序固定：
+
+1. **端点 scope**：`/v1/resolve` 需要 `ref:resolve`，`/v1/describe` 需要 `ref:describe`；缺失 → `403 Forbidden`。
+2. **对象 ACL**：`[[acl]]` 规则为**并集允许**、默认拒绝，无 deny 规则、无优先级排序：
+
+```toml
+[[acl]]
+principal = "team-a/*"          # 主体 glob
+domains   = ["build"]           # 或 ["*"]
+types     = ["artifact"]
+schemes   = ["https", "oci"]
+operations = ["resolve:read", "resolve:verify", "describe"]
+```
+
+- 任一规则匹配 `(principal, domain, type, scheme, operation)` 即允许；无匹配 → `403`，消息不区分“无权”与“不存在”。
+- `ContractCard` 的 `parties` / `consumerScope` 是**声明**，不是执行点；执行点只有部署侧 ACL。
+- `intent=verify` 与 `intent=read` 都归 `ref:resolve` scope，但在 ACL 的 operation 上可分别授权；`verify` 不返回 `handle`。
+- ACL 判定在调用 adapter **之前**，避免无权调用者探测上游存在性。
+
+#### 13.6.5 `POST /v1/resolve`
+
+请求（全部字段均为必需，除非标注可选）：
+
+```json
+{
+  "domain": "build",
+  "type": "artifact",
+  "reference": "https://artifacts.example.com/a.tar.zst",
+  "intent": "read",
+  "expectedDigest": "sha256:…",        // 可选
+  "pactTokenId": "tok_…"               // 可选，仅用于审计关联，不作为授权依据
+}
+```
+
+| 字段 | 规则 |
+|---|---|
+| `domain` / `type` | 1–255 字符，非控制字符；不解释语义 |
+| `reference` | 非空 URI 字符串，≤ 65536；`∅`/`null`/Identifier/裸路径 → `400 InvalidReference` |
+| `intent` | `read` 或 `verify`；必需，避免默认值掩盖调用方意图 |
+| `expectedDigest` | 可选 `sha256:<64 hex>`；与实际不一致 → `409 DigestMismatch`（`detail` 带 expected/actual） |
+| `pactTokenId` | 可选，≤ 128，`[A-Za-z0-9._:-]`；只写审计，永不用于授权 |
+
+成功响应 `200`：
+
+```json
+{
+  "contractId": "demo/artifact",
+  "version": "1",
+  "mediaType": "application/zstd",
+  "digest": "sha256:…",          // 可选：adapter 未提供时省略
+  "expiresAt": "2026-10-31T12:05:00Z", // read 时必需
+  "handle": "https://…"          // read 时必需；verify 时禁止出现
+}
+```
+
+- `handle` 由 adapter 提供，`refd` 只透传；v1 不提供 `/fetch` 代理，参与者自行兑换。
+- `verify` 只做存在性与摘要校验，不返回 `handle`，也不下载正文（adapter 可选择 HEAD/Range 实现）。
+- 解析结果不写入任何 PACT 状态；证据由参与者正常 `seed` / `produce` 产生。
+
+#### 13.6.6 `POST /v1/describe`
+
+请求：`{domain, type, reference}`（`domain` / `type` 必需，规则同上；`reference` 规则同上）。
+
+响应是**消费者投影白名单**，不是整张 `ContractCard`：
+
+| 包含 | 不含（永不自动透出） |
+|---|---|
+| `contractId`、`version`、`status`、`mediaType` | `metadata.owner`、`metadata.labels`、`metadata.description` |
+| `artifact{kind, mediaType, schema?, schemaDigest?, digestPolicy}` | `parties{producer, custodian, consumers}` |
+| `capability{kind, sideEffect, tool{name, version}, timeoutMs?}` | `capability.server`、`capability.auth.credentialSource` |
+| `auth{audience, scopes}` | `resolution.endpoint`（内部拓扑） |
+| `reference{schemes, pinning?, uriPattern?, mutableAllowed?}` | 任何未在 whitelist 中列出的新字段 |
+| `lifecycle{retention, deletionPolicy, tombstoneRef?}` | |
+| `failure`、`verification`、`consumerScope` | |
+
+- 新增卡片字段不会自动出现在 `describe`；必须显式改本表与 OpenAPI，避免“加字段即泄露”。
+- `describe` 只要求 `ref:describe`，不做 resolve 的 `intent` 区分；仍受对象 ACL 约束。
+- 投影不含正文与摘要值以外的内容；`tombstoneRef` 是 URI，参与者可据此做删除可区分性检查。
+
+#### 13.6.7 错误模型
+
+统一信封：
+
+```json
+{ "code": "DigestMismatch", "message": "…", "traceId": "…", "retryable": false,
+  "detail": { "expected": "sha256:…", "actual": "sha256:…" } }
+```
+
+| HTTP | `code` | 触发 | `retryable` |
+|---|---|---|---|
+| 400 | `InvalidRequest` | 未知字段、`intent` 非法、选择器超长 | false |
+| 400 | `InvalidReference` | 空、`∅`、Identifier、裸路径、超长、profile 违规 | false |
+| 401 | `Unauthorized` | 无凭据 / 凭据无效 | false |
+| 403 | `Forbidden` | 缺 scope 或 ACL 未命中 | false |
+| 404 | `NotFound` | adapter/registry 明确不存在 | false |
+| 405 | `MethodNotAllowed` | 非 POST | false |
+| 409 | `DigestMismatch` | `expectedDigest` 与内容不一致 | false |
+| 410 | `Expired` | `handle` 兑换时已过期 | false |
+| 413 | `RequestTooLarge` | 请求体超限 | false |
+| 415 | `UnsupportedMediaType` | 非 JSON | false |
+| 429 | `RateLimited` | 预留（v1 不实现限额，预留 `Retry-After`） | true |
+| 500 | `Internal` | 未分类内部错误 | false |
+| 500 | `AuditUnavailable` | 审计不可用且未放宽 | true |
+| 502 | `UpstreamFailure` | adapter 上游失败 | true |
+| 503 | `Unavailable` | 启动/排空中 | true |
+| 504 | `UpstreamTimeout` | adapter 超时 | true |
+
+- 401 与 403 严格区分；403 不透露目标是否存在。
+- 错误消息不含正文、内部 URL、凭据或 `handle`。
+
+#### 13.6.8 审计与可观测性
+
+- 每个已认证请求一条事件，沿用 `ref-core::AuditEvent`：`traceId`、`actor`、`reference`、`domain`、`type`、`operation`、`contractId`、`status`、`resultDigest`、`pactTokenId`、`timestamp`。
+- **不记录**：`handle` 明文、Authorization 头、请求体、内部 endpoint、上游查询串。
+- 默认 fail-closed（审计写失败 → `500 AuditUnavailable`）；`[audit] fail_open = true` 需显式配置并在启动时告警。
+- `/healthz` 只表示进程存活；`/readyz` 检查配置已加载、审计 sink 可用、`oidc` 模式下 JWKS 可用，失败 `503`，不返回内部细节。
+
+#### 13.6.9 实现映射与未决
+
+| 位置 | 需要的改动 |
+|---|---|
+| `spec/ref/v1/reference-plane.openapi.yaml` | 已按本节重写为 v1 契约（resolve/describe + 探针） |
+| `ref-core` | `ResolveRequest.actor` 移出请求、由服务端注入；`Resolution.handle` 改为 `Option`；`ContractDescriptor` 扩为投影结构 |
+| `ref-auth` | 新增 OIDC 验证器、静态令牌验证器、ACL 求值器；`DenyAllAuthorizer` 作为缺省 |
+| `ref-audit` | 落地 append-only sink 与 fail-closed 包装；现有 `MemoryAuditSink` 保留给测试 |
+| `refd` | 引入 HTTP 栈（建议 `axum` + `tokio`，须单独做依赖与安全审视）；按 13.6.4 的顺序装配 |
+| adapters | v1 至少实现 `file` 与 `https`；其余 adapter 按 §13.1 顺序推进 |
+
+未决（不阻塞首版实现）：
+
+- `invoke` / `revoke` 契约随动态阶段定案，届时升 OpenAPI 版本或新增路径；
+- 可选注册表落地后，`describe` 可接受 Identifier，`resolve` 仍要求 URI；
+- 限流、mTLS、多租户 JWKS 与认证配置热加载均不在 v1。
+
+#### 13.6.10 明确不做
+
+- `refd` 不读取 PACT 存储、不校验 PACT read gate、不替参与者做补偿。
+- 不返回制品正文；不把 `handle` 当长期地址；不保证 `handle` 可跨调用复用。
+- 不把 `ContractCard` 全文透出；`describe` 是白名单投影。
+- 不对 Identifier 做模糊解析；不做隐式重试或降级。
+- 不在 `ThingRef`、请求体或日志中存放凭据。
 
 ---
 

@@ -2,6 +2,15 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 46 轮，参考平面 resolve/describe 端点契约与鉴权定案）
+
+- 参考平面（治理平面）首版接口收敛为 `POST /v1/resolve`、`POST /v1/describe` 与不带版本的 `/healthz`、`/readyz`；invoke/revoke 延后到动态阶段。规范产物为 `spec/ref/v1/reference-plane.openapi.yaml`，设计定案在 `docs/thingref-governance.md` §13.6。
+- 边界不变：`pactd` 永不调用 `refd`，`refd` 永不直接写 PACT 状态；PACT token read gate 与制品 ACL 为两层独立权限，参与者必须同时满足。
+- 鉴权方向：主体由验证后的凭据（OIDC JWT 或静态令牌）派生，请求体不接受 `actor`；端点 scope 与对象 ACL 并集允许、默认拒绝；每条已认证请求一条审计事件，审计失败 fail-closed。
+- 数据流不变：`refd` 只返回不透明 `handle`/摘要/媒体类型/契约标识与时效，不返回制品正文；证据仍走 witness token。
+- 跨仓库：`pact-ref/docs/architecture.md` 的 “Reference Plane API” 与“引导阶段下一步”已同步指向冻结契约；`pact-ref` 代码与 vendored 快照未改动。
+- 文档：`docs/design-change.md` 第 90 轮、`spec/ref/v1/reference-plane.openapi.yaml`、`docs/thingref-governance.md` §9.2 / §13.1 / §13.6、`todo.md`。
+
 ## 2026-10-31（第 45 轮，WASM 本地入口校验，D50）
 
 - 附录 A 第 88 轮登记 `D50`（WASM 本地入口票面校验与绑定注入），权威定义在 `docs/design.md` §0 / §9.17。
