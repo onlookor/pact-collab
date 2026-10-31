@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 49 轮，FR37 动态写调用实现）
+
+- **FR37 实现状态推进为已实现**：`pact-ref` 落地 `ref-core` 的 `MutateRequest`/`Mutation`/`MutationStatus`、`ref-auth` 的 `ref:mutate` scope、`refd` 幂等台账与 `POST /v1/mutate` handler；请求级严格归属（`reference == <server.id>/<tool.name>`）、`operation == tool.name`、`idempotencyKey` 文法、两阶段审计、启动 fail-closed 全部生效。
+- **语义不变**：授权分离、台账判定（重放/冲突/in-doubt/满额/不可用）、崩溃语义、错误映射与 v1 边界（不自动重试、不轮询、不 saga/补偿）均按第 47 轮定案执行，无需求侧改动。
+- **验证**：台账单测 8 项；`refd` 集成测试新增 12 项（成功闭环、重放仅调一次、409 冲突/在途、403 只读与 ACL、400 归属/operation、两阶段审计失败、满额 503、上游 502 重放、启动失败）；`pact-ref` 全量通过；`pact` 基线 384 passed。
+- **未实现（后续事项）**：witness/compensation 示例（FR37 不要求自动补偿）；`revoke`、可选注册表与 conformance runner 不在本需求。
+
 ## 2026-10-31（第 48 轮，FR37 规范层卡片校验实现）
 
 - **FR37 实现状态推进**：规范层 `pact-ref-spec` 已强制 `mcp-mutating` 卡片级必填字段（`tool.inputSchemaDigest`、`idempotency`、`result.materialization ∈ {required, optional}`、`auth.audience`、非空 `failure`），新增 6 项单测。

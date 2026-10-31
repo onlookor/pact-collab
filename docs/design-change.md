@@ -2,6 +2,17 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 96 轮，`refd` 动态写调用实现，FR37/D53）
+
+- **§9.20 状态推进为已实现**：`pact-ref` 落地 `ref-core` `MutateRequest`/`Mutation`/`MutationStatus`（`AuditEvent` 增可选 `requestDigest`）、`ref-auth` `SCOPE_MUTATE = "ref:mutate"`、`refd` 幂等台账模块与 `POST /v1/mutate` handler。
+- **台账实现**：append-only JSONL；`KeyScope { actor, domain, type, reference, operation, idempotencyKey }`；`Entry` 单结构带 `kind ∈ {intent, result}`；`request_digest = sha256(canonicalJson({domain,type,reference,operation,input}))` 加 `sha256:` 前缀。`Journal::open` 回放校验（同键异摘要即拒绝启动、非法行拒绝启动、末行半行截断告警后忽略），`O_APPEND` + 每条 `sync_data`；`max_entries` 计 intent 与 result 两行。
+- **判定与两阶段审计落地**：无记录→执行；intent 无 result→`409 IdempotencyInDoubt`；同键同摘要 `succeeded`→重放 `replayed=true`；`failed`→重放 `502 UpstreamFailure` 且 `detail.replayed=true`；异摘要→`409 IdempotencyConflict`；台账不可用→`500 JournalUnavailable`；满额→`503 JournalFull`。`handle_mutate` 在 intent 审计成功后置 `suppress_final_audit`，外层不再追加单条审计；result 审计失败→`500 AuditUnavailable` 且台账保留结论，重放可得结论。
+- **请求级校验顺序**：JSON（`deny_unknown_fields`）→ `domain`/`type`/`reference`/`operation` 选择器 → `idempotencyKey` 文法 → 绝对 URI → ACL `mutate` → profile 存在 → scheme 白名单 → `sideEffect == mutating` → 卡片字段二次确认 → 严格归属与 `operation` 相等 → 摘要 → 台账判定。未知不生效窗口（超时、任务失败、`Pending`）保持 in-doubt 不写 result。
+- **配置与启动**：`[mutate].journal`（mutating profile 存在时必需）、`[mutate].max_entries`（缺省 10000，1..=1000000）；profile 循环校验 journal 登记、`[[mcp_servers]]` 登记与 `[materialize]`，任一缺失即拒绝启动。
+- **验证**：`Journal` 单测 8 项（in-doubt、重放、冲突、failed 重放、满额、半行截断恢复与非法行拒绝、摘要规范化、边界）；`refd` 集成测试 12 项，`reference_plane` 37 passed；`pact-ref` 全量 `cargo fmt`/`clippy`/`test`/`audit` 通过（`cargo audit` 仅既有 `unsafe-libyaml` unmaintained 告警）；`pact` 基线 384 passed。
+- **跨仓库**：代码全部在 `pact-ref`（`crates/ref-core`、`ref-auth`、`ref-audit`、`services/refd`）；本仓库改动为 `docs/requirements.md` FR37、`docs/thingref-governance.md` §13.1/§13.8、`spec/ref/v1/reference-plane.openapi.yaml` 的实现状态措辞与台账。
+- **未实现**：witness/compensation 示例（FR37 不要求自动补偿）；`revoke`、可选注册表与 conformance runner 仍按台账推进。母本未改动。
+
 ## 2026-10-31（第 95 轮，`mcp-mutating` 卡片校验实现，FR37/D53）
 
 - **§9.20 状态推进**：`pact-ref-spec` 的 `ContractCard::validate` 实现 `mcp-mutating` **卡片级**必填字段校验——`tool.inputSchemaDigest` 必须存在（格式仍走既有 `sha256:<64hex>` 校验）、`idempotency {key, semantics}` 非空、`result.materialization ∈ {required, optional}`（`forbidden` 拒绝）、`auth.audience` 非空、`capability.failure` 非空。此前只要求 `idempotency` 且 `materialization=required`。

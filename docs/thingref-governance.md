@@ -1017,7 +1017,7 @@ spec:
    已在规范层收紧校验（FR29/D44）；新增 `Tombstone` 记录 schema 与 `pact ref lint --tombstones` 交叉检查。
    **已完成**：可发现性 lint——对 `required=true` 检查 hidden、视图读取路径、Rule-R/consume 路径、保留证据与删除可区分性（5 个 warning code，`--strict` 视为失败）。
 4. **动态只读阶段（已完成，2026-10-31）**：`mcp-read` profile 校验、`refd` 的 `POST /v1/invoke`、`mcp` adapter（JSON-RPC `tools/call`）与内容寻址物化（FR36/D52）；结果经 `file://` 引用回到 `/v1/resolve`，参与者以正常 `seed`/`produce` 产生 witness token。动态写阶段与 `revoke` 仍未开始。
-5. **动态写阶段（规范层已实现，2026-10-31；端点待做）**：`pact-ref-spec` 已强制 `mcp-mutating` 卡片级必填字段（§13.8.2）；`POST /v1/mutate`、幂等台账、两阶段审计与 witness/compensation 边界待实现（FR37/D53，§13.8）。
+5. **动态写阶段（已完成，2026-10-31）**：`pact-ref-spec` 强制 `mcp-mutating` 卡片级必填字段（§13.8.2）；`refd` 已落地 `POST /v1/mutate`、幂等台账（intent/result 两阶段、重启恢复、半行截断、满额）、请求级严格归属与 `operation` 校验、两阶段审计与启动 fail-closed（FR37/D53，§13.8）。witness/compensation 示例留作后续事项。
 6. **可选注册表**：只做发现，不做真相源。
 
 ### 13.2 测试
@@ -1469,7 +1469,7 @@ JWT/JWKS 验签、声明校验、`scope` 映射与统一 `401`；JWKS 文件/HTT
 - 不接受 Identifier 作为 `reference`；不做跨服务路由或服务发现。
 - 不把上游响应直接透传给调用方；调用方只拿到物化引用与摘要。
 
-### 13.8 `POST /v1/mutate`：动态写调用与幂等台账（2026-10-31 定案，实现待做）
+### 13.8 `POST /v1/mutate`：动态写调用与幂等台账（2026-10-31 定案并实现）
 
 `mutate` 是 §13.1 阶段 5 的落点（FR37/D53）。目标：为 `mcp-mutating` 能力提供与只读调用**完全分离**的写入通道，使写操作「至多生效一次、结果可追溯、崩溃不猜测」；`refd` 仍不写 PACT 状态。
 

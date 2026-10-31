@@ -1221,7 +1221,7 @@ allow_plaintext = false             # 仅回环主机可设 true
 
 **测试**：`adapters/mcp` 单测覆盖 `tools/call` 请求形状、HTTP 非 2xx、JSON-RPC error、超限与物化摘要；`refd` 集成测试覆盖 invoke 成功 → `file://` → `/v1/resolve` 闭环、mutating `403`、缺 ACL `403`、上游失败 `502` 且审计 `failed`、缺 `[[mcp_servers]]`/缺 `[materialize]` 启动失败、非回环 `http://` 拒绝。
 
-### 9.20 refd 动态写调用与幂等台账（D53，规范层已实现、端点待做）
+### 9.20 refd 动态写调用与幂等台账（D53，已实现）
 
 **目标**：为 `mcp-mutating` 能力提供一条与只读调用**完全分离**的写入通道，使写操作「至多生效一次、结果可追溯、崩溃不猜测」；`refd` 仍不写 PACT 状态，witness 由参与者正常 `seed`/`produce` 产生。
 
@@ -1314,7 +1314,7 @@ max_entries = 10000                            # 1..=1000000
 
 **边界**：v1 不自动重试、不轮询上游、不提供撤销（revoke）；`capability.timeoutMs` 不参与执行；`/v1/invoke` 与 `/v1/mutate` 互不接受对方 `sideEffect`；台账不进入 PACT 事件日志，也不参与重放/压缩。
 
-**实现状态（第 95 轮）**：`pact-ref-spec` 的 `ContractCard::validate` 已强制上述**卡片级**必填字段——`tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience` 与非空 `failure`；`server.id` 是否登记于 `[[mcp_servers]]`、`reference`/`operation` 严格相等、`idempotencyKey` 格式属于请求级约束，由 `refd` 的 `/v1/mutate` handler 执行（实现②）。vendored 快照已同步；`refd` 测试基线卡片补 `failure` 以符合新约束。
+**实现状态（第 95–96 轮）**：第 95 轮由 `pact-ref-spec` 的 `ContractCard::validate` 强制**卡片级**必填字段——`tool.inputSchemaDigest`、`idempotency {key, semantics}`、`result.materialization ∈ {required, optional}`、`auth.audience` 与非空 `failure`；vendored 快照已同步。第 96 轮在 `pact-ref` 实现请求级部分：`ref-core` 新增 `MutateRequest`/`Mutation`/`MutationStatus` 与 `AuditEvent.request_digest`，`ref-auth` 新增 `SCOPE_MUTATE`；`refd` 新增 `journal` 模块（两阶段 append-only 台账、启动回放、半行截断、非法行拒绝启动）、`[mutate]` 配置与启动 fail-closed（mutating profile 缺 `journal`/`[[mcp_servers]]` 登记/`[materialize]` 即拒绝启动），并实现 `POST /v1/mutate` handler（严格 `reference`/`operation` 相等、`idempotencyKey` 格式、两阶段审计、错误映射）。
 
 **测试**：台账单测覆盖 intent/result 两阶段、同键同摘要重放、同键异摘要冲突、in-doubt 阻断、满额拒绝、半行截断恢复与非法行拒绝启动；`refd` 集成测试覆盖 mutate 成功 → `file://` → `/v1/resolve` 闭环、同键重放 `replayed=true` 且上游仅被调用一次、只读授权访问 `/v1/mutate` `403`、`mcp-read` 卡片 `403`、intent 审计失败时上游未被调用、result 审计失败返回 `500` 但重放可得结论、缺 `[mutate].journal`/缺必填 profile 字段启动或请求失败。
 

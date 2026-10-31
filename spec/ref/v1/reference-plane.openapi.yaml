@@ -9,8 +9,8 @@ info:
     首版包含 resolve / describe / invoke / mutate。invoke 仅接受 `capability.sideEffect =
     read-only` 的卡片，结果必须物化为新的静态引用（`resultRef` + `resultDigest`）；mutate
     仅接受 `capability.sideEffect = mutating` 的卡片，经本地幂等台账保证「至多生效一次」，
-    与 invoke 的 scope 和 ACL operation 完全分离。mutate 的契约定案于动态写阶段（FR37/D53），
-    实现待做。治理侧不解释 PACT 语义：domain / type 只用于选择 profile 与 ACL。
+    与 invoke 的 scope 和 ACL operation 完全分离。mutate 已于动态写阶段实现（FR37/D53）。
+    治理侧不解释 PACT 语义：domain / type 只用于选择 profile 与 ACL。
 
     设计依据见 `docs/thingref-governance.md` §13.6–§13.8。
 servers:
@@ -162,7 +162,7 @@ paths:
         `result`；同键同摘要的重放返回 `replayed=true` 且不再调用上游，同键异摘要返回
         409 `IdempotencyConflict`，上次崩溃于上游窗口内返回 409 `IdempotencyInDoubt`。
         结果按 `capability.result.materialization` 物化为 `file://` 引用。v1 不自动重试、
-        不轮询、不做 saga/自动补偿。契约见 `docs/thingref-governance.md` §13.8（实现待做）。
+        不轮询、不做 saga/自动补偿。契约与实现见 `docs/thingref-governance.md` §13.8。
       parameters:
         - $ref: "#/components/parameters/TraceId"
       requestBody:
