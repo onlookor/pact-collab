@@ -1027,9 +1027,9 @@ spec:
    - 存在无法靠上下文解析的未分类 Identifier；
    - 注册表不可用时的 fail-closed 发现语义已定案。
    **反向约束（任一违反不得启动）**：不做真相源（域旁 sidecar 权威，§10 议题 3）；不进入引擎/内核；不做强制全局中心；不为“统一省心”而开（§12）。
-   **验收**：先立 FR/D 并在 `docs/architecture.md` 附录 A 登记；`describe` 接受 Identifier 且注册表不可用时显式失败；不改变 `resolve` 对 URI 的要求。台账见 `todo.md`。
+   **验收**：先立 FR/D 并在 `docs/architecture.md` 附录 A 登记；`describe` 接受 Identifier 且注册表不可用时显式失败；不改变 `resolve` 对 URI 的要求。台账见 `todo.md`。前置建议见 §13.9.1。
 
-阶段外事项：`revoke` 未立项——无 FR/D 授权，v1 不提供撤销端点（§13.8.10）；若要做，先立需求与设计，且不引入自动补偿。
+阶段外事项：`revoke` 未立项——无 FR/D 授权，v1 不提供撤销端点（§13.8.10）；若要做，先立需求与设计，且不引入自动补偿。前置建议见 §13.9.2。
 
 ### 13.2 测试
 
@@ -1636,6 +1636,90 @@ max_entries = 10000                            # 1..=1000000
 - 不做跨服务路由或服务发现。
 - 不把上游响应直接透传给调用方；调用方只拿到物化引用与摘要。
 - 台账不进入 PACT 事件日志，也不参与重放/压缩。
+
+### 13.9 未启动项的前置工作建议（2026-10-31）
+
+本节只为 §13.1 阶段 6 与阶段外事项提供“立项前必须先回答的问题 + 建议拆分 + 代码落点”，**本身不构成立项**：未登记 FR/D 前不得据此实现，也不得自行取号；立项时再申请编号并先在 `docs/architecture.md` 附录 A 登记。
+
+#### 13.9.1 可选注册表
+
+**立项闸门**：§13.1 阶段 6 的四条触发条件必须全部满足，任一不满足即维持“未启动”。
+
+**需求层必须先回答（缺一不立项）**
+
+1. 消费方要解析什么：把 Identifier 换成 `ContractCard` 投影，还是换成绑定（scheme / contract）？后者会与 RefBindings 争夺权威（§10 议题 3），倾向不做。
+2. 数据从哪来：人工登记、域旁 sidecar 导出、CI 生成快照，还是运行时网络发现？**建议只接受离线快照**——网络发现会引入第 5 个 adapter 与一套新的 SSRF、缓存、可用性面。
+3. 冲突裁决：注册表命中与本地 RefBindings 不一致时谁赢。建议“本地优先、注册表只补空缺”，且注册表命中后仍必须通过卡片校验。
+4. 不可用语义：注册表缺失或损坏时 fail-closed，还是回退本地。建议对显式配置了 `[registry]` 的部署 fail-closed（未配置则该能力不存在）。
+
+**设计前置（三条硬约束）**
+
+- **只扩 `describe`，不动 `resolve`**：`resolve` 继续要求 URI，避免注册表成为第二真相源。
+- **先定 trait 形状**：当前 `ref-core::Registry::describe(&ReferenceForm)` 以引用字符串为键（`pact-ref/crates/ref-registry/src/lib.rs` 的 `MemoryRegistry`），Identifier 需要 `(domain, type, instance, identifier)` 键。可选方案：新增独立索引 trait（推荐，不波及既有 resolver），或给 `Registry` 增加带 `domain`/`type` 的查找方法——该选择改动 `ref-core` 公开面，必须先进 D 再动代码。
+- **零依赖边界**：注册表不得依赖 `pact-ref-spec`（否则破坏 spec 的零 `pact-core` 依赖与 vendored 快照形态）。标识符文法校验的权威仍在 spec，注册表只做精确匹配，不重复实现文法。
+
+**建议拆分**
+
+| 步骤 | 内容 | 验收 |
+|---|---|---|
+| S0 | 立 FR/D 并在附录 A 登记；回答上述 4 问，写入本节或 D | 文档评审通过，编号已登记 |
+| S1 | `ref-core` 新增索引 trait（不改 `Registry`）；`ref-registry` 增 `FileRegistry`（只读 JSON 快照、启动加载、重复键拒绝、非法即拒绝启动） | 单测：正常加载、重复键、非法 JSON、空表 |
+| S2 | `refd` 增 `[registry]`（`path`、`fail_closed`），仅在配置存在时装配；`handle_describe` 在 URI 路径未命中时查索引 | 集成：Identifier 命中、未命中 `404`、配置缺失 `503` |
+| S3 | 审计 `operation="describe"` 增 `source`（`inline` / `registry`）；conformance 增 `registry/` 目录 | 审计字段断言 + 用例随 runner 回归 |
+
+**反向约束复述**：不做真相源、不进引擎/内核、不做强制全局中心、不为“统一省心”而开（§12）。
+
+#### 13.9.2 `revoke`
+
+**现状**：§13.8.10 明确不做；`refd` 无撤销路由；`spec/ref/v1/reference-plane.openapi.yaml` 无 `revoke` path。
+
+**先回答“撤销的是什么”**——四类对象，各自都已有承载路径：
+
+| 撤销对象 | 现有承载 | 是否需要 `refd` 端点 |
+|---|---|---|
+| 引用失效（票面不应再被解析） | Tombstone + `pact ref lint --tombstones`（FR29/D44） | 否 |
+| 卡片退役（`id@version` 不再可用） | `POST /ref/reload` 原子换快照（FR33/D48） | 否 |
+| 绑定或策略收紧 | 同上（RefBindings 同事务重载，FR33/D48） | 否 |
+| 凭证吊销（静态令牌 / OIDC） | `[auth]` 配置重载或 IdP 侧吊销；`refd` 不管理身份生命周期（D51） | 否 |
+
+**结论**：四类都有既有路径，**建议不立项**。若因合规要求必须提供调用面 API，先立 FR/D 并回答：
+
+1. 粒度与幂等：撤销“引用”还是“卡片版本”？幂等键是否复用 `[mutate].journal` 的 `KeyScope`（复用会把撤销的崩溃恢复语义绑到写台账上）。
+2. 单一失效真相：撤销状态不得与 Tombstone 并存成两套，否则 `resolve` 与 `ref lint` 会给出不同结论。建议“撤销 = 写一条 Tombstone”，`refd` 只做入口。
+3. 端点语义：撤销后 `resolve`/`describe` 返回 `404 NotFound` 还是新增 `409 Revoked`（新错误码需先登记）。
+4. 审计形状：`operation="revoke"` 单条还是 intent/result 两条；若走台账则必须两条。
+5. 不做自动补偿：撤销失败不回滚、不做 saga（§13.8.7）。
+
+**建议拆分**
+
+| 步骤 | 内容 | 验收 |
+|---|---|---|
+| V0 | 立 FR/D + 语义定案（可无代码） | 文档评审，编号已登记 |
+| V1 | 若选 Tombstone 路径：只补 `pact-ref-spec` 校验与 CLI / lint 用例，`refd` 不新增端点 | `pact ref lint --tombstones` 用例；`resolve` 对已退役引用 `404` |
+| V2 | 若确需端点：独立台账（不复用写台账）+ `POST /v1/revoke` + 审计 + 集成测试（参照 mutate 的 12 项） | 幂等 / 重放 / 审计 / 崩溃恢复四组测试 |
+
+#### 13.9.3 resolve / invoke 数据面 conformance
+
+**现状**：runner 只解析 `kind: EntryCase`，同步 `fn main`，依赖仅 `pact-ref-spec` / `serde` / `serde_yaml`；假上游目前是测试内私有实现（`services/refd/tests/reference_plane.rs` 的 `fake_mcp_server`、`witness_compensation.rs` 的内联 `TcpListener`）。
+
+**必须先定的三件事**
+
+1. **驱动方式**：进程内 `pact-refd` router + `tower::ServiceExt::oneshot`（与 `reference_plane.rs` 现行做法一致，推荐），还是起真实子进程？前者需要 runner 增加 `pact-refd` / `tokio` / `axum` / `tower` 依赖——`services/refd/src/lib.rs` 已暴露 `router(state)`，路径可行；后者要处理端口探测与进程回收，不建议。
+2. **假服务清单与端口注入**：需要 4 个假上游——静态 HTTP(S) 文件服务、git smart HTTP（`info/refs` pkt-line 广告）、OCI registry（`HEAD /v2/<repo>/manifests/<ref>` 返 `Docker-Content-Digest`）、MCP JSON-RPC（`tools/call`，只读与 mutating 两套行为）。端口运行期才确定，用例需 `${PORT}` 占位或 `fixtures` 声明由 runner 替换。
+3. **用例自包含**：每个 case 声明 `fixtures`（启动哪些假服务、返回什么、是否要求失败），runner 负责启停；禁止外网依赖与固定端口。
+
+**建议拆分**
+
+| 步骤 | 内容 | 验收 |
+|---|---|---|
+| C0 | 立 FR/D（一致性测试的数据面范围）；定驱动方式与用例 schema（`ResolveCase` / `InvokeCase`） | 文档评审 + schema 示例 |
+| C1 | 抽 `conformance/harness`：4 个假上游 + `fixtures` 启停 + 端口回填；把 `fake_mcp_server` 从 `reference_plane.rs` 迁入共用 | harness 单测：启停、端口回填、启动失败报错 |
+| C2 | runner 增 `kind` 分派与异步驱动（`#[tokio::main]`），保持 `EntryCase` 可跑 | runner 自检：未知 `kind`、缺 `fixtures` 均报错 |
+| C3 | 先补 `resolve-file/`（无网络）与 `resolve-https/` | 用例 ≥ 10，含路径穿越与超限负例 |
+| C4 | 补 `resolve-git-oci/`、`mcp-read/`、`mcp-write/` | 覆盖 §13.6.9 的 allowlist、`redirects(0)`、体积上限 |
+| C5 | 补 `security/`：SSRF、明文非回环拒绝、userinfo、钉版不一致 | 每个负例对应一个已登记错误码 |
+
+**不改变的事实**：conformance 只验证契约与实现一致，不产生 PACT 状态、不替代 `refd` 自身集成测试；`resolve` 仍只接受 URI。
 
 ---
 

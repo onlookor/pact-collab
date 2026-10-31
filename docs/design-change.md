@@ -2,6 +2,16 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 101 轮，三个未启动项的前置建议；无代码变更）
+
+- **治理新增 §13.9**：为 §13.1 阶段 6（可选注册表）、阶段外事项（`revoke`）与数据面 conformance 提供“立项前必须先回答的问题 + 设计硬约束 + 建议拆分与代码落点”。本节**不构成立项**：未登记 FR/D 前不得实现，编号在立项时申请并先登记 `docs/architecture.md` 附录 A。
+- **§13.9.1 可选注册表**：4 个需求层问题（解析对象是卡片还是绑定、数据来源、冲突裁决、不可用语义）；3 条设计硬约束——只扩 `describe` 不动 `resolve`、先定 trait 形状、不得依赖 `pact-ref-spec`。实现事实：`ref-core::Registry::describe(&ReferenceForm)` 以引用字符串为键，`MemoryRegistry` 只接受 URI 键，Identifier 需要 `(domain, type, instance, identifier)` 键，故 S1 优先新增独立索引 trait 而不是改 `Registry`。拆分 S0–S3。
+- **§13.9.2 `revoke`**：按撤销对象拆四类（引用失效 / 卡片退役 / 绑定收紧 / 凭证吊销），逐类对照既有承载（Tombstone + `pact ref lint --tombstones`、`POST /ref/reload`、`[auth]` 重载或 IdP），**结论为建议不立项**。若因合规必须提供调用面 API，列出必须先回答的 5 问（粒度与幂等、单一失效真相、端点语义与错误码、审计形状、不做自动补偿）与 V0–V2 拆分。
+- **§13.9.3 数据面 conformance**：三个前置——驱动方式（推荐进程内 `pact-refd` router + `tower::ServiceExt::oneshot`；`services/refd/src/lib.rs` 已暴露 `router(state)`，路径可行，不建议起子进程）、4 个假上游与端口注入（静态 HTTP(S)、git smart HTTP、OCI registry、MCP JSON-RPC）、用例 `fixtures` 自包含；拆分 C0–C5，先做无网络的 `resolve-file/`。
+- **设计语义无变更**：D1–D54 与 FR1–FR38 均未变；未新增编号；`docs/architecture.md` 与 `docs/architecture-change.md` 未改（无结构性变更）。
+- **跨仓库**：本轮无代码改动；所引实现事实来自 `pact-ref`（`crates/ref-registry`、`conformance/runner`、`services/refd`）。
+- **验证**：纯文档改动，沿用 `pact` **384 passed / 0 failed**、`pact-ref` **175 passed / 0 failed** 基线。
+
 ## 2026-10-31（第 100 轮，物引专题 gap 补齐；无代码变更）
 
 - **gap 审视结论**：按物引（ThingRef）专题全链路核对，识别 8 项 gap。可推进的 5 项本轮补齐（G1–G4、G7），3 项因缺少立项或前置设计无法推进，已作为未启动项登记台账（可选注册表、`revoke`、conformance 的 resolve/invoke 用例）。
