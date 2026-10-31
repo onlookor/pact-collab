@@ -5,7 +5,7 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 85 轮）：P0 入口校验、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）与 B1 显式重载（FR33/D48）已落地并回归通过；`declarationDigest` 已给出候选 v1（治理 §13.4.2.1），**待用户确认**摘要对象、启用方式与格式。WASM 入口、`refd` 与动态阶段未开始。下一轮按 `declarationDigest` → P2 → P3 顺序推进。
+当前状态（2026-10-31，第 86 轮）：P0 入口校验、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）与 `declarationDigest` v1 第一步（FR34/D49）已落地并回归通过；摘要的**运行期比对**（第二步）待登记配置项与错误码后开工。WASM 入口、`refd` 与动态阶段未开始。下一轮按 D49 第二步 → P2 → P3 顺序推进。
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -43,7 +43,8 @@
 | [x] | `RefRule.value`（`none`/`uri`/`identifier`）语义落地 | FR31 / D46 / `ref-bindings.schema.json` | 入口强校验 + 单测；`required=true` 与 `value=none` 由绑定校验拒绝 |
 | [x] | B0：ContractCard `artifact.digestPolicy` / `reference.pinning.requiredForArchive` 运行期加载；daemon 新增 `[ref_contracts].paths`，按 `contract_id()` 建索引；声明 `contract` 的部署缺卡即拒绝启动；重复 `id@version` 即拒绝启动 | FR32 / D47 | 单测：加载/索引、按数据触发、重复 `id@version`、钉版并集只加严；e2e：卡片钉版阻断未钉版 consume（`ThingRefUnpinned`）、重复版本拒绝启动；`pact-http` 全绿，全量 338 passed；提交 `4b42778` |
 | [x] | B1：显式重载 `POST /ref/reload` + `pact ref reload`；卡片与绑定同事务、原子换索引、`dryRun` 影响报告、`ref-reload.jsonl` 审计、ACL 覆盖绑定域；不做文件监听 | FR33 / D48 | 单测 3 项（审计 JSONL、审计失败、并发 `409 RefReloadBusy`）；`ref_reload_e2e` 7 项（`dryRun` 报告、成功重载后新规则生效、失败保持旧状态、ACL 当前/新域、认证/信任模式、未配置 500）；CLI e2e 1 项；全量 349 passed；`fmt`/`clippy` 通过；提交 `a514380` |
-| [!] | `declarationDigest` 漂移检测：当前只校验格式，不参与匹配 | FR27 边界 / `ref-bindings.schema.json` | 方案与收益/代价见治理 §13.4.2；候选 v1（语义接口含 gates 条件与域名、紧凑 JSON 规范化、`sha256:<hex>` 格式不变、工具+lint 先行、运行期默认 `warn`/`enforce` 可选）见 §13.4.2.1；**候选已给出（2026-10-31），待用户确认**摘要对象、启用方式与格式 |
+| [x] | `declarationDigest` v1 第一步：语义接口摘要（域名 + types + preconditions + gates 含条件 + seed）、紧凑 JSON 规范化与条件文法冻结；`pact ref digest` 工具 + lint 漂移比对（不一致 error） | FR34 / D49 / `spec/ref/v1/declaration-digest.md` | `pact-analysis` 单测 5 项（含 golden 向量）；`pact-cli` 单测缺失/不一致；`ref_lint_e2e` 真实二进制 `ref digest`、`--name`、非法域名、漂移退出 1；全量回归见验证表 |
+| [ ] | `declarationDigest` 第二步：运行期比对 `[ref_digest] mode = off|warn|enforce`（默认 `warn`），仅在 `POST /domains`（`load_domain`）比较；`enforce` 仅“摘要存在且不一致”返回 `400`；启动恢复与 D48 重载不比较 | FR34 / D49 第二步 / 治理 §13.4.2.1 | 先登记配置项与错误码编号；单测三模式 + e2e 加载成功/400；不得改变既有域加载语义 |
 
 ### P2 跨仓库与快照
 
@@ -78,6 +79,7 @@
 | [x] | 第 83 轮：B0 实现同步——`requirements.md` FR32 状态、`design.md` §9.14 与 D47、`manual.md` §2.2/§7.11、治理 §8.1/§13.1/§13.4.1/§13.5、`architecture.md` 正文；`design-change.md` 第 83 轮、`architecture-change.md` 第 41 轮 | 与代码及测试逐条对照；全量 338 passed |
 | [x] | 第 84 轮：B1 实现同步——`requirements.md` FR33 状态、`design.md` §9.15 与 D48、`manual.md` §2.2/§7.11/§7.12/§8.1/§8.2/§9.4、治理 §8.1/§13.1/§13.4.1/§13.5、`architecture.md` 正文、`dist/pact.container.toml`；`requirements-change.md` 第 41 轮、`design-change.md` 第 84 轮、`architecture-change.md` 第 42 轮 | 与代码及测试逐条对照；全量 349 passed |
 | [x] | 第 85 轮：`declarationDigest` 候选 v1（语义接口、紧凑 JSON 规范化、工具+lint 先行、运行期 `warn`/`enforce`）写入治理 §13.4.2.1；`design-change.md` 第 85 轮 | 仅文档，无代码变更，无需回归；**待用户确认后再登记 FR/D、配置项与错误码** |
+| [x] | 第 86 轮：登记 `FR34`/`D49`（`architecture.md` 附录 A）；新增 `spec/ref/v1/declaration-digest.md` 与 schema `description`；`requirements.md` FR34、FR27/FR30 边界、`requirements-change.md` 第 42 轮；`design.md` D49/§9.16/D41/§9.12/§10、`design-change.md` 第 86 轮；`manual.md` §7.8/§7.11/§7.13/§8.1；治理 §8.1/§13.1/§13.4.2/§13.4.2.1；`architecture-change.md` 第 43 轮 | 编号先登记后引用；文档与代码/测试逐条对照；跨仓库标注：无 `pact-ref` 代码改动 |
 
 ### 验证与交付
 
@@ -93,6 +95,9 @@
 | [x] | 第 84 轮 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` | 均通过（退出码 0） |
 | [x] | 第 84 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、审计文件路径/权限、ACL 绕过） | 无新增依赖；文件写仅配置源读取与 `<data_dir>/ref-reload.jsonl` append+fsync，无 `unsafe`/网络/进程副作用；控制面要求认证 + `{domain}/*` ACL，审计失败 fail-closed；`cargo audit` 结论沿用 |
 | [x] | 推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增依赖；新增代码只读配置路径并解析 YAML，无 `unsafe`/网络/进程写；`cargo audit` 结论沿用 |
+| [x] | 第 86 轮全量回归 `cargo test --workspace --locked` | **356 passed / 0 failed**（新增 7 项：`pact-analysis` digest 5、`pact-cli` lint 单测 1、`ref_lint_e2e` 1） |
+| [x] | 第 86 轮 `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings` | 均通过（退出码 0） |
+| [x] | 第 86 轮推送前安全审视（凭据、`unsafe`、网络/进程/文件写、新增依赖、`cargo audit`） | 无新增包（`pact-analysis` 仅启用 workspace 既有 `serde_json`/`sha2`）；`digest.rs` 无 `unsafe`/网络/进程/文件 IO，CLI 只读声明文件；`cargo audit` 0 vulnerability / 2 unmaintained（沿用） |
 
 ## 已完成归档区
 

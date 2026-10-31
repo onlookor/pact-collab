@@ -18,7 +18,11 @@
       "required": ["domain"],
       "properties": {
         "domain": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
-        "declarationDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        "declarationDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "域声明语义接口摘要；对象、规范化与 golden 向量见 spec/ref/v1/declaration-digest.md（v1）"
+        }
       }
     },
     "spec": {

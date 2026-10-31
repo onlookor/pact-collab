@@ -20,7 +20,7 @@ apiVersion: pact.ref/v1
 kind: RefBindings
 metadata:
   domain: se_lifecycle
-  declarationDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  declarationDigest: sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb
 spec:
   types:
     design:
@@ -225,6 +225,128 @@ fn ref_lint_static_checks() {
     assert_eq!(value["error"]["code"], "Io");
 }
 
+/// D49 第一步：`pact ref digest` 与 lint 漂移比对走真实二进制。
+#[test]
+fn ref_digest_and_lint_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let declaration = write(dir.path(), "se_lifecycle.pact", DECL);
+
+    let out = pact(&["--json", "ref", "digest", &declaration]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value = report(&out);
+    assert_eq!(value["algorithm"], "sha256");
+    assert_eq!(value["digestVersion"], 1);
+    assert_eq!(
+        value["declarationDigest"],
+        "sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb"
+    );
+
+    // 人类模式只打印摘要。
+    let out = pact(&["ref", "digest", &declaration]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb"
+    );
+
+    // 域名参与摘要：显式 --name 改变结果。
+    let out = pact(&[
+        "--json",
+        "ref",
+        "digest",
+        &declaration,
+        "--name",
+        "other_domain",
+    ]);
+    assert!(out.status.success());
+    let value = report(&out);
+    assert_ne!(
+        value["declarationDigest"],
+        "sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb"
+    );
+
+    // 非法域名 → Config 错误。
+    let out = pact(&[
+        "--json",
+        "ref",
+        "digest",
+        &declaration,
+        "--name",
+        "bad.name",
+    ]);
+    assert!(!out.status.success());
+    assert_eq!(report(&out)["error"]["code"], "Config");
+
+    // 不一致 → error 且退出 1。
+    let mismatched = write(
+        dir.path(),
+        "mismatched.refs.yaml",
+        &BINDINGS.replace(
+            "sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb",
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ),
+    );
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &mismatched,
+        "--declaration",
+        &declaration,
+    ]);
+    assert!(!out.status.success(), "digest 不一致应使 lint 失败");
+    let value = report(&out);
+    assert_eq!(value["errors"], 1);
+    assert!(value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["code"] == "ref.bindings.digest_mismatch"));
+
+    // 缺失仍是 warning：默认退出 0，--strict 退出 1。
+    let missing = write(
+        dir.path(),
+        "missing.refs.yaml",
+        &BINDINGS.replace(
+            "  declarationDigest: sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb\n",
+            "",
+        ),
+    );
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &missing,
+        "--declaration",
+        &declaration,
+    ]);
+    assert!(out.status.success());
+    let value = report(&out);
+    assert_eq!(value["errors"], 0);
+    assert!(value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| finding["code"] == "ref.bindings.digest_missing"));
+    let out = pact(&[
+        "--json",
+        "ref",
+        "lint",
+        "--bindings",
+        &missing,
+        "--declaration",
+        &declaration,
+        "--strict",
+    ]);
+    assert!(!out.status.success(), "--strict 应把缺失 warning 视为失败");
+}
+
 const DECL_WITHOUT_DESIGN_READER: &str = r#"
 types { requirement; design; implementation }
 preconditions { requirement → design; design → implementation }
@@ -258,7 +380,15 @@ spec:
 fn ref_lint_reports_discoverability_gaps() {
     let dir = tempfile::tempdir().unwrap();
     let declaration = write(dir.path(), "se_lifecycle.pact", DECL_WITHOUT_DESIGN_READER);
-    let bindings = write(dir.path(), "se_lifecycle.refs.yaml", BINDINGS);
+    let bindings = write(
+        dir.path(),
+        "se_lifecycle.refs.yaml",
+        &BINDINGS.replace(
+            "sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb",
+            // 该测试的声明缺 design 读路径，摘要与主 fixture 不同。
+            "sha256:c8edd150985d3c2e9ab836df2ad59e685e892bea5981e5145993c7b58a4f8934",
+        ),
+    );
     let card = write(dir.path(), "design.yaml", CARD_WITHOUT_LIFECYCLE);
 
     let out = pact(&[

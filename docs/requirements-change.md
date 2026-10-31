@@ -2,6 +2,14 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 42 轮，`declarationDigest` v1 第一步实现）
+
+- **新增 FR34（D49）**：域声明语义接口摘要 `declarationDigest` v1。摘要对象 = 域名 + `types` + `preconditions` + `gates`（含条件表达式）+ `seed_authority`；规范化冻结在 `spec/ref/v1/declaration-digest.md`（UTF-8 紧凑 JSON、固定字段顺序、字符串字典序、条件自定文法文本），摘要为 `sha256:` + 64 位小写 hex。
+- **第一步实现**：`pact ref digest <file.pact> [--name N] [--json]`；`pact ref lint --declaration` 计算并比对绑定摘要——缺失 warning `ref.bindings.digest_missing`（`--strict` 失败），已记录且不一致 error `ref.bindings.digest_mismatch`（退出 1）。实现落在 `pact-analysis::digest` 纯函数，`pact-ref-spec` 与依赖方向不变。
+- **FR27 边界同步**：lint 由“不校验摘要内容”改为按 v1 规范计算并比对；检查项由“摘要缺失”扩为“缺失或不一致”。
+- **FR30 未生效项收敛**：`declarationDigest` 的语义比对已由 FR34 第一步实现；运行期比对（`[ref_digest].mode`）仍在 D49 第二步，未生效。
+- 其余 FR1–FR33、NFR1–NFR7 不变。
+
 ## 2026-10-30（第 41 轮，B1 显式重载实现）
 
 - **FR33 实现**：`POST /ref/reload`（`{"dryRun": bool}`）与 CLI `pact ref reload [--dry-run] [--json]` 落地；卡片与绑定同事务重新读取、解析并规范校验 → 校验全部 `contract` 引用 → 计算新增归档阻断报告 → 写 `<data_dir>/ref-reload.jsonl` 审计（append+fsync）→ 以 `RwLock<Arc<VisibilityProfiles>>` 原子换快照。任一步失败保持旧快照；`dryRun` 在审计后停止且 `applied=false`。

@@ -1019,10 +1019,11 @@ pact cpn my.pact --out my.cpn --bound task=3 --bound artifact=2
 pact ref lint --bindings refs.yaml --contracts cards/ --tombstones tombstones/ --declaration se_lifecycle.pact
 pact ref lint --bindings refs/ --contracts cards/ --tombstones tombstones/ --declaration se_lifecycle.pact --strict
 pact --json ref lint --bindings refs.yaml --contracts cards/ --tombstones tombstones/
+pact ref digest se_lifecycle.pact                    # 计算声明摘要（D49）
 ```
 
-- **输入**：`--bindings`、`--contracts`、`--tombstones` 均可重复，接受文件或目录；目录会展开 `.yaml`/`.yml`/`.json`。`--declaration` 可选；给定后校验绑定键引用的类型，并检查 `declarationDigest` 是否记录（不校验摘要内容，规范未定义算法）。`--name` 指定期望域名，缺省取声明文件 stem。
-- **报错**：绑定/契约/Tombstone 解析或规范校验失败；重复域、重复契约或重复 tombstone id；绑定类型不在声明中；契约引用没有对应卡片；绑定在契约不支持的 scheme 下使用该契约；被引用契约已 retired；Tombstone 引用的契约不存在、契约删除策略不是 `tombstone-then-delete`，或引用的 scheme/长度不被契约允许。
+- **输入**：`--bindings`、`--contracts`、`--tombstones` 均可重复，接受文件或目录；目录会展开 `.yaml`/`.yml`/`.json`。`--declaration` 可选；给定后校验绑定键引用的类型，并检查 `declarationDigest`——未记录为 warning，已记录则按 `spec/ref/v1/declaration-digest.md`（v1）计算并比对，不一致为 error（见 §7.13）。`--name` 指定期望域名，缺省取声明文件 stem。
+- **报错**：绑定/契约/Tombstone 解析或规范校验失败；重复域、重复契约或重复 tombstone id；绑定类型不在声明中；契约引用没有对应卡片；绑定在契约不支持的 scheme 下使用该契约；被引用契约已 retired；`declarationDigest` 与声明不一致；Tombstone 引用的契约不存在、契约删除策略不是 `tombstone-then-delete`，或引用的 scheme/长度不被契约允许。
 - **告警**：`required` 但无契约；允许 Identifier；允许未注册 scheme；引用长度上限超过契约；pinning 弱于契约；契约支持的 scheme 被绑定收窄；契约 deprecated；契约未被引用；未记录 `declarationDigest`；归档钉版契约未声明 `lifecycle`；同一 `(contract, ref)` 出现多条 tombstone；`required=true` 但可发现性不足（见 §7.10 五项）。
 - **输出与退出码**：`--json` 输出 `{bindings, contracts, tombstones, errors, warnings, findings[]}`；人类模式逐条打印 `error|warning [code] path: message` 并给出摘要。存在 error 退出 `1`，否则 `0`；`--strict` 下 warning 也退出 `1`。检查结论写 **stdout**；I/O 与用法错误写 **stderr**（`--json` 时为 §6.3 错误体）。
 - **边界**：只做静态检查，不验证引用可达、不验证内容是否已删除、不访问网络、不读运行期状态；lint 通过不代表运行期引用一定可用。
@@ -1154,7 +1155,7 @@ CLI/MCP 的 `--thing-ref`（或工具参数）省略时，客户端发送显式 
 
 **错误码**：`ThingRefMissing` / `ThingRefRequired` / `ThingRefUnpinned` / `InvalidThingRef`，均为 `400`，错误体同 §6.3（`error.code` + `error.detail` + `error.message`）。
 
-**未生效**：`declarationDigest` 漂移检测、卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除；WASM 本地宿主不经过 REST，尚无该校验。显式重载见 §7.12。
+**未生效**：`declarationDigest` 的运行期比对（加载域时不比对，见 §7.13 第二步）、卡片 `artifact.kind`/`mediaType` 检查、卡片生命周期计时/删除；WASM 本地宿主不经过 REST，尚无该校验。显式重载见 §7.12。
 
 ### 7.12 物引配置显式重载（D48）
 
@@ -1181,6 +1182,34 @@ REST 等价入口：`POST /ref/reload`，请求体 `{"dryRun": true}` 或 `{"dry
 - **回溯性加严**：归档钉版按当前规则判定，收紧后会令存量未钉版 token 不可归档；用 `--dry-run` 先查看 `blockedTokens`，再决定是否发布。
 
 **错误码**：`RefReloadInvalid`（`400`，解析/校验/重复版本/引用不可解析）、`RefReloadBusy`（`409`，已有重载进行中）、`Forbidden`（`403`，ACL 未覆盖）、`Unauthorized`（`401`）；内部错误 `RefReloadUnavailable` / `RefReloadFailed` / `RefReloadAuditFailed` 均为 `500`。
+
+### 7.13 声明摘要 `declarationDigest`（D49，离线第一步）
+
+`RefBindings.metadata.declarationDigest` 记录“这份绑定对应哪一版域声明”。摘要对象是声明的**语义接口**：域名 + 类型 + 前置条件 + gates（含条件表达式）+ 种子授权；注释、空白、段内顺序、文件名都不参与。规范与 golden 向量见 `spec/ref/v1/declaration-digest.md`（v1）。
+
+生成与比对（离线，不需要 daemon）：
+
+```bash
+pact ref digest se_lifecycle.pact                 # 打印 sha256:<64hex>
+pact ref digest se_lifecycle.pact --name proj     # 指定域名（缺省取文件 stem）
+pact --json ref digest se_lifecycle.pact          # JSON 含 algorithm / digestVersion
+```
+
+把输出写回绑定：
+
+```yaml
+apiVersion: pact.ref/v1
+kind: RefBindings
+metadata:
+  domain: se_lifecycle
+  declarationDigest: sha256:0316b1d92cafafef1ede488c48418afbd09e7d425440bde1e2db1e712cdd2078
+spec: { … }
+```
+
+- **域名参与摘要**：同一正文换域名会得到不同摘要，防止跨域复用绑定；`--name` 缺省取声明文件 stem（不含 `.pact`）。
+- **lint 比对**：`pact ref lint --declaration …` 时，未记录摘要 → warning `ref.bindings.digest_missing`（`--strict` 失败）；已记录且不一致 → error `ref.bindings.digest_mismatch`（退出 1）。声明改动后先跑 `pact ref digest` 更新绑定，再提交。
+- **不做**：不证明票面可达、不验证卡片内容、不进入引擎/事件日志；摘要格式固定 `sha256:<64hex>`，v1 语义冻结，未来换义必须新规范版本。
+- **第二步（尚未启用）**：daemon 计划在 `POST /domains`（`load_domain`）时按 `[ref_digest].mode`（默认 `warn`，可选 `enforce`）比对；`enforce` 仅“摘要存在且不一致”返回 `400`。启动恢复与 `ref reload` 不比对。当前加载域不做摘要检查。
 
 ---
 
@@ -1235,6 +1264,7 @@ REST 等价入口：`POST /ref/reload`，请求体 `{"dryRun": true}` 或 `{"dry
 | `replay <FILE>` | **离线** | 重放 `<instance>.events.jsonl`（校验事件 schema `version`） |
 | `cpn <FILE> --out PATH [--instance I] [--bound T=N]…` | **离线** | 生成单实例 CPN Tools 模型（论文 §4.5/§B；负条件需上界） |
 | `ref lint --bindings PATH… [--contracts PATH…] [--tombstones PATH…] [--declaration FILE] [--name N] [--strict]` | **离线** | 物引静态检查（FR27/D41/D44）：绑定、契约卡、Tombstone 与声明的一致性 |
+| `ref digest FILE [--name N]` | **离线** | 计算域声明语义接口摘要（FR34/D49）：打印 `sha256:<64hex>`；`--name` 缺省取文件 stem |
 | `ref reload [--dry-run]` | 在线 | 显式重载 RefBindings 与 ContractCard（FR33/D48；`--dry-run` 只校验与预检） |
 
 **实例 flag（D27/D39）**：所有域操作命令的 `--instance I` 可选，**缺省 = 活动实例**（`active.json`；无指针回退 `default`）——既有不带该 flag 的调用与脚本语义不变；显式给 `--instance` 即直连该实例（不受活动指针影响）。`--force` 仅用于对**非空实例**（含 `Imported` 接手状态）的再加载：默认拒绝（`DomainBusy`），加 `--force` 才重置其 Counter 并清除冻结标记。

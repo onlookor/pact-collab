@@ -26,6 +26,8 @@ use petgraph::Direction;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+pub mod digest;
+
 // ============ A.1 可达性 ============
 
 /// A.1 报告：种子权威类型、从种子可达的类型集合、不可达类型清单。

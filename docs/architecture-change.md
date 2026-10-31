@@ -2,6 +2,13 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见附录 A。
 
+## 2026-10-31（第 43 轮，`declarationDigest` v1 第一步）
+
+- 附录 A 登记 `FR34` / `D49`（域声明语义接口摘要 v1），权威定义在 `docs/requirements.md` §4 与 `docs/design.md` §0/§9.16。
+- 架构正文“票面写入校验在接口层”补充：摘要的规范化与计算只存在于离线工具 `pact ref digest` 与 `pact ref lint`，实现由 `pact-analysis` 提供；运行期比对尚未启用，引擎、存储与事件日志不感知摘要。
+- 组件与依赖方向不变：`pact-analysis` 新增 `digest` 模块（依赖 workspace 既有 `serde_json`/`sha2`），`pact-cli → pact-analysis` 已在依赖图中；未新增组件、未改变 `pact-ref-spec` 的零 `pact-core` 依赖。
+- 规范资产新增 `spec/ref/v1/declaration-digest.md`，`ref-bindings.schema.json` 的 `declarationDigest` 增加指向该规范的 `description`；schema 结构与 `pattern` 不变。
+
 ## 2026-10-30（第 42 轮，B1 显式重载实现）
 
 - 架构正文“票面写入校验在接口层”更新：卡片/绑定显式重载（FR33/D48）已实现，经控制面 `POST /ref/reload` 原子替换 `pact-http` 的规则快照；不进入引擎、存储或事件日志。

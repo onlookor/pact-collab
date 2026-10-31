@@ -1817,6 +1817,8 @@ dependencies = [
  "pact-parser",
  "petgraph",
  "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

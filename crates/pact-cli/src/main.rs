@@ -370,6 +370,14 @@ enum RefCmd {
         #[arg(long)]
         strict: bool,
     },
+    /// 计算 .pact 声明的语义接口摘要（离线，D49）
+    Digest {
+        /// .pact 声明文件
+        file: PathBuf,
+        /// 域名（缺省取文件 stem；须匹配 `[A-Za-z0-9_-]{1,128}`）
+        #[arg(long)]
+        name: Option<String>,
+    },
     /// 显式重载 daemon 的 RefBindings 与 ContractCard（在线，D48）
     Reload {
         /// 只校验并预检影响，不替换 daemon 内存索引
@@ -899,6 +907,7 @@ async fn run(cli: Cli) -> ExitCode {
                 name,
                 strict,
             ),
+            RefCmd::Digest { file, name } => offline_ref_digest(json, &file, name),
             RefCmd::Reload { dry_run } => {
                 let c = online!(conn, json);
                 done(json, c.reload(dry_run).await, |r| {
@@ -1108,7 +1117,62 @@ fn offline_ref_lint(
     }
 }
 
-fn offline_analyze(json: bool, file: &PathBuf) -> ExitCode {
+/// `pact ref digest` 的 JSON 输出（D49）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DigestReport {
+    declaration_digest: String,
+    algorithm: &'static str,
+    digest_version: u32,
+}
+
+/// `pact ref digest`：离线计算 `.pact` 声明的语义接口摘要（D49）。
+fn offline_ref_digest(json: bool, file: &Path, name: Option<String>) -> ExitCode {
+    let text = match read_file(file, json) {
+        Ok(text) => text,
+        Err(code) => return code,
+    };
+    let domain = match pact_parser::load_domain(&text) {
+        Ok(domain) => domain,
+        Err(problem) => return fail(json, problem_detail(&problem)),
+    };
+    let name = name.unwrap_or_else(|| default_name(file));
+    if !valid_domain_name(&name) {
+        return fail(
+            json,
+            ErrorDetail {
+                code: "Config".into(),
+                detail: serde_json::json!({ "name": name }),
+                message: format!(
+                    "域名 `{name}` 不匹配 [A-Za-z0-9_-]{{1,128}}；请用 --name 指定合法域名"
+                ),
+            },
+        );
+    }
+    let digest = pact_analysis::digest::declaration_digest(&name, &domain);
+    if json {
+        let report = DigestReport {
+            declaration_digest: digest,
+            algorithm: "sha256",
+            digest_version: pact_analysis::digest::DECLARATION_DIGEST_VERSION,
+        };
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!("{digest}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// 域名合法性与 `ref-bindings.schema.json` 的 `metadata.domain` 保持一致。
+fn valid_domain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn offline_analyze(json: bool, file: &Path) -> ExitCode {
     let text = match read_file(file, json) {
         Ok(t) => t,
         Err(c) => return c,
@@ -1173,7 +1237,7 @@ fn offline_analyze(json: bool, file: &PathBuf) -> ExitCode {
 
 fn offline_cpn(
     json: bool,
-    file: &PathBuf,
+    file: &Path,
     out: &PathBuf,
     instance: &str,
     bounds: &[String],
@@ -1304,7 +1368,7 @@ fn offline_compose(json: bool, files: &[PathBuf]) -> ExitCode {
     }
 }
 
-fn offline_replay(json: bool, file: &PathBuf) -> ExitCode {
+fn offline_replay(json: bool, file: &Path) -> ExitCode {
     let text = match read_file(file, json) {
         Ok(t) => t,
         Err(c) => return c,
@@ -1373,7 +1437,7 @@ fn offline_replay(json: bool, file: &PathBuf) -> ExitCode {
 
 // ============ 公共辅助 ============
 
-fn read_file(path: &PathBuf, json: bool) -> Result<String, ExitCode> {
+fn read_file(path: &Path, json: bool) -> Result<String, ExitCode> {
     std::fs::read_to_string(path).map_err(|e| {
         fail(
             json,

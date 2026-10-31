@@ -215,9 +215,9 @@
 
 - **定位**：提供离线命令 `pact ref lint`，在进入运行前检查 RefBindings、ContractCard 与 `.pact` 声明的静态一致性。不解析具体 `ThingRef` 的存在性、不访问网络、不读写引擎状态。
 - **输入**：`--bindings PATH`（可重复；文件或目录，目录展开 `.yaml`/`.yml`/`.json`）、`--contracts PATH`（可重复）、`--tombstones PATH`（可重复，D44）、`--declaration FILE`（可选 `.pact`）、`--name N`（期望域名；缺省取声明文件 stem）、`--strict`（警告视为失败）。
-- **检查项**：绑定/契约/Tombstone 解析与规范校验；重复域、重复契约与重复 tombstone；绑定类型键与声明类型一致；契约引用可解析；绑定接受的 scheme 与契约声明的 scheme 一致；`required` 但无契约；Identifier 放行；未注册 scheme 放行；`declarationDigest` 缺失；契约状态（retired / deprecated）；未被引用的契约；归档钉版契约的 retention 声明；tombstone 的契约存在性、删除策略一致性与引用 scheme/长度；`required=true` 类型的可发现性（读取路径、视图暴露、保留证据与删除可区分性）。
+- **检查项**：绑定/契约/Tombstone 解析与规范校验；重复域、重复契约与重复 tombstone；绑定类型键与声明类型一致；契约引用可解析；绑定接受的 scheme 与契约声明的 scheme 一致；`required` 但无契约；Identifier 放行；未注册 scheme 放行；`declarationDigest` 缺失或不一致；契约状态（retired / deprecated）；未被引用的契约；归档钉版契约的 retention 声明；tombstone 的契约存在性、删除策略一致性与引用 scheme/长度；`required=true` 类型的可发现性（读取路径、视图暴露、保留证据与删除可区分性）。
 - **输出与退出码**：`--json` 输出 `{bindings, contracts, tombstones, errors, warnings, findings[]}`，finding 含 `severity / code / path / message`；人类模式逐条打印并给出摘要。存在 error 退出 `1`，否则 `0`；`--strict` 下 warning 也退出 `1`。
-- **边界**：不替代运行期 resolve/invoke；不校验 `declarationDigest` 的内容（规范未定义摘要算法）；不检查实例的动态引用集合。静态检查通过不代表运行期引用可用。
+- **边界**：不替代运行期 resolve/invoke；`declarationDigest` 按 `spec/ref/v1/declaration-digest.md` 的 v1 规范计算并比对（FR34）——缺失为 warning，不一致为 error；不检查实例的动态引用集合，不验证票面可达性。静态检查通过不代表运行期引用可用。
 - **实现状态**：已实现（2026-10-27）。`pact-cli` 单元测试与端到端测试覆盖一致输入、未知类型、缺失/未使用契约、scheme 冲突、Identifier 放行、重复/退役契约、解析失败与退出码。
 
 ### FR28 物引可见性过滤（D42）
@@ -257,7 +257,7 @@
   - `maxLength` 覆盖默认 2048 字节上限，超过 → `400 InvalidThingRef`。
   未加载该域绑定时只做结构规则，不做策略校验。
 - **继承与边界**：CLI 与 MCP 经 REST client 调用，自动继承同一套校验；MCP 工具参数省略时 client 发送显式 `null`（等价 `∅`），无法表达“缺失”。`pact-wasm` 本地宿主与 `pact-runtime` 的进程内路径不在本需求内（WASM 入口校验单列事项）。
-- **未生效项**：仅剩 `declarationDigest`（当前只校验格式，不参与匹配）；`onUnknownScheme`、`value`、`pinning` 已由 FR31 接入运行期，ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载由 FR32 实现，显式重载由 FR33 实现（2026-10-30）；见 `todo.md` P1。
+- **未生效项**：`declarationDigest` 的语义比对由 FR34 第一步在 `pact ref lint` 实现（不一致 = error）；运行期比对（`[ref_digest].mode`）尚未启用，见 D49 第二步。`onUnknownScheme`、`value`、`pinning` 已由 FR31 接入运行期，ContractCard 的 `artifact.digestPolicy` / `reference.pinning` 运行期加载由 FR32 实现，显式重载由 FR33 实现（2026-10-30）；见 `todo.md` P1。
 - **错误码**：均为 `400`，沿用 §6.3 结构化错误体；`code` 为 `ThingRefMissing` / `ThingRefRequired` / `InvalidThingRef`，`message` 携带原始规范错误文本（不含票面全文以外的敏感信息，票面本身可能含位置信息，按调用方权限返回）。
 - **实现状态**：已实现（2026-10-28）。`pact-ref-spec` 修复 userinfo 与 Identifier 文法；`pact-http` 新增 `ThingRefField`（区分缺失/`null`）与 `VisibilityProfiles::validate_thing_ref`；`seed`/`produce` 在引擎调用前接线。单元测试覆盖三态、结构规则、`git+ssh` 与 Identifier 文法；端到端测试覆盖缺失/`null`、userinfo、裸路径、Identifier、超长、大写 scheme 规范化与绑定策略。
 
@@ -301,6 +301,16 @@
 - **回溯性加严**：按 FR31/D46，归档钉版在 consume 时按当前有效规则判定；把绑定切到更严的卡片版本会让存量未钉版 token 不可归档。这是运维决策，由预检报告与发布说明承担，不改变判定时机；不做“只影响切换后 token”的豁免（那需要记录 token 产生时的规则版本，另立事项）。
 - **明确不做**：文件监听自动热加载、自动回滚、按域灰度（一次重载对全部域生效）、把卡片/绑定写入事件日志或 `seq`。
 - **实现状态**：已实现（2026-10-30，B1）。`pact-http` 单测覆盖审计 JSONL 与审计失败；e2e 覆盖 `dryRun` 影响报告、成功重载后新规则生效、校验/审计失败保持旧状态、ACL 覆盖当前与新域、令牌模式认证与信任模式匿名；CLI e2e 覆盖真实二进制 `pact ref reload --dry-run`。
+
+### FR34 域声明语义接口摘要 `declarationDigest` v1（D49）
+
+- **定位**：让 RefBindings 的 `metadata.declarationDigest` 从“只校验格式的死字段”变成可核对的声明版本证据。摘要对象取**语义接口**，规范化与 golden 向量冻结在 `spec/ref/v1/declaration-digest.md`；运行期比对不在本需求第一步内。
+- **摘要对象**：域名（`load_domain` 的 `name`；CLI 取 `--name`，缺省文件 stem，须匹配 `[A-Za-z0-9_-]{1,128}`）+ `types` + `preconditions` + `gates`（每个 `(participant, action, type)` 及其条件表达式）+ `seed_authority`。注释、空白、换行/缩进、段内顺序、文件名、实例名、分析结果与卡片/绑定内容都不参与。
+- **规范化**：UTF-8 紧凑 JSON（无缩进、无尾换行），顶层固定 `{"kind":"pact.declaration.interface","v":1,"domain":…,"types":[…],"preconditions":[…],"gates":[…],"seed":[…]}`；集合按字符串字典序升序，`gates` 按 `(participant, action, type)` 升序（action 用 `read`/`consume`/`produce` 字符串键，不是枚举序）；条件用自定文法文本 `via(T)` / `exists(T)` / `count(T,>=,n)` / `count(T,=,n)` / `and(A,B)` / `or(A,B)` / `not(A)`，不使用 `serde` 派生表示。摘要 = `sha256:` + 规范化字节的小写十六进制 SHA-256。
+- **第一步（已实现）**：新增离线 `pact ref digest <file.pact> [--name <domain>] [--json]`；`pact ref lint --declaration` 计算摘要并与绑定比对——缺失仍为 warning `ref.bindings.digest_missing`（`--strict` 失败），已记录且不一致为 error `ref.bindings.digest_mismatch`（退出码 1）。实现落在 `pact-analysis` 纯函数（CLI 与未来运行期共用），`pact-ref-spec` 保持零 `pact-core` 依赖；规范文件为 `spec/ref/v1/declaration-digest.md`。
+- **第二步（未实现，另行登记配置项与错误码）**：运行期 `[ref_digest] mode = off|warn|enforce`（默认 `warn`），仅在 `POST /domains`（`load_domain`）比对；绑定未记录摘要或该域无绑定时不比较；`warn` 写结构化日志且加载成功，`enforce` 仅“摘要存在且不一致”返回 `400`；启动恢复不比较（既有实例持声明快照，D27），显式重载（D48）不复核已登记声明。
+- **边界**：摘要是“绑定对应哪版声明”的证据，不证明票面可达、不验证卡片内容、不进入引擎/存储/事件日志；格式保持 `sha256:<64hex>`，v1 语义冻结，未来换义须新规范版本与新编号。
+- **实现状态**：第一步已实现（2026-10-31）。`pact-analysis` 单测覆盖格式/顺序不变、语义变化、规范化 JSON 形状、条件文本与 golden 向量；`pact-cli` 单测覆盖缺失/不一致；e2e 覆盖真实二进制 `ref digest`、`--name` 参与摘要、非法域名 `Config` 错误、不一致退出 1 与 `--strict`。第二步未实现。
 
 ## 5. 非功能需求
 

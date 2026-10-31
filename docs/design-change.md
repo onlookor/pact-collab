@@ -2,6 +2,18 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-10-31（第 86 轮，`declarationDigest` v1 第一步实现）
+
+- **D49 定案并实现第一步**：摘要对象取语义接口（域名 + `types` + `preconditions` + `gates` 含条件 + `seed_authority`），规范化与 golden 向量冻结在 `spec/ref/v1/declaration-digest.md`；实现为 `pact-analysis::digest` 纯函数（新增 workspace 既有 `serde_json`/`sha2`），CLI 与未来 `pact-http` 共用。
+- **`gates` 排序修正**：`BTreeMap<(Participant, Action, TypeName), …>` 的枚举序是 `Read`/`Consume`/`Produce`，与协议要求的字符串字典序不同；序列化前显式按 `(participant, action.as_str(), type)` 重排，并在规范中冻结。
+- **CLI**：`pact ref digest` 输出 `sha256:<64hex>`；JSON 为 `{declarationDigest, algorithm:"sha256", digestVersion:1}`；域名取 `--name` 或文件 stem，非法（不匹配 `[A-Za-z0-9_-]{1,128}`）返回 `Config` 错误。
+- **lint**：`pact ref lint --declaration` 具备域名时计算并比对；新增 error `ref.bindings.digest_mismatch`，缺失仍为 warning。既有测试夹具的摘要同步为真实值。
+- **未实现（登记为 D49 第二步）**：`[ref_digest].mode = off|warn|enforce`（默认 `warn`）、`load_domain` 比对、`enforce` 的 `400` 错误码；配置项与错误码须先登记。
+- **设计文档**：D41 摘要边界、§9.12 未覆盖路径、§9.16 新节、§10 测试表同步；治理 §8.1/§13.1/§13.4.2/§13.4.2.1 标注“已确认、第一步已实现”。
+- **跨仓库**：无 `pact-ref` 代码改动；`scripts/sync-spec.sh` 只同步 `pact-ref-spec` crate，`spec/ref/v1` 文档不参与快照。
+- **验证**：全量 `cargo test --workspace --locked` **356 passed / 0 failed**（新增 7 项：digest 5、lint 单测 1、e2e 1）；`cargo fmt --all -- --check` 与 `cargo clippy --workspace --all-targets --locked -- -D warnings` 通过。
+- **安全审视**：无新增包（`pact-analysis` 仅启用 workspace 既有 `serde_json`/`sha2`）；`digest.rs` 为纯函数，无 `unsafe`/网络/进程/文件 IO，CLI 仅只读声明文件；`cargo audit` 0 vulnerability / 2 unmaintained（沿用）。
+
 ## 2026-10-31（第 85 轮，`declarationDigest` 候选定义，待确认；无代码变更）
 
 - **触发**：用户要求先确认摘要对象与启用方式，再进入实现。

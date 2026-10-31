@@ -269,7 +269,11 @@ pub fn lint_texts_with_tombstones(
             ),
         }
     }
-    let has_declaration = declaration_domain.is_some();
+    // D49：声明语义接口摘要；只有声明与域名都可得时才参与比对。
+    let declaration_digest = match (&declaration_domain, expected_domain.as_deref()) {
+        (Some(domain), Some(name)) => Some(pact_analysis::digest::declaration_digest(name, domain)),
+        _ => None,
+    };
 
     let mut referenced: BTreeSet<String> = BTreeSet::new();
     for (path, parsed) in &parsed_bindings {
@@ -281,7 +285,7 @@ pub fn lint_texts_with_tombstones(
             declaration_domain.as_ref(),
             &cards,
             expected_domain.as_deref(),
-            has_declaration,
+            declaration_digest.as_deref(),
         );
     }
 
@@ -371,7 +375,7 @@ fn check_bindings(
     declaration: Option<&Domain>,
     cards: &BTreeMap<String, (String, ContractCard)>,
     expected_domain: Option<&str>,
-    has_declaration: bool,
+    declaration_digest: Option<&str>,
 ) {
     let known_types: Option<BTreeSet<String>> =
         declaration.map(|domain| domain.types.iter().map(|ty| ty.0.clone()).collect());
@@ -388,12 +392,27 @@ fn check_bindings(
             );
         }
     }
-    if has_declaration && bindings.metadata.declaration_digest.is_none() {
+    if declaration.is_some() && bindings.metadata.declaration_digest.is_none() {
         sink.warning(
             "ref.bindings.digest_missing",
             path,
             "未记录 declarationDigest，声明漂移无法检测",
         );
+    }
+    if let (Some(expected), Some(recorded)) = (
+        declaration_digest,
+        bindings.metadata.declaration_digest.as_deref(),
+    ) {
+        if recorded != expected {
+            sink.error(
+                "ref.bindings.digest_mismatch",
+                path,
+                format!(
+                    "declarationDigest 与声明不一致：记录 `{recorded}`，实际 `{expected}`；\
+                     声明变更后请用 `pact ref digest` 重新生成"
+                ),
+            );
+        }
     }
 
     if let Some(types) = known_types.as_ref() {
@@ -1117,7 +1136,7 @@ apiVersion: pact.ref/v1
 kind: RefBindings
 metadata:
     domain: se_lifecycle
-    declarationDigest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    declarationDigest: sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb
 spec:
     types:
         design:
@@ -1176,6 +1195,31 @@ spec:
         let report = lint(BINDINGS, &[CARD]);
         assert_eq!(report.errors, 0, "findings: {:?}", report.findings);
         assert_eq!(report.warnings, 0, "findings: {:?}", report.findings);
+    }
+
+    #[test]
+    fn reports_digest_missing_and_mismatch() {
+        // 缺失：仍是 warning，不阻断。
+        let missing = BINDINGS.replace(
+            "    declarationDigest: sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb\n",
+            "",
+        );
+        let report = lint(&missing, &[CARD]);
+        assert_eq!(report.errors, 0, "findings: {:?}", report.findings);
+        assert!(report.findings.iter().any(|finding| {
+            finding.code == "ref.bindings.digest_missing" && finding.severity == Severity::Warning
+        }));
+
+        // 不一致：error，阻断（D49 第一步）。
+        let mismatched = BINDINGS.replace(
+            "sha256:19fe1f29f567a5314572ba8af957129e9570cff3de6ca3bc0da9523441bdcbfb",
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        let report = lint(&mismatched, &[CARD]);
+        assert!(report.errors > 0, "findings: {:?}", report.findings);
+        assert!(report.findings.iter().any(|finding| {
+            finding.code == "ref.bindings.digest_mismatch" && finding.severity == Severity::Error
+        }));
     }
 
     #[test]
