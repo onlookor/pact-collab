@@ -61,7 +61,7 @@ tags: [pact, thingref, governance, ref-bindings, contract-card]
 4. **`required: true` 不能配 `value: none`**。这是配置矛盾，daemon 直接拒绝启动。
 5. **重载是一次性全局替换**。没有文件监听、没有自动回滚、没有按域灰度；发布前必须先 `--dry-run`。
 6. **`visibility` 不是授权**。它只决定视图是否返回票面，不改变 token 存在性、类型、计数，
-   也不改变 `GET /tokens/{id}` 的 Rule-R 授权。
+   也不改变单 token 读取（`POST /domains/{d}/tokens/{id}/read`）的 Rule-R 授权。
 
 ## 3. 六个主题
 
@@ -186,7 +186,7 @@ spec:
 
 - 配置来源：`[ref_bindings].paths`；不配即全部 `read-gate`。
 - 只影响 `GET /counter` 与 `GET /archive`；token 存在性、类型、状态、计数不变。
-- `GET /tokens/{id}` 仍由 Rule-R 的 read gate 决定。
+- 单 token 读取（`POST .../tokens/{id}/read`）仍由 Rule-R 的 read gate 决定。
 - 启用 `read_audit` 后，视图读取按类型记录暴露计数（`kind=view`，不含票面值）；
   审计写失败 → 视图 `500`。
 

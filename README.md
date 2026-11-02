@@ -109,7 +109,7 @@ PACT has one onboarding ladder: authoring contract → [`pact-domain-authoring` 
 | Write your first domain inside a coding agent | [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) | `pact analyze <file>` until it exits 0; [example domains](examples/README.md) |
 | Write your first domain with no toolchain installed | [Authoring workbench](https://onlookor.github.io/pact-collab/authoring/) ([offline file](web/authoring/index.html)) | [Sandbox](https://onlookor.github.io/pact-collab/sandbox/) to run it in memory |
 | Write a domain by hand, or follow the full protocol | [`docs/authoring-contract.md`](docs/authoring-contract.md) | [manual §3](docs/manual.md) for grammar, §5 for the six analyses |
-| Run a domain and drive agents | [manual §2](docs/manual.md) (daemon, `pact.toml`, identity) and §4 (CLI / REST / MCP) | [`examples/online/run.sh`](examples/online/run.sh), then the [connect wizard](https://onlookor.github.io/pact-collab/connect/) |
+| Run a domain and drive agents | [`examples/runtime/run.sh`](examples/runtime/run.sh) (runtime golden path: one command verifies analyze → load/seed → four agents self-driving to Rule-T → replay cross-check) | [manual §2](docs/manual.md) (daemon, `pact.toml`, identity) and §4 (CLI / REST / MCP), [`examples/online/run.sh`](examples/online/run.sh), the [connect wizard](https://onlookor.github.io/pact-collab/connect/) |
 | Use PACT inside DeepSeek Harness | [`dsh-plugin-pact`](https://github.com/onlookor/pact-dsh#readme) | [manual §13](docs/manual.md) for `observe` / `govern`, configuration and limits |
 | Deploy or operate it | [manual §2.2–§2.4](docs/manual.md) (TLS, tokens, signatures), §7 (audit/replay), §10 (troubleshooting) | [`architecture.md`](docs/architecture.md) §3–§4, [`design.md`](docs/design.md) §9 |
 | Decide when a shared token may be consumed | [`token-consumption-timing.md`](docs/token-consumption-timing.md) | [`authoring-contract.md`](docs/authoring-contract.md) §5 |
@@ -128,6 +128,11 @@ examples/offline/run.sh    # six analyses × 5 domains, well-formedness rejectio
                            # compose accept + C2 rejection, event replay — no daemon needed
 examples/online/run.sh     # daemon full lifecycle: load → seed → produce/read/consume
                            # → gate rejection → termination → replay
+
+cargo build -p pact-cli -p pact-runtime
+examples/runtime/run.sh    # runtime golden path (33 assertions): analyze 0-violation
+                           # → load/seed → pact-runtime drives four agents to Rule-T
+                           # → status / log length / replay counts agree
 ```
 
 Or run the analyses directly (offline, no daemon):
@@ -223,7 +228,7 @@ pact status --domain proj
 cargo test --workspace
 ```
 
-245 tests across the workspace, covering:
+390 tests across the workspace, covering:
 
 - **Golden traces** for the paper's four example domains — the software lifecycle above, a healthcare pathway (fan-in preconditions, `via` provenance), a ReAct loop (cyclic topology), and a discriminating deadlock scenario.
 - **Property-based tests** — declaration round-trip identity and execution invariants (512 cases each).

@@ -1,5 +1,10 @@
 // 软件工程通用域：生命周期（中等粒度）
 //
+// ⚠ 教学反例：本域含确定性 stranding（deployer 的 `via implementation` 见证
+// 可能被 tester 先行消费，`pact analyze` 报 stranding_risk=1，potential=false），
+// 用于演示分析器风险报告与运行时拦截，**不能用作 runtime 黄金路径**。
+// 无风险的黄金路径验收域见 examples/runtime/linear.pact。
+//
 // 出处：docs/pactv1_rev3.md Part II Section 1
 //   Chapter 1 骨架（5 类型 / 4 规则 / 生产链）
 //   Chapter 2 权限细化（reviewer、qa_lead 为只读参与者，从不生产也不消费）

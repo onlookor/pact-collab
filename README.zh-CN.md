@@ -109,7 +109,7 @@ PACT 只有一条上手阶梯：域作者契约 → [`pact-domain-authoring` ski
 | 在 coding agent 里写第一份域声明 | [`pact-domain-authoring` skill](skills/pact-domain-authoring/SKILL.md) | 跑 `pact analyze <file>` 直到 exit 0；再看[示例域](examples/README.md) |
 | 没装工具，想写第一份域声明 | [作者工作台](https://onlookor.github.io/pact-collab/authoring/)（[离线文件](web/authoring/index.html)） | 用[运行沙盒](https://onlookor.github.io/pact-collab/sandbox/)在内存里跑一遍 |
 | 手写域声明，或需要完整生成协议 | [《PACT 域作者契约》](docs/authoring-contract.md) | [手册 §3](docs/manual.md)看语法、§5 看六项分析 |
-| 跑一个域，并让 agent 驱动它 | [手册 §2](docs/manual.md)（daemon、`pact.toml`、身份）与 §4（CLI / REST / MCP） | [`examples/online/run.sh`](examples/online/run.sh)，再用[接入向导](https://onlookor.github.io/pact-collab/connect/) |
+| 跑一个域，并让 agent 驱动它 | [`examples/runtime/run.sh`](examples/runtime/run.sh)（runtime 黄金路径：一条命令验收 analyze → load/seed → 四 agent 自驱至 Rule-T → replay 对照） | [手册 §2](docs/manual.md)（daemon、`pact.toml`、身份）与 §4（CLI / REST / MCP）、[`examples/online/run.sh`](examples/online/run.sh)、[接入向导](https://onlookor.github.io/pact-collab/connect/) |
 | 在 DeepSeek Harness 里使用 PACT | [`dsh-plugin-pact`](https://github.com/onlookor/pact-dsh#readme) | [手册 §13](docs/manual.md) 的 `observe` / `govern`、配置与限制 |
 | 部署与运维 | [手册 §2.2–§2.4](docs/manual.md)（TLS、令牌、签名）、§7（审计与重放）、§10（故障排查） | [`architecture.md`](docs/architecture.md) §3–§4、[`design.md`](docs/design.md) §9 |
 | 裁决共享 token 何时可以消费 | [`token-consumption-timing.md`](docs/token-consumption-timing.md) | [契约 §5](docs/authoring-contract.md) |
@@ -128,6 +128,11 @@ examples/offline/run.sh    # 六项分析 × 5 域、三类良构违例、
                            # compose 接受 + C2 拒绝、事件重放——无需 daemon
 examples/online/run.sh     # daemon 全生命周期：装载 → 播种 → 生产/读取/消费
                            # → gate 拦截 → 终止 → 重放
+
+cargo build -p pact-cli -p pact-runtime
+examples/runtime/run.sh    # runtime 黄金路径（33 项断言）：analyze 0 违规 →
+                           # load/seed → pact-runtime 四 agent 自驱至 Rule-T
+                           # → status/日志行数/replay 三方计数一致
 ```
 
 或直接离线运行分析：
@@ -223,7 +228,7 @@ pact status --domain proj
 cargo test --workspace
 ```
 
-workspace 内 245 项测试，覆盖：
+workspace 内 390 项测试，覆盖：
 
 - **黄金轨迹**——论文四个示例域：软件生命周期（上文）、医疗路径（扇入前置、`via` 溯源）、ReAct 循环（环形拓扑）、区分性死锁场景。
 - **属性测试**——声明往返同一性与执行不变量（各 512 用例）。

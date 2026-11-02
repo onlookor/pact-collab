@@ -1,0 +1,35 @@
+# PACT runtime 黄金路径：examples/runtime/linear.pact 的 agent 编排配置（D24）。
+#
+# 执行方式：本文件由 run.sh 复制到 mktemp 临时目录后在该目录内启动 pact-runtime；
+# 相对路径（declaration / endpoint.unix）均相对该临时目录解析，不写仓库。
+#
+# 参与者 ↔ gate 对应（详见 linear.pact 头部注释）：
+#   seeder   —— 种子权威 + reads request。种子注入由 run.sh 经 CLI
+#               （`pact domain load` + `pact seed`）先行完成，因此本配置不给 seeder
+#               配 [agents.seed] 引导；它以只读参与者身份自驱至终止。
+#   worker   —— 第一棒：reads / consumes request，produces work。
+#   finisher —— 第二棒：reads / consumes work，produces result。
+#   sink     —— 终点：consumes result；Counter 清空后 Rule-T 成立，全员终止。
+#
+# 注意：若改为让 seeder 携带 [agents.seed] 引导（runtime 代为 load + seed），
+# 就不要再用 CLI 预载同一实例——对已占用实例重复 load 会被 DomainBusy 拒绝。
+
+domain = "linear"
+declaration = "linear.pact"
+poll_ms = 20
+deadline_s = 30
+
+[endpoint]
+unix = "./pact.sock"
+
+[[agents]]
+participant = "seeder"
+
+[[agents]]
+participant = "worker"
+
+[[agents]]
+participant = "finisher"
+
+[[agents]]
+participant = "sink"

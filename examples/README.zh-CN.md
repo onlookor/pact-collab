@@ -61,11 +61,12 @@ PACT 是**声明式协同层**，不是 agent 框架，也不是任务执行器�
 4 个），这是**预期**的：片段没有 seed_authority，A.1 的 BFS 没有起点。片段只在
 组合后才有意义，所以 §1.1 的表不列它们。
 
-### 1.3 两个脚本与两份录制轨迹
+### 1.3 三个脚本与两份录制轨迹
 
 | 文件 | 说明 |
 |------|------|
-| [`online/run.sh`](online/run.sh) → [`online/trace.txt`](online/trace.txt) | daemon 全生命周期 14 步（238 行）：启动 → 装载 → 四类动作 → Gate 拦截 → Rule-T 终止 → 事件重放 → 卸载 |
+| [`runtime/run.sh`](runtime/run.sh)（+ [`runtime/linear.pact`](runtime/linear.pact)、[`runtime/runtime.toml`](runtime/runtime.toml)） | **runtime 黄金路径**：一条命令做 33 项硬断言——analyze 0 违规 / 0 咨询 → CLI load/seed → `pact-runtime` 四 agent（seeder/worker/finisher/sink）自驱至 Rule-T → 在线 status、事件日志行数、离线 replay 三方计数一致。临时目录自起自停 daemon，退出即清理（`--keep` 保留现场）。`linear.pact` 是无 stranding 的最小验收域；`domains/se_lifecycle.pact` 是**教学反例**（确定性 stranding），不要用它跑本路径 |
+| [`online/run.sh`](online/run.sh) → [`online/trace.txt`](online/trace.txt) | daemon 全生命周期 15 步（238 行）：启动 → 装载 → 四类动作 → Gate 拦截 → Rule-T 终止 → 事件重放 → 卸载 |
 | [`offline/run.sh`](offline/run.sh) → [`offline/trace.txt`](offline/trace.txt) | 离线三件套 5 步（200 行）：analyze × 5 域、三类良构违例、compose 成功与 C2 拒绝、replay |
 | [`offline/fixtures/se_lifecycle.events.jsonl`](offline/fixtures/se_lifecycle.events.jsonl) | 12 行事件日志，让离线演示在 fresh clone 上自足（不依赖先跑在线脚本） |
 
@@ -89,10 +90,13 @@ cargo build -p pact-cli                     # 产出 ./target/debug/pact
 
 examples/offline/run.sh                     # 离线三件套，不需要 daemon
 examples/online/run.sh                      # 在线全生命周期，自起自停 daemon
+
+cargo build -p pact-cli -p pact-runtime     # 黄金路径还需要 pact-runtime
+examples/runtime/run.sh                     # runtime 黄金路径（33 项断言），另需 curl 与 jq 或 python3
 ```
 
-两个脚本都从任意工作目录可运行（内部用 `BASH_SOURCE` 定位仓库根），也可用
-`PACT=/path/to/pact` 指定二进制。录制方式：
+三个脚本都从任意工作目录可运行（内部用 `BASH_SOURCE` 定位仓库根），也可用
+`PACT=/path/to/pact`（黄金路径另有 `PACT_RUNTIME=/path/to/pact-runtime`）指定二进制。录制方式：
 
 ```bash
 examples/offline/run.sh > my-trace.txt 2>&1
@@ -114,7 +118,7 @@ examples/offline/run.sh > my-trace.txt 2>&1
 
 ---
 
-## 3. 在线轨迹：daemon 全生命周期 14 步
+## 3. 在线轨迹：daemon 全生命周期 15 步
 
 完整输出见 [`online/trace.txt`](online/trace.txt)。下表是逐步导读；「规则」列
 指向范式规范的 SOS 规则（Rule-P 生产 / Rule-R 读取 / Rule-E 消费 / Rule-S 种子

@@ -593,7 +593,8 @@ pact domain load my_domain.pact [--name N]   # 缺省域名 = 文件 stem
 
 > `domain validate` 是**在线**命令（走 REST）。没有 daemon 时它会报
 > `error [Transport]: client error (Connect)`。想纯离线校验，用 `pact analyze`：
-> 良构时输出六项分析（首行 `precondition_wf`）；非良构时以 `WellFormedness` 拒绝并列出违规，exit 1。
+> 良构时输出六项分析（首行 `precondition_wf`）；非良构时以 `WellFormedness` 拒绝并
+> 逐条列出违规（人类模式每条一行；`--json` 时同一组违规在 `error.detail[]`），exit 1。
 
 ### 3.5 浏览器工作台（无需安装）
 
@@ -991,6 +992,17 @@ pact replay <data_dir>/se_lifecycle/default.events.jsonl
 不需要 daemon。重放结果与线上状态逐字段等价（集成测试锚定）。
 崩溃恢复走同一条路径：最新快照 + 其后的事件重放；JSONL 末行半截（写入中途崩溃）可被安全跳过续作。
 
+**压缩后重放（`--snapshot`）**：日志前缀被压缩后不再包含 `DomainLoaded` 基线，须同时给出同实例快照：
+
+```bash
+pact replay <data_dir>/<domain>/<instance>.events.jsonl \
+  --snapshot <data_dir>/<domain>/<instance>.snapshot.json
+```
+
+语义：先装载快照的 `seq` 与 Counter/Archive 状态，跳过 `seq ≤ 快照.seq` 的事件，再按 `seq` 逐行应用保留的尾部；尾部必须从 `快照.seq + 1` 起连续。快照缺失/损坏，或快照 `seq` 小于压缩水位（`logmeta.json` 的 `base_seq`）时失败。
+不带 `--snapshot` 且日志已压缩（缺失 `DomainLoaded`/`Imported` 基线）时，`replay` 直接报 `Replay` 错误并指路——用 `--snapshot`，或改用 daemon 视图（`pact counter ls` / `pact archive ls` / `GET /domains/<d>/read-audit`），不会静默返回空状态。
+快照只承载事件日志状态（Counter/Archive 与 Rule-E 幂等表）；**读审计流不在快照内**，压缩前的读审计仍由 `<instance>.read-audit.jsonl` 独立留存（§7.5）。
+
 **事件 schema 版本**：每行事件带顶层 `version`。普通事件为 `1`（如 `{"version":1,"kind":"Seeded",…}`），
 状态交接事件 `Imported` 为 `2`。缺 `version` 的旧日志按 v1 重放（向后兼容）；读取上限为 2，
 `version > 2` 时 **fail-fast（`UnsupportedSchemaVersion`）**，不会静默按 v1 误读——升级 pactd 后旧数据可直接用，降级则须先迁移。
@@ -1012,7 +1024,8 @@ pact compact --domain D --instance I --keep-last 100   # 保留最近 100 条，
 - **数据安全**：若日志已被截断但快照缺失/不覆盖水位，启动直接 fail-fast
   （`SnapshotRequiredForCompactedLog`），不静默丢数据。
 - **代价**：被丢弃前缀**不再可从日志审计**——审计视图退化为「快照 + 保留的尾部事件」。
-  需要完整历史时保留 `keep_last` 足够大，或先备份 JSONL 再压缩。
+  需要完整历史时保留 `keep_last` 足够大，或先备份 JSONL 再压缩。压缩后仍可离线重放：
+  `pact replay <instance>.events.jsonl --snapshot <instance>.snapshot.json`（§7.3）。
 - **安全边界**：压缩是**破坏性**运维操作；启用 `[auth.acl]` 时与其它实例端点一样按 `(domain, instance)` 授权；未启用 ACL 时不做域级授权（但启用签名时仍需签名）——只应在 unix socket / 回环 / 受信网络暴露。另注意 `compact_on_start = true` 且 `compact_keep_last = 0` 时，**每次重启都会丢弃全部已入快照的审计前缀**；需要留存审计时务必显式设置 `compact_keep_last`（pactd 启动会打印告警）。
 - 可选启动自动压缩：`compact_on_start = true` + `compact_keep_last = N`；
   恢复后逐实例压缩，单个实例失败只告警、不阻断 daemon 启动。
@@ -1135,7 +1148,7 @@ spec:
         visibility: hidden
 ```
 
-- **边界**：只过滤 Counter/Archive 的票面；`GET /tokens/{id}` 仍由 Rule-R 的 read gate 授权。开启 `read_audit = true` 后，视图读取按类型记录暴露计数（`kind=view`，见 §7.5 与设计 D43），审计只记计数、不记票面值；审计写失败时视图以 `500` 拒绝。
+- **边界**：只过滤 Counter/Archive 的票面；单 token 读取（`POST /domains/{d}/tokens/{id}/read`）仍由 Rule-R 的 read gate 授权。开启 `read_audit = true` 后，视图读取按类型记录暴露计数（`kind=view`，见 §7.5 与设计 D43），审计只记计数、不记票面值；审计写失败时视图以 `500` 拒绝。
 - **建议**：先用 `pact ref lint --bindings … --declaration …` 校验 profile 与声明类型一致，再让 daemon 加载同一份文件。
 
 ### 7.10 保留与 tombstone（D44）
@@ -1364,7 +1377,7 @@ daemon 在 `POST /domains`（REST `load_domain`）**进入引擎前**比对绑�
 | `compact --domain D [--instance I] [--keep-last N]` | 在线 | 日志前缀压缩（D25；缺省 `--keep-last 0` = 丢弃全部已入快照的前缀） |
 | `analyze <FILE>` | **离线** | 六项静态分析 |
 | `compose <FILES…>` | **离线** | 片段组合（≥2 个），打印合并文本 |
-| `replay <FILE>` | **离线** | 重放 `<instance>.events.jsonl`（校验事件 schema `version`） |
+| `replay <FILE> [--snapshot <SNAPSHOT>]` | **离线** | 重放 `<instance>.events.jsonl`（校验事件 schema `version`）；压缩后须给 `--snapshot` 从快照起播 |
 | `cpn <FILE> --out PATH [--instance I] [--bound T=N]…` | **离线** | 生成单实例 CPN Tools 模型（论文 §4.5/§B；负条件需上界） |
 | `ref lint --bindings PATH… [--contracts PATH…] [--tombstones PATH…] [--declaration FILE] [--name N] [--strict]` | **离线** | 物引静态检查（FR27/D41/D44）：绑定、契约卡、Tombstone 与声明的一致性 |
 | `ref digest FILE [--name N]` | **离线** | 计算域声明语义接口摘要（FR34/D49）：打印 `sha256:<64hex>`；`--name` 缺省取文件 stem |
@@ -1393,7 +1406,7 @@ daemon 在 `POST /domains`（REST `load_domain`）**进入引擎前**比对绑�
 | `POST /domains/{d}/seeds` | `{participant, type, thing_ref?}` | `201` `{token}` |
 | `POST /domains/{d}/tokens` | `{participant, type, predecessors[], thing_ref?}` | `201` `{token}` |
 | `POST /domains/{d}/tokens/{id}/read` | `{participant}` | `200` `{token}` |
-| `POST /domains/{d}/tokens/{id}/consume` | `{participant}` | `200` `{entry}` |
+| `POST /domains/{d}/tokens/{id}/consume` | `{participant, request_id?}` | `200` `{entry}`（`request_id` 为可选幂等键：同一实例内重复请求返回首次结果，不重复消费） |
 | `GET /domains/{d}/counter?type=` | — | `200` `{tokens: [...], size}` |
 | `GET /domains/{d}/archive?type=` | — | `200` |
 | `GET /domains/{d}/gates/{participant}` | — | `200` `{gates: [...]}` |
@@ -1403,7 +1416,7 @@ daemon 在 `POST /domains`（REST `load_domain`）**进入引擎前**比对绑�
 | `GET /domains/{d}/events` | — | SSE 流（含 keep-alive），每条 `data:` 是 §6.4 通知 |
 | `GET /domains/{d}/read-audit?limit=` | — | `200` `{records:[...]}`（D25 子项 3；缺省 100、上限 1000） |
 | `POST /domains/{d}/handoff` | `{source_instance, target_instance, declaration, activate?}`（`activate` 缺省 `true`） | `201` `HandoffOutcome{domain, source_instance, target_instance, source_seq, target_seq, counter, archive, consumed_requests, active_instance, activated}`（D39） |
-| `GET /domains/{d}/active` | — | `200` `{domain, instance, ts?, by?}`（无指针时 `instance = "default"`，`ts`/`by` 省略） |
+| `GET /domains/{d}/active` | — | `200` `{domain, instance, ts, by}`（无指针时 `instance = "default"`，`ts`/`by` 为 `null`） |
 | `PUT /domains/{d}/active` | `{instance}` | `200` `{domain, instance, ts?, by?}`（域级 ACL 需 `{d}/*`） |
 | `PUT /domains/{d}/instances/{i}/freeze` | `{frozen}` | `204`（`true` 冻结、`false` 解冻） |
 | `POST/GET/DELETE /mcp` | MCP JSON-RPC / 会话控制 | MCP Streamable HTTP（D35；`[mcp].enabled = true` 时存在） |
@@ -1414,7 +1427,7 @@ daemon 在 `POST /domains`（REST `load_domain`）**进入引擎前**比对绑�
 
 **域级 ACL（D25 子项 3，可选）**：配置 `[auth.acl]` 后，上表全部域作用域端点（含实例镜像组与 `read-audit`）按 `(domain, instance)` 授权，无有效身份/身份不匹配 `401`、越权 `403`；`GET /domains` 按授权过滤。**未配置 ACL** 时不做域级授权：既有生命周期/查询/压缩端点保持信任声明行为（Bearer 令牌约束四类动作端点与视图身份；启用签名时这些端点仍需签名）；**新增控制面端点**（`handoff` / `freeze` / `active` / `ref/reload`）在配置了任何身份后仍要求认证（见上）。交接还额外要求域通配键 `{d}/*`——它会改写域级 `declaration.pact`。详见 §7.6。
 
-**票面可见性（D42）**：`GET /counter` 与 `GET /archive` 的 `thing_ref` 默认 `read-gate`，按调用者的无条件 `reads`/`consumes` 子句返回；`[ref_bindings]` 可显式声明 `domain`/`hidden`。token 存在性、类型与计数不变；`GET /tokens/{id}` 仍由 Rule-R 授权。详见 §7.9。
+**票面可见性（D42）**：`GET /counter` 与 `GET /archive` 的 `thing_ref` 默认 `read-gate`，按调用者的无条件 `reads`/`consumes` 子句返回；`[ref_bindings]` 可显式声明 `domain`/`hidden`。token 存在性、类型与计数不变；单 token 读取（`POST .../tokens/{id}/read`）仍由 Rule-R 授权。详见 §7.9。
 
 **票面写入校验（D45/D46/D47）**：`POST .../seeds` 与 `POST .../tokens` 的 `thing_ref` 支持三态——字段缺失 → `400 ThingRefMissing`、显式 `null` → `∅`、字符串 → 校验后写入规范化值；URI profile、RefBindings 形态/未知 scheme/钉版策略在引擎调用前强制执行。`POST .../consume` 对声明 `pinning: required-at-archive` 的类型、以及绑定引用的 ContractCard 要求归档钉版的类型，要求票面已钉版。详见 §7.11。
 
@@ -1471,6 +1484,14 @@ stdio 形态由 agent 拉起为子进程，工具经 REST 转发至 daemon；`--
 `pact-runtime --config <toml> [--https] [--tls-ca <pem>] [--sign-key <seed>] [--sign-as <P>]`；TOML 的 `endpoint` 支持 `https = true` 与 `tls_ca`，签名身份只经命令行 `--sign-key/--sign-as` 提供（作用于 runtime 的 REST 客户端）。
 
 `Endpoint` 提供 `unix(path)`、`tcp(addr)` 与 `https(addr, ca)` 三种构造；`https` 等价于 `tcp` + TLS。runtime 的 stdio MCP 子进程目前只透传 TLS 与 Bearer，不透传签名参数；连接签名 daemon 时请使用 REST 通道或 TLS + Bearer。
+
+**启动期参与者预检**：`pact-runtime` 在拉起任何 agent 之前先解析 `declaration`，并逐个核对配置里的 `participant`：
+
+- 参与者既不在 `gates` 也不在 `seed_authority` 中 → 立即退出，错误列出该 participant 与域内合法参与者名；
+- 参与者只在 `seed_authority` 中（没有任何 gate）且该 agent 未配置 `seed` 引导 → 立即退出；
+- 参与者有 gate，或仅在 `seed_authority` 中但配置了 `seed`（如 `external_stakeholder`）→ 放行。
+
+预检失败不会拉起任何 agent，也不会等到 `deadline_s`；`declaration` 本身无法解析或非良构时同样在启动期报错。
 
 ---
 
@@ -1577,6 +1598,7 @@ PreconditionMismatch { ty: TypeName("deployment"),
 | 启动报 `UnsupportedSchemaVersion` | 数据由更新版 pactd 写入（事件 schema 版本更高） | 升级 pactd 或按新版格式迁移；**不可**期望旧版静默重放（§7.3） |
 | 启动报 `SnapshotRequiredForCompactedLog` | 日志已被压缩截断，但快照缺失/未覆盖 `base_seq` | 从备份恢复 `<instance>.snapshot.json`；勿手工删除快照（§7.4） |
 | 压缩后早期事件查不到 | 前缀已随快照丢弃（预期取舍） | 需要完整历史时先备份 JSONL，或用 `--keep-last` 保留足够尾部后重压（§7.4） |
+| 压缩后 `replay` 报「日志无法独立重放」 | 日志已无 `DomainLoaded`/`Imported` 基线且未给快照 | 加 `--snapshot <domain>/<instance>.snapshot.json`，或改用 daemon 视图（§7.3/§7.4） |
 | `error [Transport]: client error (Connect)` 且使用 `--https` | 服务端未启用 `[tls]`，或客户端没给 `--tls-ca` | 确认 `listen_tcp` + `[tls]` 完整；自签/私有 CA 用 `--tls-ca`（§2.6.1） |
 | TLS 握手失败（mTLS） | 服务端配置了 `client_ca`，客户端未出示证书 | 内置 CLI/MCP/runtime 不出示证书；改用外部客户端 `--cert/--key`，或移除 `client_ca`（§2.6.1） |
 | 401 且提示「时间戳」/「nonce」/「签名」 | 客户端时钟偏差 > 300s、nonce 重放或签名种子不匹配 | 校准时间；每次请求重新签名；确认 `--sign-key` 与 `[auth.keys]` 对应（§2.6.2） |
@@ -1619,7 +1641,18 @@ PreconditionMismatch { ty: TypeName("deployment"),
 
 > 按用户类型与场景分流的入口见仓库根 `README.md` 的“Where to start / 从哪里开始”表格；本节是手册视角的同一条路径。
 
-1. 读 `examples/README.md` §1–§2，跑两条脚本：
+1. 跑 runtime 黄金路径（主推的一条命令验收）：
+
+   ```bash
+   cargo build -p pact-cli -p pact-runtime
+   examples/runtime/run.sh           # 33 项断言：analyze 0 违规 → CLI load/seed →
+                                     # pact-runtime 四 agent 自驱至 Rule-T →
+                                     # status / 日志行数 / replay 三方计数一致
+   ```
+
+   它在 `mktemp` 临时目录内起真实 daemon 与四参与者编排，验证六规则主链路
+   （Rule-S/P/R/E/W/T）与事件溯源对照，退出即清理（`--keep` 可保留现场）。
+   想手工逐步看清每个动作与拦截，再跑两条录制脚本：
 
    ```bash
    bash examples/offline/run.sh      # 离线三件套：analyze / compose / replay

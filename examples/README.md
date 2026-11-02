@@ -49,11 +49,12 @@ A fragment is "half a domain": it declares only the types, preconditions, and ga
 
 Analyzing a fragment on its own yields large unreachable sets (2 for security_review, 4 for security_blocking) — this is **expected**: fragments have no seed_authority, so A.1's BFS has no starting point. Fragments only make sense after composition, so the tables in §1.1 do not list them.
 
-### 1.3 Two scripts and two recorded traces
+### 1.3 Three scripts and two recorded traces
 
 | File | Description |
 |------|-------------|
-| [`online/run.sh`](online/run.sh) → [`online/trace.txt`](online/trace.txt) | Full daemon lifecycle in 14 steps (238 lines): start → load → all four action types → Gate interception → Rule-T termination → event replay → unload |
+| [`runtime/run.sh`](runtime/run.sh) (+ [`runtime/linear.pact`](runtime/linear.pact), [`runtime/runtime.toml`](runtime/runtime.toml)) | **Runtime golden path**: one command, 33 hard assertions — analyze 0 violations / 0 advisories → CLI load/seed → `pact-runtime` driving four agents (seeder/worker/finisher/sink) to Rule-T → online status, event-log line count, and offline replay all agree. Self-starting, self-stopping daemon in a `mktemp` directory, cleaned on any exit (`--keep` preserves the scene). `linear.pact` is the minimal zero-risk acceptance domain; `domains/se_lifecycle.pact` is a **teaching counter-example** (deterministic stranding) — do not use it for this path |
+| [`online/run.sh`](online/run.sh) → [`online/trace.txt`](online/trace.txt) | Full daemon lifecycle in 15 steps (238 lines): start → load → all four action types → Gate interception → Rule-T termination → event replay → unload |
 | [`offline/run.sh`](offline/run.sh) → [`offline/trace.txt`](offline/trace.txt) | Offline trio in 5 steps (200 lines): analyze × 5 domains, three kinds of well-formedness violations, compose success and C2 rejection, replay |
 | [`offline/fixtures/se_lifecycle.events.jsonl`](offline/fixtures/se_lifecycle.events.jsonl) | A 12-line event log so the offline demo is self-sufficient on a fresh clone (no need to run the online script first) |
 
@@ -72,9 +73,12 @@ cargo build -p pact-cli                     # produces ./target/debug/pact
 
 examples/offline/run.sh                     # the offline trio, no daemon needed
 examples/online/run.sh                      # full online lifecycle, self-starting and self-stopping daemon
+
+cargo build -p pact-cli -p pact-runtime     # the golden path also needs pact-runtime
+examples/runtime/run.sh                     # runtime golden path (33 assertions); also needs curl and jq or python3
 ```
 
-Both scripts run from any working directory (they locate the repo root via `BASH_SOURCE`); use `PACT=/path/to/pact` to point at a specific binary. To record your own trace:
+All three scripts run from any working directory (they locate the repo root via `BASH_SOURCE`); use `PACT=/path/to/pact` (and `PACT_RUNTIME=/path/to/pact-runtime` for the golden path) to point at specific binaries. To record your own trace:
 
 ```bash
 examples/offline/run.sh > my-trace.txt 2>&1
@@ -93,7 +97,7 @@ The online script's side effects land only in `examples/online/run-data/` (empti
 
 ---
 
-## 3. The online trace: full daemon lifecycle in 14 steps
+## 3. The online trace: full daemon lifecycle in 15 steps
 
 Full output: [`online/trace.txt`](online/trace.txt). The table below is a step-by-step guide; the "Rule" column refers to the SOS rules of the paradigm specification (Rule-P produce / Rule-R read / Rule-E consume / Rule-S seed / Rule-W witness / Rule-T termination).
 
