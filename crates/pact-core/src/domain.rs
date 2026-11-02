@@ -54,6 +54,63 @@ pub enum DomainError {
     },
 }
 
+impl std::fmt::Display for DomainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DomainError::DuplicatePrecondRule { ty } => {
+                write!(f, "类型 {} 出现多条前置规则（RHS 必须唯一）", ty.0)
+            }
+            DomainError::DuplicatePrecondLhs { ty, lhs_ty } => write!(
+                f,
+                "前置规则 {} 的 lhs 重复出现类型 {}（LHS 内类型必须互异）",
+                ty.0, lhs_ty.0
+            ),
+            DomainError::EmptyPrecondLhs { ty } => write!(
+                f,
+                "前置规则 {} 的 lhs 为空（源类型只能由规则缺席定义）",
+                ty.0
+            ),
+            DomainError::UndeclaredType { referenced_by, ty } => {
+                write!(f, "{} 引用了未声明的类型 {}", referenced_by, ty.0)
+            }
+            DomainError::ZeroCountLiteral {
+                participant,
+                action,
+                ty,
+                count_ty,
+            } => write!(
+                f,
+                "{} 的 {} {} 使用 count {} = 0（恒等于 not exists，须改写）",
+                participant.0,
+                action.as_str(),
+                ty.0,
+                count_ty.0
+            ),
+            DomainError::ProduceWithCondition { participant, ty } => write!(
+                f,
+                "{} 的 produces {} 携带条件（生产合法性只由前置图决定）",
+                participant.0, ty.0
+            ),
+            DomainError::SourceTypeProduceGate { participant, ty } => write!(
+                f,
+                "{} 的 produces {} 指向源类型（源类型只能经 SeedAuthority 注入）",
+                participant.0, ty.0
+            ),
+            DomainError::DuplicateGateClause {
+                participant,
+                action,
+                ty,
+            } => write!(
+                f,
+                "{} 的 {} {} 子句重复声明",
+                participant.0,
+                action.as_str(),
+                ty.0
+            ),
+        }
+    }
+}
+
 /// PACT 域声明：四个注入点的规范表示（论文 §2.2、§3.1）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Domain {

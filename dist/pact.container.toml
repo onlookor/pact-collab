@@ -1,12 +1,19 @@
 # 容器内默认配置（D26）。覆盖方式：-v /path/pact.toml:/etc/pact/pact.toml:ro
 #
-# 安全提示：容器内监听 0.0.0.0 仅为使端口映射可用；发布时务必绑定回环
-# （-p 127.0.0.1:8787:8787）。v1 无 TLS，跨主机访问须自行加 TLS 终结，
+# 安全提示：容器内监听 0.0.0.0 仅为使端口映射可用；未配置 [tls] 时务必绑定回环
+# （-p 127.0.0.1:8787:8787）。v2 已支持 TLS/mTLS（见 docs/manual.md §2.6）：
+# 跨主机访问请启用下方 [tls]（可含 client_ca 做 mTLS）或前置 TLS 终结，
 # 并配置 [auth.tokens] / [auth.acl]（见 docs/manual.md §2.4、§7.6）。
 
 data_dir = "/var/lib/pact"
 listen_unix = ""                   # 容器内不暴露 unix socket
 listen_tcp = "0.0.0.0:8787"
+
+# NFR6 v2：TLS / mTLS（可选；仅对 listen_tcp 生效）
+# [tls]
+# certificate = "/etc/pact/server-chain.pem"   # PEM 证书链
+# private_key = "/etc/pact/server.key"         # PEM 私钥（PKCS#8/PKCS#1/SEC1）
+# client_ca   = "/etc/pact/client-ca.pem"      # 存在即要求客户端证书（mTLS）
 
 # compact_on_start = false
 # compact_keep_last = 0

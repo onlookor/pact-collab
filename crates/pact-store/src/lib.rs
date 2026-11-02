@@ -19,9 +19,10 @@ mod store;
 pub use audit::{ReadAuditKind, ReadAuditRecord, ViewAuditType, ViewName};
 pub use error::{validate_domain_name, validate_instance_name, StoreError};
 pub use index::{IndexStore, TokenStatus, TursoIndexStore};
-pub use log::EventLog;
+pub use log::{load_logmeta, EventLog, LogMeta};
 pub use pact_store_model::{
     apply_event, to_wire_json, ApplyOutcome, Event, InstanceKey, ModelError, Snapshot, WireEvent,
     EVENT_SCHEMA_VERSION,
 };
+pub use snapshot::load_snapshot;
 pub use store::{ActivePointer, CompactionResult, RecoveredInstance, Store};

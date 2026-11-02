@@ -14,6 +14,7 @@ use pact_runtime::{
     RestClient, SideEffectExecutor, SideEffectHandler, StopSignal, DEFAULT_EXECUTOR_POLL,
 };
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -207,6 +208,7 @@ async fn run(config_path: &Path, args: &Args) -> Result<(), Box<dyn std::error::
     let cfg: FileConfig = toml::from_str(&text).map_err(|e| format!("解析配置失败：{e}"))?;
     let declaration = std::fs::read_to_string(&cfg.declaration)
         .map_err(|e| format!("读取域声明 {:?} 失败：{e}", cfg.declaration))?;
+    preflight_participants(&cfg.domain, &declaration, &cfg.agents)?;
     let endpoint = apply_cli_tls(cfg.endpoint.resolve()?, args)?;
     let bearer = cfg.bearer.clone();
     let signing = load_signing(args)?;
@@ -337,4 +339,125 @@ fn load_signing(args: &Args) -> Result<Option<SigningIdentity>, Box<dyn std::err
 fn print_report(value: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+/// 启动期参与者预检（手册 §8.4）：在任何 agent 被拉起前，确认每个配置的 participant
+/// 在域声明中至少有一个可参与角色——任一门，或带 `seed` 引导的 SeedAuthority 席位。
+///
+/// 避免拼错参与者名后让所有 agent 静默等到 deadline（只报“期限耗尽”）。
+fn preflight_participants(
+    domain: &str,
+    declaration: &str,
+    agents: &[AgentCfg],
+) -> Result<(), String> {
+    let parsed = pact_parser::load_domain(declaration).map_err(|problem| {
+        let detail = pact_http::dto::problem_detail(&problem);
+        format!(
+            "域声明 {domain} 无法装载：[{}] {}",
+            detail.code, detail.message
+        )
+    })?;
+    let gate_participants: BTreeSet<&str> = parsed
+        .gates
+        .keys()
+        .map(|(participant, _, _)| participant.0.as_str())
+        .collect();
+    let seed_participants: BTreeSet<&str> = parsed
+        .seed_authority
+        .iter()
+        .map(|(participant, _)| participant.0.as_str())
+        .collect();
+    let mut legal: Vec<&str> = gate_participants
+        .union(&seed_participants)
+        .copied()
+        .collect();
+    legal.sort_unstable();
+
+    for agent in agents {
+        let participant = agent.participant.as_str();
+        let has_gate = gate_participants.contains(participant);
+        let has_seed = seed_participants.contains(participant);
+        if !has_gate && !has_seed {
+            return Err(format!(
+                "参与者 {participant} 不在域 {domain} 的 gates 或 seed_authority 中；合法参与者：{}",
+                legal.join(", ")
+            ));
+        }
+        if !has_gate && agent.seed.is_none() {
+            return Err(format!(
+                "参与者 {participant} 在域 {domain} 中没有任何 gate（仅在 seed_authority 中），且未配置 seed 引导；有 gate 的参与者：{}",
+                gate_participants
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DECL: &str = r#"
+types { request; result }
+
+preconditions { request → result }
+
+gates {
+    worker: reads request, consumes request, produces result;
+    sink: consumes result
+}
+
+seed_authority { seeder: seeds request }
+"#;
+
+    fn agent(participant: &str, seed: Option<&str>) -> AgentCfg {
+        AgentCfg {
+            participant: participant.to_owned(),
+            transport: default_transport(),
+            mcp_bin: None,
+            seed: seed.map(|ty| SeedCfg {
+                ty: ty.to_owned(),
+                thing_ref: None,
+            }),
+            produce_budget: None,
+        }
+    }
+
+    #[test]
+    fn preflight_accepts_gate_and_seeded_participants() {
+        let agents = vec![
+            agent("seeder", Some("request")),
+            agent("worker", None),
+            agent("sink", None),
+        ];
+        assert!(preflight_participants("demo", DECL, &agents).is_ok());
+    }
+
+    #[test]
+    fn preflight_rejects_unknown_participant_and_lists_legal_names() {
+        let agents = vec![agent("worker", None), agent("operator", None)];
+        let err = preflight_participants("demo", DECL, &agents).unwrap_err();
+        assert!(err.contains("参与者 operator"), "{err}");
+        for name in ["seeder", "sink", "worker"] {
+            assert!(err.contains(name), "错误应列出合法参与者 {name}：{err}");
+        }
+    }
+
+    #[test]
+    fn preflight_rejects_seed_only_participant_without_seed_config() {
+        let err = preflight_participants("demo", DECL, &[agent("seeder", None)]).unwrap_err();
+        assert!(err.contains("没有任何 gate"), "{err}");
+        assert!(err.contains("seeder"), "{err}");
+    }
+
+    #[test]
+    fn preflight_rejects_unloadable_declaration() {
+        let bad = "types { a }\ngates { p: reads b }\nseed_authority { }";
+        let err = preflight_participants("demo", bad, &[agent("p", None)]).unwrap_err();
+        assert!(err.contains("无法装载"), "{err}");
+    }
 }

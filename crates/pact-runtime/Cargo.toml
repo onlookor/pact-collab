@@ -17,6 +17,7 @@ path = "src/bin/pact-runtime.rs"
 pact-core = { path = "../pact-core" }
 pact-engine = { path = "../pact-engine" }
 pact-http = { path = "../pact-http" }
+pact-parser = { path = "../pact-parser" }
 rmcp = { workspace = true }
 tokio = { workspace = true, features = ["process"] }
 async-trait = { workspace = true }

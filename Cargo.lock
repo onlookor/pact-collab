@@ -1983,6 +1983,7 @@ dependencies = [
  "pact-core",
  "pact-engine",
  "pact-http",
+ "pact-parser",
  "pact-store",
  "rmcp",
  "serde",

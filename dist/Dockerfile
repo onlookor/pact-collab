@@ -5,7 +5,7 @@
 # 构建（在仓库根目录执行；BuildKit 会读取 dist/Dockerfile.dockerignore）：
 #   docker build -f dist/Dockerfile -t pact:0.1.0 .
 #
-# 运行（务必只绑定回环；v1 无 TLS）：
+# 运行（未配置 [tls] 时务必只绑定回环；v2 已支持 TLS/mTLS，见 docs/manual.md §2.6）：
 #   docker run --rm -p 127.0.0.1:8787:8787 -v pact-data:/var/lib/pact pact:0.1.0
 #
 # 自定义配置：

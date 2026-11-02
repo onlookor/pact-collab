@@ -14,7 +14,7 @@ use pact_http::config::Config;
 use pact_http::daemon::run_daemon;
 use pact_http::dto::{conflicts_detail, problem_detail, ErrorBody, ErrorDetail};
 use pact_http::sign::SigningIdentity;
-use pact_store::{apply_event, ApplyOutcome, Event, WireEvent};
+use pact_store::{apply_event, load_logmeta, load_snapshot, ApplyOutcome, Event, WireEvent};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -182,10 +182,13 @@ enum Command {
         /// .pact 片段文件（≥2）
         files: Vec<PathBuf>,
     },
-    /// 离线：重放事件日志
+    /// 离线：重放事件日志（压缩后可配合 --snapshot 从快照起播）
     Replay {
         /// <domain>/<instance>.events.jsonl
         file: PathBuf,
+        /// 同实例快照（<domain>/<instance>.snapshot.json）：先装载快照状态，再应用保留的尾部事件
+        #[arg(long)]
+        snapshot: Option<PathBuf>,
     },
     /// 离线：生成 CPN Tools 模型（论文 §4.5 / 附录 B）
     Cpn {
@@ -883,7 +886,7 @@ async fn run(cli: Cli) -> ExitCode {
         // —— 离线命令 ——
         Command::Analyze { file } => offline_analyze(json, &file),
         Command::Compose { files } => offline_compose(json, &files),
-        Command::Replay { file } => offline_replay(json, &file),
+        Command::Replay { file, snapshot } => offline_replay(json, &file, snapshot.as_deref()),
         Command::Cpn {
             file,
             out,
@@ -1179,7 +1182,7 @@ fn offline_analyze(json: bool, file: &Path) -> ExitCode {
     };
     let domain = match pact_parser::load_domain(&text) {
         Ok(d) => d,
-        Err(p) => return fail(json, problem_detail(&p)),
+        Err(p) => return fail_analyze(json, p),
     };
     let report = AnalysisReport {
         precondition_wf: pact_analysis::precondition_wf(&domain),
@@ -1368,14 +1371,23 @@ fn offline_compose(json: bool, files: &[PathBuf]) -> ExitCode {
     }
 }
 
-fn offline_replay(json: bool, file: &Path) -> ExitCode {
+/// 由事件日志路径推导同实例压缩清单：`<x>.events.jsonl` → `<x>.logmeta.json`。
+fn sibling_logmeta(log: &Path) -> Option<PathBuf> {
+    let name = log.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".events.jsonl")?;
+    Some(log.with_file_name(format!("{stem}.logmeta.json")))
+}
+
+/// 离线重放：无快照时按事件流从零重放；`--snapshot` 时先装载快照状态，再应用
+/// `seq > snapshot.seq` 的保留尾部（压缩后日志不再含 `DomainLoaded` 基线）。
+fn offline_replay(json: bool, file: &Path, snapshot: Option<&Path>) -> ExitCode {
     let text = match read_file(file, json) {
         Ok(t) => t,
         Err(c) => return c,
     };
-    let mut state = CounterState::new();
-    let mut domain_name: Option<String> = None;
-    let mut applied = 0u64;
+
+    // 1. 先解析全部事件（保持逐行定位，错误码与既有行为一致）。
+    let mut events: Vec<(usize, Event)> = Vec::new();
     for (idx, line) in text.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
@@ -1397,7 +1409,137 @@ fn offline_replay(json: bool, file: &Path) -> ExitCode {
                 )
             }
         };
-        match apply_event(&mut state, &ev) {
+        events.push((idx + 1, ev));
+    }
+
+    // 2. 压缩水位（旁路清单；缺失 = 未压缩）。用于无快照时的指路与快照覆盖校验。
+    let base_seq = match sibling_logmeta(file) {
+        Some(path) => match load_logmeta(&path) {
+            Ok(Some(meta)) => meta.base_seq,
+            Ok(None) => 0,
+            Err(e) => {
+                return fail(
+                    json,
+                    ErrorDetail {
+                        code: "Replay".into(),
+                        detail: serde_json::json!({ "path": path.display().to_string() }),
+                        message: format!("读取压缩清单 {} 失败：{e}", path.display()),
+                    },
+                )
+            }
+        },
+        None => 0,
+    };
+
+    // 3. 可选快照基线：必须先于尾部事件应用。
+    let mut state = CounterState::new();
+    let mut snap_seq = 0u64;
+    if let Some(path) = snapshot {
+        match load_snapshot(path) {
+            Ok(Some(snap)) => {
+                if snap.seq < base_seq {
+                    return fail(
+                        json,
+                        ErrorDetail {
+                            code: "Replay".into(),
+                            detail: serde_json::json!({
+                                "path": path.display().to_string(),
+                                "snapshot_seq": snap.seq,
+                                "base_seq": base_seq,
+                            }),
+                            message: format!(
+                                "快照 {} 的 seq={} 未覆盖压缩水位 base_seq={base_seq}：快照缺失或陈旧，无法重放该日志",
+                                path.display(),
+                                snap.seq
+                            ),
+                        },
+                    );
+                }
+                state = snap.state;
+                snap_seq = snap.seq;
+            }
+            Ok(None) => {
+                return fail(
+                    json,
+                    ErrorDetail {
+                        code: "Replay".into(),
+                        detail: serde_json::json!({ "path": path.display().to_string() }),
+                        message: format!(
+                            "快照 {} 不存在或无法解析（损坏/非快照 JSON）；请确认这是同实例的 <instance>.snapshot.json，或改用 daemon 视图（pact counter ls / pact archive ls）",
+                            path.display()
+                        ),
+                    },
+                )
+            }
+            Err(e) => {
+                return fail(
+                    json,
+                    ErrorDetail {
+                        code: "Replay".into(),
+                        detail: serde_json::json!({ "path": path.display().to_string() }),
+                        message: format!("读取快照 {} 失败：{e}", path.display()),
+                    },
+                )
+            }
+        }
+    }
+
+    // 4. 无快照而日志已压缩：明确指路，而不是静默给 0/0 或报「token 不在当前 Counter」。
+    if snapshot.is_none() {
+        let has_baseline = events.iter().any(|(_, ev)| ev.is_baseline());
+        let first_seq = events.first().map(|(_, ev)| ev.seq());
+        if !has_baseline && (base_seq > 0 || first_seq.is_some_and(|seq| seq > 1)) {
+            let first = match first_seq {
+                Some(seq) => format!("首行 seq={seq} 且"),
+                None => "日志已无保留事件且".to_owned(),
+            };
+            return fail(
+                json,
+                ErrorDetail {
+                    code: "Replay".into(),
+                    detail: serde_json::json!({
+                        "base_seq": base_seq,
+                        "first_seq": first_seq,
+                    }),
+                    message: format!(
+                        "日志无法独立重放：{first}不含 DomainLoaded/Imported 基线（压缩水位 base_seq={base_seq}）。请用 `pact replay <日志> --snapshot <域>/<实例>.snapshot.json` 从快照起播，或改用 daemon 视图（pact counter ls / pact archive ls / GET /domains/<域>/read-audit）"
+                    ),
+                },
+            );
+        }
+    }
+
+    // 5. 从快照之后起播：跳过已被快照覆盖的事件，并要求尾部 seq 逐行连续。
+    let mut domain_name: Option<String> = None;
+    let mut applied = 0u64;
+    let mut next_expected: Option<u64> = snapshot.map(|_| snap_seq + 1);
+    for (line_no, ev) in &events {
+        if snapshot.is_some() && ev.seq() <= snap_seq {
+            continue;
+        }
+        if let Some(expected) = next_expected {
+            if ev.seq() != expected {
+                return fail(
+                    json,
+                    ErrorDetail {
+                        code: "Replay".into(),
+                        detail: serde_json::json!({
+                            "line": line_no,
+                            "snapshot_seq": snap_seq,
+                            "expected_seq": expected,
+                            "got_seq": ev.seq(),
+                        }),
+                        message: format!(
+                            "快照 seq={snap_seq} 与日志不连续：第 {line_no} 行 seq={}，期望 {expected}（快照之后的事件必须从 seq={} 起逐行连续）",
+                            ev.seq(),
+                            snap_seq + 1
+                        ),
+                    },
+                );
+            }
+            next_expected = Some(expected + 1);
+        }
+        match apply_event(&mut state, ev) {
             Ok(ApplyOutcome::Applied) => applied += 1,
             Ok(ApplyOutcome::DomainReset { name, .. }) => {
                 state = CounterState::new();
@@ -1414,8 +1556,8 @@ fn offline_replay(json: bool, file: &Path) -> ExitCode {
                     json,
                     ErrorDetail {
                         code: "Replay".into(),
-                        detail: serde_json::json!({ "line": idx + 1 }),
-                        message: format!("第 {} 行应用失败：{e}", idx + 1),
+                        detail: serde_json::json!({ "line": line_no }),
+                        message: format!("第 {line_no} 行应用失败：{e}"),
                     },
                 )
             }
@@ -1492,6 +1634,22 @@ fn fail(json: bool, detail: ErrorDetail) -> ExitCode {
         );
     } else {
         eprintln!("error [{}]: {}", detail.code, detail.message);
+    }
+    ExitCode::FAILURE
+}
+
+/// `pact analyze` 的错误出口：`--json` 与其它命令一致；人类模式对良构违例
+/// 额外逐条打印 `detail`（与 `--json` 的 `error.detail` 同一组违规，见手册 §3.4）。
+fn fail_analyze(json: bool, problem: pact_parser::Problem) -> ExitCode {
+    let detail = problem_detail(&problem);
+    if json {
+        return fail(true, detail);
+    }
+    eprintln!("error [{}]: {}", detail.code, detail.message);
+    if let pact_parser::Problem::WellFormedness(errors) = problem {
+        for error in errors {
+            eprintln!("  - {error}");
+        }
     }
     ExitCode::FAILURE
 }

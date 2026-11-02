@@ -266,6 +266,50 @@ fn lifecycle_through_real_daemon() {
     assert_eq!(compacted["instance"], "default");
     assert_eq!(compacted["base_seq"], 4);
     assert_eq!(compacted["discarded_events"], 4);
+    // 压缩写出同实例快照：从快照起播 + 保留尾部，状态应与压缩前逐字段一致
+    let snap = dir
+        .path()
+        .join("data")
+        .join("proj")
+        .join("default.snapshot.json");
+    assert!(snap.exists(), "压缩应写出快照");
+    let replayed_with_snapshot = ok_json(
+        &Command::new(env!("CARGO_BIN_EXE_pact"))
+            .arg("--json")
+            .args(["replay"])
+            .arg(&log)
+            .arg("--snapshot")
+            .arg(&snap)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        replayed_with_snapshot, replay,
+        "快照 + 保留尾部应与压缩前重放一致"
+    );
+    // 不带快照：必须给出指路性错误（而非静默 0/0 或「token 不在当前 Counter」）
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["replay"])
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "压缩后无快照重放应失败");
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "Replay");
+    let message = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("--snapshot"), "错误应指路快照：{message}");
+    assert!(message.contains("压缩"), "错误应说明已压缩：{message}");
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .args(["replay"])
+        .arg(&log)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--snapshot"),
+        "人类模式错误也应指路快照：{stderr}"
+    );
     let status = ok_json(&pact(&sock, true, &["status", "--domain", "proj"]));
     assert_eq!(status["counter_size"], 1);
     assert_eq!(status["archive_size"], 1);
@@ -276,6 +320,160 @@ fn lifecycle_through_real_daemon() {
         "人类输出: {}",
         String::from_utf8_lossy(&out.stdout)
     );
+
+    daemon.kill().unwrap();
+    let _ = daemon.wait();
+}
+
+#[test]
+fn replay_after_compaction_with_snapshot_applies_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut daemon, sock) = start_daemon(dir.path());
+
+    let decl_file = dir.path().join("proj.pact");
+    std::fs::write(&decl_file, DECL).unwrap();
+    ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "domain",
+            "load",
+            decl_file.to_str().unwrap(),
+            "--name",
+            "proj",
+        ],
+    ));
+    let req1 = ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "seed",
+            "--domain",
+            "proj",
+            "--participant",
+            "external",
+            "--type",
+            "requirement",
+        ],
+    ))["token"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let design1 = ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "produce",
+            "--domain",
+            "proj",
+            "--participant",
+            "architect",
+            "--type",
+            "design",
+            "--predecessors",
+            &req1,
+        ],
+    ))["token"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "consume",
+            "--domain",
+            "proj",
+            "--participant",
+            "developer",
+            "--token",
+            &design1,
+        ],
+    ));
+
+    // 压缩到空日志：快照 seq=4 承载全部既有状态
+    let compacted = ok_json(&pact(&sock, true, &["compact", "--domain", "proj"]));
+    assert_eq!(compacted["snapshot_seq"], 4);
+
+    // 压缩后继续推进：两条尾部事件（seq 5、6）只在日志里
+    let req2 = ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "seed",
+            "--domain",
+            "proj",
+            "--participant",
+            "external",
+            "--type",
+            "requirement",
+        ],
+    ))["token"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    ok_json(&pact(
+        &sock,
+        true,
+        &[
+            "produce",
+            "--domain",
+            "proj",
+            "--participant",
+            "architect",
+            "--type",
+            "design",
+            "--predecessors",
+            &req2,
+        ],
+    ));
+    let status = ok_json(&pact(&sock, true, &["status", "--domain", "proj"]));
+
+    let log = dir
+        .path()
+        .join("data")
+        .join("proj")
+        .join("default.events.jsonl");
+    let snap = dir
+        .path()
+        .join("data")
+        .join("proj")
+        .join("default.snapshot.json");
+    let replayed = ok_json(
+        &Command::new(env!("CARGO_BIN_EXE_pact"))
+            .arg("--json")
+            .args(["replay"])
+            .arg(&log)
+            .arg("--snapshot")
+            .arg(&snap)
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(
+        replayed["counter"].as_object().unwrap().len() as u64,
+        status["counter_size"].as_u64().unwrap(),
+        "快照 + 尾部应与在线 Counter 一致"
+    );
+    assert_eq!(
+        replayed["archive"].as_array().unwrap().len() as u64,
+        status["archive_size"].as_u64().unwrap(),
+        "快照 + 尾部应与在线 Archive 一致"
+    );
+
+    // 同一份日志不带快照：指路性错误
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["replay"])
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "Replay");
+    assert!(err["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("--snapshot"));
 
     daemon.kill().unwrap();
     let _ = daemon.wait();
@@ -429,6 +627,50 @@ fn offline_commands_without_daemon() {
     assert!(!out.status.success());
     let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
     assert_eq!(err["error"]["code"], "Io");
+}
+
+/// 良构违例的人类模式输出必须逐条列出违规（与 `--json` 的 `detail` 同源，手册 §3.4）。
+#[test]
+fn analyze_human_lists_wellformedness_violations() {
+    let dir = tempfile::tempdir().unwrap();
+    let decl = dir.path().join("bad.pact");
+    std::fs::write(
+        &decl,
+        "types { a; b }\npreconditions { a → b }\ngates { p: produces b when exists a }\nseed_authority { e: seeds a }\n",
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .args(["analyze"])
+        .arg(&decl)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "非良构声明应 exit 1");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error [WellFormedness]"),
+        "人类输出应带错误码：{stderr}"
+    );
+    assert!(
+        stderr.contains("p 的 produces b 携带条件"),
+        "人类输出应逐条列出违规：{stderr}"
+    );
+
+    // JSON 输出格式不变：错误体在 stdout，detail 为结构化数组。
+    let out = Command::new(env!("CARGO_BIN_EXE_pact"))
+        .arg("--json")
+        .args(["analyze"])
+        .arg(&decl)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(err["error"]["code"], "WellFormedness");
+    assert_eq!(
+        err["error"]["detail"][0]["ProduceWithCondition"]["participant"],
+        "p"
+    );
+    assert_eq!(err["error"]["detail"][0]["ProduceWithCondition"]["ty"], "b");
 }
 
 /// D27：实例级命令与默认回退（CLI 侧）。
