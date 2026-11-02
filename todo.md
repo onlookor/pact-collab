@@ -201,11 +201,13 @@
 | [x] | 第 102 轮构建可复现与 sandbox 冒烟 | `sha256sum -c` 三页重建前后一致（`authoring` 1432 KiB / `sandbox` 1412 KiB / `connect` 18 KiB）；sandbox 打开后状态“已装载 · pact-wasm/0.2”，console 无错误 |
 | [x] | 第 102 轮 Rust 回归：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` | 均通过；**384 passed / 0 failed**（无 Rust 代码改动，基线不变） |
 | [x] | 第 102 轮推送前安全审视（凭据、外链、`fetch`/`eval`、动态 DOM、新增依赖） | diff 无凭据/令牌命中；页面仍无外部脚本/样式/图片/iframe、无 `eval`/`document.write`/`insertAdjacentHTML`；动态 HTML 全部经 `esc()`，状态写入 `textContent`；无新增依赖；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained） |
+| [x] | 第 102 轮提交：`pact` `a9e947b`（`web/authoring/template.html`、构建产物、sandbox glue 同步、`manual.md` §3.5、`design-change.md` 第 102 轮、台账） | 单仓库改动；按用户未要求**未推送** |
 
 ## 已完成归档区
 
 | 完成日期 | 事项 | 依据 | 证据 |
 |---|---|---|---|
+| 2026-11-02 | 域作者工作台可用性修复（第 102 轮）：配方下拉选中即载入并自动分析、占位项提示；良构作为横幅与五项分析卡片/五行结论对齐；删除“右侧建议”方位词；提示词改为“粘回上方编辑器”；闸门/硬停勾选高亮、计数、摘要同步并写入决策记录与提示词 | D38 / `authoring-contract.md` §1·§6·§7 / `manual.md` §3.5 | `./web/build.sh` 重建可复现；Playwright R1/R3/R6 全项通过且 console 无错误；sandbox 冒烟通过；`cargo fmt/clippy/test` 通过，**384 passed / 0 failed**；安全审视无外链/`fetch` 调用/`eval`，动态 DOM 经 `esc()`；`pact` `a9e947b`；未推送 |
 | 2026-10-31 | 三个未启动项（可选注册表 / `revoke` / 数据面 conformance）的立项与设计前置建议（第 101 轮）：治理 §13.9.1–§13.9.3 给出立项闸门、需求问题、设计硬约束、建议拆分（S0–S3 / V0–V2 / C0–C5）与代码落点；§13.1 阶段 6 与阶段外事项加指引 | 治理 §13.1 / §13.6.1 / §13.8.10 / `conformance/` / `architecture.md` 附录 A 编号纪律 | 无代码变更、未新增编号（明确立项时再取号并先登记附录 A）；回归基线沿用 `pact` 384 / `pact-ref` 175；`revoke` 结论为建议不立项（四类对象均有既有承载）；`pact` `9436c9a`；已推送，CI `41197003160` success |
 | 2026-10-31 | 物引专题 gap 审视与文档补齐（第 100 轮）：附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`；`design.md` D53 状态、`requirements.md` FR36 实现状态；治理 §13.1 阶段 6 触发条件与反向约束、`revoke` 未立项说明；`pact-ref/README.md` 状态更正；台账新增 `revoke` 与 resolve/invoke 用例两个阻塞项 | 治理 §13.1 / `architecture.md` 附录 A / FR36 / FR37 边界 | 无代码变更，回归基线沿用 `pact` 384 / `pact-ref` 175；`pact` `f7be0bd` / `pact-ref` `1e9ee06` |
 | 2026-10-31 | conformance runner 与入口用例（第 99 轮，跨仓库 `pact-ref`）：runner 读取 `conformance/cases/**/*.yaml`、驱动 `pact-ref-spec::validate_entry`、逐条报告并以退出码表示结果；`entry/` 23 例覆盖三态、URI profile、Identifier 文法、RefBindings 策略与安全负例；`conformance/cases/README.md` 记录格式与覆盖边界 | `conformance/` / 设计 §9.12 入口语义 | runner 单测 3 项（全例通过 + 2 项期望不符自检）；`pact-ref` **175 passed / 0 failed**；手工 23 passed / exit 0、错误目录 exit 2；`pact-ref` `f9a127e` / `pact` `b5fa141` |
