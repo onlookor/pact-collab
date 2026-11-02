@@ -65,9 +65,17 @@
   details{border:1px solid var(--line);border-radius:10px;margin-top:10px;background:#fcfdff}
   details summary{cursor:pointer;padding:10px 12px;font-size:13px;font-weight:600;color:var(--ink)}
   details .inner{padding:0 12px 12px}
-  .gate{display:flex;gap:8px;align-items:flex-start;margin:7px 0;font-size:13px}
+  .gate{display:flex;gap:8px;align-items:flex-start;margin:5px 0;padding:5px 7px;
+    font-size:13px;border:1px solid transparent;border-radius:8px;transition:.15s}
   .gate input{margin-top:3px}
   .gate small{color:var(--muted);display:block}
+  .gate.checked{background:var(--ok-weak);border-color:#cfe7d9}
+  .gate.hit{background:var(--warn-weak);border-color:#efd9a3}
+  .gate-count{font-size:11.5px;font-weight:500;color:var(--muted);white-space:nowrap}
+  .gate.checked .gate-count,.gate.hit .gate-count{color:var(--ink)}
+  .sec-title{font-size:12px;font-weight:650;color:var(--muted);letter-spacing:.3px;
+    margin:12px 0 6px;display:flex;align-items:center;gap:7px}
+  .sec-title .hint{font-weight:400;letter-spacing:0}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   @media(max-width:560px){.grid2{grid-template-columns:1fr}}
   .kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-bottom-width:2px;
@@ -130,9 +138,10 @@
     <h2>域声明 <span class="hint" style="font-weight:400">四段顺序：types → preconditions → gates → seed_authority</span></h2>
     <div class="body">
       <div class="toolbar">
-        <select id="templates" aria-label="载入配方">
-          <option value="">载入配方…</option>
+        <select id="templates" aria-label="选择形状配方" title="选中 R1–R6 后自动载入并分析">
+          <option value="">选择形状配方…</option>
         </select>
+        <span class="hint" id="recipeHint">选中即载入</span>
         <button class="primary" id="btnAnalyze">分析 <span class="kbd">Ctrl</span>+<span class="kbd">Enter</span></button>
         <button id="btnCopyFix" disabled>复制修复提示</button>
         <button id="btnDownload">下载 .pact</button>
@@ -155,12 +164,12 @@
   </section>
 
   <details class="panel" style="grid-column:1/-1">
-    <summary>开始之前 <span class="hint">适用性闸门 · 硬停 · 提示词 · 决策记录</span></summary>
+    <summary>开始之前 <span class="hint">适用性闸门 <span id="gateSummary">0/5</span> · 硬停 <span id="hardstopSummary">未勾选</span> · 提示词 · 决策记录</span></summary>
     <div class="body">
       <div class="grid2">
         <div>
           <details open>
-            <summary>适用性闸门（全为“是”再建模）</summary>
+            <summary>适用性闸门（全为“是”再建模） <span class="gate-count" id="gateCount">已确认 0/5</span></summary>
             <div class="inner" id="gateBox">
               <label class="gate"><input type="checkbox" data-g="G1"><span>G1 能列出<b>离散产物</b>（存在 / 不存在）。<small>动作、角色、百分比不是产物。</small></span></label>
               <label class="gate"><input type="checkbox" data-g="G2"><span>G2 存在“某产物必须先有另一些产物”。</span></label>
@@ -168,17 +177,19 @@
               <label class="gate"><input type="checkbox" data-g="G4"><span>G4 至少有一个参与者（单人也合法）。</span></label>
               <label class="gate"><input type="checkbox" data-g="G5"><span>G5 每个无前置的产物，都能指出谁有权首次注入。</span></label>
               <div class="banner warn" id="gateMsg" style="margin:10px 0 0">还有判据未确认：先补答案，不要急着写域。</div>
+              <p class="hint" style="margin:8px 0 0">勾选只在本页做自查，不参与分析器判定；状态会写入复制的决策记录与提示词。</p>
             </div>
           </details>
           <details>
-            <summary>硬停扫描（命中就按契约 §1.2 改写）</summary>
+            <summary>硬停扫描（命中就按契约 §1.2 改写） <span class="gate-count" id="hardstopCount">命中 0</span></summary>
             <div class="inner">
               <label class="gate"><input type="checkbox" data-h="H1"><span>H1 “A 或 B 任一出现就能产出 C”（OR 汇聚）</span></label>
               <label class="gate"><input type="checkbox" data-h="H2"><span>H2 需要“任意两个同类型实例”作为前驱</span></label>
               <label class="gate"><input type="checkbox" data-h="H3"><span>H3 一次动作必须原子产生多个 token</span></label>
               <label class="gate"><input type="checkbox" data-h="H4"><span>H4 按内容 / 版本 / 身份决定能否生产</span></label>
               <label class="gate"><input type="checkbox" data-h="H5"><span>H5 需要超时、截止或严格时钟顺序</span></label>
-              <p class="hint" style="margin:8px 0 0">命中不等于不能建模，但必须在决策记录里写明改写方式与丢失的性质。</p>
+              <div class="banner ok" id="hardstopMsg" style="margin:10px 0 0">未勾选任何硬停。逐条核对契约 §1.2；命中项必须写进决策记录。</div>
+              <p class="hint" style="margin:8px 0 0">勾选只在本页做自查，不参与分析器判定；命中项会写入复制的决策记录与提示词。</p>
             </div>
           </details>
         </div>
@@ -186,7 +197,7 @@
           <details>
             <summary>给 chat 模型的提示词</summary>
             <div class="inner">
-              <p class="hint" style="margin:0 0 8px">没有 agent 时：把你的场景写进下面，复制提示词到任意公开 chat 模型；把它产出的域粘回左侧再分析。</p>
+              <p class="hint" style="margin:0 0 8px">没有 agent 时：把你的场景写进下面，复制提示词到任意公开 chat 模型；把它产出的域粘回上方的域声明编辑器，点“分析”或按 Ctrl+Enter 再分析。</p>
               <textarea id="scenario" style="min-height:96px" placeholder="用几句话描述你的协作场景：谁做什么、有哪些产物、先后关系、第一个产物从哪来、谁最终使用。"></textarea>
               <div class="toolbar" style="margin-top:8px">
                 <button id="btnCopyPrompt">复制给模型的提示词</button>
@@ -331,10 +342,10 @@ function renderReport(report) {
 
   const ok = wf.well_formed;
   summaryEl.innerHTML = `<div class="banner ${ok ? "ok" : "bad"}">${ok
-    ? "良构：0 处违规。下面五项非零时仍需逐项裁决，不能静默忽略。"
+    ? "良构：0 处违规（A.5）。下方五项分析非零时仍需逐项裁决，不能静默忽略。"
     : "不是良构：" + wf.violations.length + " 处违规。必须全部修掉，域才能装载。"}</div>
+    <div class="sec-title">五项分析 <span class="hint">非零不代表错误，但每一处都要有裁决理由</span></div>
     <div class="cards">
-      ${card("良构", ok ? "通过" : wf.violations.length + " 处违规", ok ? "ok" : "bad")}
       ${card("可达性", reach.unreachable.length ? reach.unreachable.length + " 个不可达" : "全部可达", reach.unreachable.length ? "warn" : "ok")}
       ${card("生产覆盖", gc.length ? gc.length + " 个无人能产" : "全覆盖", gc.length ? "warn" : "ok")}
       ${card("消费可达", cr.length ? cr.length + " 个无消费者" : "都有消费者", cr.length ? "warn" : "ok")}
@@ -355,25 +366,35 @@ function renderReport(report) {
       <div class="detail">${esc(fmtData(data))}</div>
       <div class="fix">这是警告，不是违规：确认它是“双入口”设计，且已写进决策记录。</div></div>`;
   });
-  issuesEl.innerHTML = html || (ok ? `<div class="issue good"><div class="code">无违规</div><div class="fix">可以继续装载；记得处理右侧的五项建议。</div></div>` : "");
+  issuesEl.innerHTML = html || (ok ? `<div class="issue good"><div class="code">无违规</div><div class="fix">可以继续装载；请逐项查看下方五项分析，非零项要在决策记录里写明理由。</div></div>` : "");
 
-  let adv = "";
-  if (reach.unreachable.length) adv += advRow("不可达类型", reach.unreachable.join(", "), "补种子 / 补生产者，或删掉这些类型。");
-  if (gc.length) adv += advRow("无人能产", gc.join(", "), "给这些非源类型补 produces 子句。");
-  if (cr.length) adv += advRow("无人消费", cr.join(", "), "决定谁消费；若是有意保留（审计 / 见证），写进决策记录（TC-Q7）。");
-  if (dl.length) adv += advRow("结构死锁", dl.map(d => (d.types || []).join(" + ")).join("；"), "给这个环加 seed 点火（配方 R6）。");
-  if (sr.length) sr.forEach(s => {
-    adv += advRow("搁浅风险", `${s.ty_a} → ${s.ty_b}（持有者 ${s.via_holder}，消费者 ${s.consumer}）`,
-      s.potential ? "循环拓扑下的保守报告：确认见证在依赖动作完成前不会被消费。" : "见证可能先于依赖动作被消费：下游优先排空、保留见证，或换更长寿的见证类型。");
-  });
+  let adv = `<div class="sec-title">五项分析结论 <span class="hint">非零项按提示裁决，零项也请确认</span></div>`;
+  adv += reach.unreachable.length
+    ? advRow("可达性", reach.unreachable.join(", "), "补种子 / 补生产者，或删掉这些类型。")
+    : advRow("可达性", "全部类型可达", "无需处理。", "good");
+  adv += gc.length
+    ? advRow("生产覆盖", gc.join(", "), "给这些非源类型补 produces 子句。")
+    : advRow("生产覆盖", "所有非源类型都有生产者", "无需处理。", "good");
+  adv += cr.length
+    ? advRow("消费可达", cr.join(", "), "决定谁消费；若是有意保留（审计 / 见证），写进决策记录（TC-Q7）。")
+    : advRow("消费可达", "所有类型都有消费者", "无需处理；若某类型刻意保留，请在决策记录里写明（TC-Q7）。", "good");
+  adv += dl.length
+    ? advRow("结构死锁", dl.map(d => (d.types || []).join(" + ")).join("；"), "给这个环加 seed 点火（配方 R6）。")
+    : advRow("结构死锁", "无无种子入口的强连通分量", "无需处理。", "good");
+  if (sr.length) {
+    adv += advRow("搁浅风险", sr.map(s => `${s.ty_a} → ${s.ty_b}（持有者 ${s.via_holder}，消费者 ${s.consumer}）`).join("；"),
+      sr.some(s => s.potential) ? "循环拓扑下的保守报告：确认见证在依赖动作完成前不会被消费。" : "见证可能先于依赖动作被消费：下游优先排空、保留见证，或换更长寿的见证类型。");
+  } else {
+    adv += advRow("搁浅风险", "无 via 见证先被消费的风险", "无需处理。", "good");
+  }
   advisoriesEl.innerHTML = adv;
 
   setStatus(ok ? "良构 · 可装载" : "有违规 · 需修复", ok ? "ok" : "bad");
   renderStats();
 }
 
-function advRow(title, items, hint) {
-  return `<div class="issue warn"><div class="code">${esc(title)}</div>
+function advRow(title, items, hint, cls) {
+  return `<div class="issue ${cls || "warn"}"><div class="code">${esc(title)}</div>
     <div class="detail">${esc(items)}</div><div class="fix">${esc(hint)}</div></div>`;
 }
 
@@ -472,6 +493,24 @@ ${editor.value}
   copyText(text);
 }
 
+function gateStateText() {
+  return [...document.querySelectorAll("[data-g]")]
+    .map(i => i.dataset.g + "=" + (i.checked ? "是" : "未确认")).join(" ");
+}
+
+function hardstopStateText() {
+  const hits = [...document.querySelectorAll("[data-h]")].filter(i => i.checked).map(i => i.dataset.h);
+  return hits.length ? hits.join("、") + "（逐项写明改写方式与丢失的性质）" : "无";
+}
+
+function decisionText() {
+  return DECISION_TPL
+    .replace("- 适用闸门：G1=是 G2=是 G3=是 G4=是 G5=是",
+      "- 适用闸门：" + gateStateText() + "（未确认项需补答案）")
+    .replace("- 硬停命中：无 / H?",
+      "- 硬停命中：" + hardstopStateText());
+}
+
 function copyAuthoringPrompt() {
   const contract = document.getElementById("contractText").textContent.trim();
   const scenario = $("#scenario").value.trim() || "（我还没有写场景，请先问我。）";
@@ -479,6 +518,10 @@ function copyAuthoringPrompt() {
 最终只输出两份产物：完整 .pact（四段）和决策记录。
 
 ${contract}
+
+我的自查（请复核；未确认项请先问我）：
+- 适用闸门：${gateStateText()}
+- 硬停命中：${hardstopStateText()}
 
 我的场景：${scenario}`;
   copyText(text);
@@ -492,8 +535,17 @@ function initUi() {
     o.textContent = name;
     sel.appendChild(o);
   });
+  sel.addEventListener("click", () => {
+    if (sel.selectedIndex === 0 && !sel._hintShown) {
+      toast("请从展开的列表选择具体配方（R1–R6）；“选择形状配方…”只是标题");
+      sel._hintShown = true;
+    }
+  });
   sel.addEventListener("change", () => {
-    if (!sel.value) return;
+    if (!sel.value) {
+      toast("请选择 R1–R6 中的一项；“选择形状配方…”不会载入内容");
+      return;
+    }
     editor.value = TEMPLATES[sel.value];
     lastReport = null;
     lastViolations = [];
@@ -501,11 +553,21 @@ function initUi() {
     issuesEl.innerHTML = "";
     advisoriesEl.innerHTML = "";
     renderStats();
-    setStatus(host ? "分析器就绪 · " + host.abi_version() : "正在加载分析器…", host ? "ok" : "");
-    sel.value = "";
+    toast("已载入 " + sel.value);
+    if (host) {
+      setStatus("分析器就绪 · " + host.abi_version(), "ok");
+      analyze();
+    } else {
+      setStatus("正在加载分析器…");
+    }
   });
 
-  editor.addEventListener("input", () => { lastReport = null; lastViolations = []; renderStats(); });
+  editor.addEventListener("input", () => {
+    lastReport = null;
+    lastViolations = [];
+    if (sel.value) sel.value = "";
+    renderStats();
+  });
   editor.addEventListener("keydown", e => {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); analyze(); }
   });
@@ -522,29 +584,53 @@ function initUi() {
     toast("已下载 domain.pact");
   });
   $("#btnCopyPrompt").addEventListener("click", copyAuthoringPrompt);
-  $("#btnCopyDecision").addEventListener("click", () => copyText(DECISION_TPL));
-  $("#decisionTpl").textContent = DECISION_TPL;
+  $("#btnCopyDecision").addEventListener("click", () => copyText(decisionText()));
 
   const gateInputs = [...document.querySelectorAll("[data-g]")];
+  const hardstopInputs = [...document.querySelectorAll("[data-h]")];
   const gateMsg = $("#gateMsg");
+  const gateCount = $("#gateCount");
+  const gateSummary = $("#gateSummary");
+  const hardstopMsg = $("#hardstopMsg");
+  const hardstopCount = $("#hardstopCount");
+  const hardstopSummary = $("#hardstopSummary");
+
   function updateGate() {
+    const confirmed = gateInputs.filter(i => i.checked);
     const missing = gateInputs.filter(i => !i.checked).map(i => i.dataset.g);
+    gateInputs.forEach(i => i.closest(".gate").classList.toggle("checked", i.checked));
+    gateCount.textContent = "已确认 " + confirmed.length + "/5";
+    gateSummary.textContent = confirmed.length + "/5";
     if (!missing.length) {
       gateMsg.className = "banner ok";
       gateMsg.textContent = "五条判据全部通过：可以进入五步建模。";
     } else {
       gateMsg.className = "banner warn";
-      gateMsg.textContent = "未确认：" + missing.join("、") + "。先补答案，不要急着写域。";
+      gateMsg.textContent = "未确认：" + missing.join("、") + "（已确认 " + confirmed.length + "/5）。先补答案，不要急着写域。";
     }
   }
-  gateInputs.forEach(i => i.addEventListener("change", updateGate));
-  updateGate();
 
-  document.querySelectorAll("[data-h]").forEach(i => {
-    i.addEventListener("change", () => {
-      if (i.checked) toast(i.dataset.h + " 命中：要在决策记录里写改写方式与代价");
-    });
-  });
+  function updateHardstop() {
+    const hits = hardstopInputs.filter(i => i.checked).map(i => i.dataset.h);
+    hardstopInputs.forEach(i => i.closest(".gate").classList.toggle("hit", i.checked));
+    hardstopCount.textContent = "命中 " + hits.length;
+    hardstopSummary.textContent = hits.length ? hits.join("、") : "未勾选";
+    if (!hits.length) {
+      hardstopMsg.className = "banner ok";
+      hardstopMsg.textContent = "未勾选任何硬停（命中 0）。逐条核对契约 §1.2；勾中命中项后会在这里汇总。";
+    } else {
+      hardstopMsg.className = "banner warn";
+      hardstopMsg.textContent = "命中 " + hits.join("、") + "：按契约 §1.2 改写，并把改写方式与丢失的性质写进决策记录。";
+    }
+  }
+
+  function refreshDecision() { $("#decisionTpl").textContent = decisionText(); }
+
+  gateInputs.forEach(i => i.addEventListener("change", () => { updateGate(); refreshDecision(); }));
+  hardstopInputs.forEach(i => i.addEventListener("change", () => { updateHardstop(); refreshDecision(); }));
+  updateGate();
+  updateHardstop();
+  refreshDecision();
 
   renderStats();
 }

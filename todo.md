@@ -5,7 +5,21 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 101 轮完成并已推送；跨仓库 CI 与 Security 均通过）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` scheme adapter（FR38/D54）、conformance runner 与 `entry/` 入口用例均已落地。本轮完成物引专题 gap 审视与文档补齐（附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`、D53 与 FR36 状态、治理 §13.1 阶段 6 触发条件、`pact-ref/README.md` 状态），并显式登记 3 个未启动项：可选注册表、`revoke`、conformance 的 resolve/invoke 用例（均有触发条件，见下表）。第 101 轮为这三项补立项/设计前置建议（治理 §13.9.1–§13.9.3：立项问题、设计硬约束、建议拆分与代码落点），其中 `revoke` 的结论是建议不立项——四类撤销对象均已有既有承载。
+当前状态（2026-10-31，第 101 轮完成并已推送；跨仓库 CI 与 Security 均通过）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` scheme adapter（FR38/D54）、conformance runner 与 `entry/` 入口用例均已落地。本轮完成物引专题 gap 审视与文档补齐（附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`、D53 与 FR36 状态、治理 §13.1 阶段 6 触发条件、`pact-ref/README.md` 状态），并显式登记 3 个未启动项：可选注册表、`revoke`、conformance 的 resolve/invoke 用例（均有触发条件，见下表）。第 101 轮为这三项补立项/设计前置建议（治理 §13.9.1–§13.9.3：立项问题、设计硬约束、建议拆分与代码落点），其中 `revoke` 的结论是建议不立项——四类撤销对象均已有既有承载。第 102 轮（2026-11-02）修复域作者工作台五处可用性问题，无新编号，未推送。
+
+## 当前批次：域作者工作台可用性修复（第 102 轮，2026-11-02）
+
+依据：D38（浏览器入手路径）与 `docs/authoring-contract.md` §1 / §6 / §7。用户反馈五个界面问题，均只改 `web/authoring/` 前端资产，不改 wasm、引擎与母本。
+
+| 状态 | 事项 | 依据 | 验收方式 |
+|---|---|---|---|
+| [x] | 载入配方下拉：选中占位项时给出明确提示；选中 R1–R6 后载入、toast 确认并自动分析；编辑后选择状态复位，避免“看起来没反应” | D38 / `web/shared/recipes.js` | Playwright：点击占位项出现提示；选 R1 后编辑器含 `request`、右上状态为良构、下拉显示所选配方 |
+| [x] | 分析结果口径：把“良构”作为状态横幅，卡片只保留五项分析（可达性、生产覆盖、消费可达、结构死锁、搁浅风险），使“下面五项”与可见卡片数一致 | `authoring-contract.md` §6 / D38 | Playwright：良构后卡片数 = 5，横幅文案含“五项”且不再出现六卡片 |
+| [x] | “右侧的五项建议”改为指向下方五项分析；五项分析区始终渲染五行（零项显示“全部为零/无”，非零显示建议），不再出现空白区 | `authoring-contract.md` §6 / D38 | Playwright：全零时可见五行绿色结论；文案不含“右侧” |
+| [x] | 给 chat 模型的提示词：把“粘回左侧再分析”改为“粘回上方域声明编辑器”，与页面实际位置一致 | D38 / `manual.md` §3.5 | Playwright：页面文本不含“粘回左侧” |
+| [x] | 适用性闸门与硬停扫描：勾选即时高亮；闸门显示“已确认 n/5”，硬停显示命中项；两者状态进入折叠摘要、决策记录模板和复制提示词；说明“只做自查、不参与分析器判定” | `authoring-contract.md` §1 / §7 / D38 | Playwright：勾选/取消后计数与横幅文本变化；复制决策记录含实际 G/H 状态；外层面板摘要同步 |
+| [x] | 文档同步：`design-change.md` 第 102 轮、`manual.md` §3.5 补充工作台交互口径；`architecture.md`/`architecture-change.md` 无结构性变更则不修改 | `AGENTS.md` 文档纪律 | 与实现逐条对照；无新编号 |
+| [x] | 验证与交付：重建 `web/authoring/index.html`；浏览器回归；安全审视（无外链/`fetch`/`eval`；动态 DOM 经 `esc()`）；更新台账证据与提交哈希 | D38 / `AGENTS.md` | `./web/build.sh` 重跑后页面可用；Playwright 全项通过；diff 仅前端与文档 |
 
 ## 当前批次：物引（ThingRef）治理收尾（2026-10-28 起）
 
@@ -183,6 +197,10 @@
 | [x] | 第 101 轮提交：`pact` `9436c9a`（治理 §13.9、`design-change.md`、台账）；`pact-ref` 本轮无改动 | 单仓库改动；已随本轮推送（见下两行） |
 | [x] | 第 101 轮跨仓库推送（推送前安全审视：凭据扫描、`unsafe`、生产代码文件写、新增依赖、`cargo audit`） | 两个仓库 diff 无密钥/令牌命中（`s3cret`、`release-demo-token` 仅测试夹具与示例占位）；`pact` 无新增依赖、无 Rust 代码变更；`pact-ref` 无 `unsafe`，生产写仅 append-only 台账/审计与 `[materialize].dir` 内 `.tmp`+rename；`cargo audit` 两仓库均 0 vulnerability（仅既有 `unsafe-libyaml` unmaintained）；`pact` `7771314..1eb4588`、`pact-ref` `f48dc12..1e9ee06` 已推至 `origin/main` |
 | [x] | 第 101 轮推送后 CI：`pact` CI `41197003160`；`pact-ref` CI `41197008771`、Security `41197008777` | 三个 run 均 **success**（audit / build-test-fmt-clippy / wasm 与 clippy / Security） |
+| [x] | 第 102 轮浏览器回归（Playwright，加载构建产物 `web/authoring/index.html`） | R1：下拉占位提示、选中后保留配方名、自动分析良构、5 张卡片 + 5 行结论、无“右侧/粘回左侧”、编辑后下拉复位；闸门 3/5 与硬停 H1+H3 的计数/高亮/摘要/决策记录/复制提示词；全确认后横幅转绿。R3：1 项非零 + 4 项绿色结论；R6：良构警告 + 5 项全零。console 无错误 |
+| [x] | 第 102 轮构建可复现与 sandbox 冒烟 | `sha256sum -c` 三页重建前后一致（`authoring` 1432 KiB / `sandbox` 1412 KiB / `connect` 18 KiB）；sandbox 打开后状态“已装载 · pact-wasm/0.2”，console 无错误 |
+| [x] | 第 102 轮 Rust 回归：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` | 均通过；**384 passed / 0 failed**（无 Rust 代码改动，基线不变） |
+| [x] | 第 102 轮推送前安全审视（凭据、外链、`fetch`/`eval`、动态 DOM、新增依赖） | diff 无凭据/令牌命中；页面仍无外部脚本/样式/图片/iframe、无 `eval`/`document.write`/`insertAdjacentHTML`；动态 HTML 全部经 `esc()`，状态写入 `textContent`；无新增依赖；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained） |
 
 ## 已完成归档区
 
