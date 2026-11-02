@@ -204,6 +204,7 @@
 | [x] | 第 102 轮提交：`pact` `a9e947b`（`web/authoring/template.html`、构建产物、sandbox glue 同步、`manual.md` §3.5、`design-change.md` 第 102 轮、台账）；台账回填 `86996df`、`83b7814` | 单仓库改动；按用户要求推送到 `origin/main`（`9d4c2ce..83b7814`） |
 | [x] | 第 102 轮推送（推送前安全审视：凭据模式、外链资源、`fetch`/`eval`、新增依赖） | diff 无私钥/云凭据/GitHub token/API key 命中（`token` 命中均为 PACT 域内 token 术语）；构建页唯一 `href` 为仓库自身链接、无外部 script/style/img/iframe；唯一 `fetch(` 位于 wasm-bindgen glue 的条件分支且页面传入 `Uint8Array`，无网络请求；无新增依赖；`git push` 成功 `9d4c2ce..83b7814` |
 | [x] | 第 102 轮推送后 CI 与 Pages（提交 `83b7814`） | `pact` CI `41435411870`、Pages `41435411832` 均 **success**；工作台页面已随 Pages 部署更新 |
+| [x] | 第 102 轮线上页面校验（`https://onlookor.github.io/pact-collab/authoring/index.html`） | 线上页面 SHA-256 与本地构建产物一致（`7d09d3c0…d0c8`，1,466,034 字节）；线上文案含“五项分析结论”“粘回上方”“选择形状配方”，不含“粘回左侧” |
 
 ## 已完成归档区
 
