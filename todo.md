@@ -197,7 +197,7 @@
 | [x] | 第 101 轮提交：`pact` `9436c9a`（治理 §13.9、`design-change.md`、台账）；`pact-ref` 本轮无改动 | 单仓库改动；已随本轮推送（见下两行） |
 | [x] | 第 101 轮跨仓库推送（推送前安全审视：凭据扫描、`unsafe`、生产代码文件写、新增依赖、`cargo audit`） | 两个仓库 diff 无密钥/令牌命中（`s3cret`、`release-demo-token` 仅测试夹具与示例占位）；`pact` 无新增依赖、无 Rust 代码变更；`pact-ref` 无 `unsafe`，生产写仅 append-only 台账/审计与 `[materialize].dir` 内 `.tmp`+rename；`cargo audit` 两仓库均 0 vulnerability（仅既有 `unsafe-libyaml` unmaintained）；`pact` `7771314..1eb4588`、`pact-ref` `f48dc12..1e9ee06` 已推至 `origin/main` |
 | [x] | 第 101 轮推送后 CI：`pact` CI `41197003160`；`pact-ref` CI `41197008771`、Security `41197008777` | 三个 run 均 **success**（audit / build-test-fmt-clippy / wasm 与 clippy / Security） |
-| [x] | 第 102 轮浏览器回归（Playwright，加载构建产物 `web/authoring/index.html`） | R1：下拉占位提示、选中后保留配方名、自动分析良构、5 张卡片 + 5 行结论、无“右侧/粘回左侧”、编辑后下拉复位；闸门 3/5 与硬停 H1+H3 的计数/高亮/摘要/决策记录/复制提示词；全确认后横幅转绿。R3：1 项非零 + 4 项绿色结论；R6：良构警告 + 5 项全零。console 无错误 |
+| [x] | 第 102 轮浏览器回归（Playwright，加载构建产物 `web/authoring/index.html`） | R1：下拉占位提示、选中后保留配方名、自动分析良构、5 张卡片 + 5 行结论、无“右侧/粘回左侧”、编辑后下拉复位；闸门 3/5 与硬停 H1+H3 的计数/高亮/摘要/决策记录/复制提示词；全确认后横幅转绿。R3：1 项非零 + 4 项绿色结论；R6：良构警告 + 5 项全零。320/375/480/768/1280 五档无横向溢出；console 无错误 |
 | [x] | 第 102 轮构建可复现与 sandbox 冒烟 | `sha256sum -c` 三页重建前后一致（`authoring` 1432 KiB / `sandbox` 1412 KiB / `connect` 18 KiB）；sandbox 打开后状态“已装载 · pact-wasm/0.2”，console 无错误 |
 | [x] | 第 102 轮 Rust 回归：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --locked -- -D warnings`、`cargo test --workspace --locked` | 均通过；**384 passed / 0 failed**（无 Rust 代码改动，基线不变） |
 | [x] | 第 102 轮推送前安全审视（凭据、外链、`fetch`/`eval`、动态 DOM、新增依赖） | diff 无凭据/令牌命中；页面仍无外部脚本/样式/图片/iframe、无 `eval`/`document.write`/`insertAdjacentHTML`；动态 HTML 全部经 `esc()`，状态写入 `textContent`；无新增依赖；`cargo audit` 结论沿用（0 vulnerability / 1 unmaintained） |
