@@ -2,6 +2,39 @@
 
 > 历史记录保留当时的编号与措辞；现行编号约定见 `docs/architecture.md` 附录 A。
 
+## 2026-11-02（第 106 轮，文档一致性收尾；无新编号、零代码改动）
+
+- **原则**：能靠文档对齐就不改接口；本轮三处不一致全部走文档侧，公开契约零变化。
+- **manual REST 表**：`consume` 请求体补 `request_id?`（与 `dto.rs::ConsumeReq` 一致，注明幂等语义：同实例重复请求返回首次结果、不重复消费）。文档中两处「`GET /tokens/{id}` 仍由 Rule-R 授权」（§7.9 边界、§8.1 票面可见性段）改为指向真实存在的 `POST /domains/{d}/tokens/{id}/read`——选择删改文档而非实现 GET，理由：读取语义已由 POST read 端点承载且受 Rule-R/ACL/审计覆盖，新增 GET 属重复契约；`skills/pact-thingref-governance/SKILL.md` 两处同样表述同步修正。历史文档（`requirements.md`、`requirements-change.md`、`design-change.md` 旧条目）按纪律不回改。
+- **`GET /active` 的 `ts`/`by`**：文档由「省略」修正为实测行为「无指针时为 `null`」（`ActiveResp.ts/by` 为无 `skip_serializing_if` 的 `Option`，序列化即 `null`）。不改代码的理由：`null` → 缺省是公开 JSON 形状变化，严格解析的调用方可能区分「字段缺失」与「null」，而语义无损、改文档零风险。
+- **数字对齐（扫描范围：两份根 README、examples/README×2、manual §12、runtime 资产注释；历史台账与 *-change.md 不动）**：测试计数 245 → **390**（实测 `cargo test --workspace`）；`online/run.sh` 步骤数 14 → **15**（脚本 step 0–14 共 15 节，trace 238 行不变，manual §12 原已写 15）；`linear.pact` 注释「四项咨询」→「五项咨询」（可达性/生产覆盖/消费可达/结构死锁/滞留风险共五项）。核对后确认无需改动：MCP 21 工具（实测 21）、属性测试各 512 用例（`ProptestConfig::with_cases(512)`）、fixtures 12 行、offline trace 200 行、示例域 5 份、crate 计数无正文硬数字。
+- **验证**：`cargo fmt --all -- --check` 通过；`cargo clippy --workspace --all-targets -- -D warnings` 无告警；`cargo test --workspace` **390 passed / 0 failed**（基线 390，+0，本轮无代码改动）。
+
+## 2026-11-02（第 105 轮，runtime 黄金路径资产；无新编号）
+
+- **范围**：新增 `examples/runtime/{linear.pact, runtime.toml, run.sh}`；`examples/domains/se_lifecycle.pact` 仅加头部注释标注「教学反例」（不动语义）；文档 `README.md` / `README.zh-CN.md`（“从哪里开始”行 + 快速开始）、`docs/manual.md` §12、`examples/README.md` / `examples/README.zh-CN.md` §1.3/§2。不改引擎、存储、CLI、决策文档，未新增 FR/D。
+- **资产语义**：`linear.pact` 是 0 违规 / 0 咨询的最小线性流水线（request → work → result；seeder 持种子权 + 只读 gate，worker/finisher 走 Rule-R/P/E，sink 走 Rule-E，全员经 Rule-W 收 Terminated）。`run.sh` 33 项硬断言只断言稳定量（计数、终止位、各角色产/消/读次数、日志行数），不断言 ULID/时间戳/通知条数。
+- **关键决定**：CLI 负责 `domain load` + `seed`（runtime bootstrap 对已占用实例重复 load 会被 `DomainBusy` 拒绝），故 `runtime.toml` 不给 seeder 配 `[agents.seed]`，seeder 以 `reads request` 只读参与者身份自驱；`pact-runtime` 在 `mktemp` 临时目录内以该目录为 cwd 启动（其相对路径按进程 cwd 解析）；就绪用 `curl --unix-socket …/ready` 轮询（10s 上限，超时打印 daemon 日志并非零退出）；JSON 断言优先 `jq`、缺失回退 `python3`，两者皆无可读报错；`trap` 覆盖 EXIT/INT/TERM，任何路径停 daemon 并清临时目录（`--keep` 除外）。
+- **CI**：`ci.yml` 没有运行 examples 的钩子，按本轮约束不为此重构 CI；手动验收命令 `cargo build -p pact-cli -p pact-runtime && examples/runtime/run.sh` 已登记于两份 README 快速开始与手册 §12。
+- **测试与验证**：`run.sh` 连跑 3 次均 PASS=33 FAIL=0（约 1s），`--keep` 保留现场验证通过，执行后无 pact 进程与 `/tmp/pact-golden.*` 残留。`cargo fmt --all -- --check` 通过、`cargo clippy --workspace --all-targets -- -D warnings` 无告警、`cargo test --workspace` **390 passed / 0 failed**（基线 390，+0：本轮为 shell/文档资产，不新增 Rust 测试）。
+
+## 2026-11-02（第 104 轮，压缩后离线重放；无新编号）
+
+- **范围**：只动 `crates/pact-cli/src/main.rs`（`Replay` 增 `--snapshot`、`offline_replay` 起播语义）、`crates/pact-store/src/lib.rs`（re-export 既有 `load_snapshot` / `load_logmeta` / `LogMeta`，不新增存储格式）、`crates/pact-cli/tests/cli_e2e.rs`、`docs/manual.md` §7.3/§7.4/§8.1 命令表/§10 排障、`todo.md` 与本文件。不改决策文档、事件/快照格式、引擎行为，未新增 FR/D/错误码。
+- **可行性结论**：快照是实例自足锚——`{version, seq, dl_seq, declaration, state(counter+archive), consumed_requests}`；保留尾部事件（`Seeded`/`Produced`/`Consumed`）自带 token 全量，`apply_event` 不依赖前缀。读审计流独立于事件日志，不参与重放（压缩前读审计仍由 `<instance>.read-audit.jsonl` 留存）。因此不需“仅文档降级”，选择实现 `--snapshot`。
+- **`pact replay --snapshot` 语义**：装载快照 `state` 与 `snap.seq` → 跳过 `seq ≤ snap.seq` 的事件 → 从 `snap.seq + 1` 起逐行应用并要求 seq 连续；快照缺失/损坏/`seq < logmeta.base_seq` 一律失败。无快照且日志已压缩（缺 `DomainLoaded`/`Imported` 基线，或日志为空但 `base_seq > 0`）时报 `Replay` 并指路 `--snapshot` 或 daemon 视图，避免静默 0/0 与「token 不在当前 Counter」。
+- **测试**：`lifecycle_through_real_daemon` 增加“压缩前后状态一致 + 无快照指路错误 + 人类模式指路”；新增 `replay_after_compaction_with_snapshot_applies_tail`（快照 seq=4 + 尾部 seq 5/6，Counter/Archive 与在线 `status` 一致）。全量 **390 passed / 0 failed**（基线 389，+1；既有 `lifecycle_through_real_daemon` 仅扩展断言，不新增测试数）。
+- **验证**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全绿；临时 daemon 实测压缩前 1/1 → 压缩后快照重放 1/1 → 追加尾部后 3/1（与在线一致），无快照错误原文见本轮汇报。黄金路径示例按约束未做。
+
+## 2026-11-02（第 103 轮，走查结论修复；无新编号）
+
+- **范围**：只动 `crates/pact-core/src/domain.rs`、`crates/pact-cli/src/main.rs`、`crates/pact-cli/tests/cli_e2e.rs`、`crates/pact-runtime/Cargo.toml`、`crates/pact-runtime/src/bin/pact-runtime.rs`、`dist/Dockerfile`、`dist/pact.container.toml`、`docs/manual.md` §3.4/§8.4、`todo.md` 与本文件；不改引擎/存储/线上格式与决策文档，未新增 FR/D/错误码。按本轮显式约束，压缩后 replay/审计出口与黄金路径示例**不做**。
+- **`pact analyze` 人类模式**：`offline_analyze` 对 `Problem::WellFormedness` 改为逐条打印违规（每条一行 `  - …`），`--json` 仍走原 `problem_detail`，`error.detail[]` 结构不变。为人类输出新增 `DomainError` 的 `Display`（八类变体各一条中文说明），仅影响显示，不改变 serde 形状。
+- **`pact-runtime` 启动期预检**：新增 `preflight_participants`，在构造 orchestrator 前解析 `declaration` 并逐个核对 `participant`——既不在 `gates` 也不在 `seed_authority` → 明确报错并列出合法参与者；仅在 `seed_authority` 且未配置 `seed` 引导 → 报错；seed-only 但带 `seed`（如 `external_stakeholder`）放行；声明本身无法装载亦在启动期报错。为此新增 `pact-parser` 依赖（仅 bin 侧使用）。
+- **分发产物**：`rustup target add x86_64-unknown-linux-musl` 后运行 `dist/build-static.sh`，重建 `dist/target/pact-0.1.0-x86_64-unknown-linux-musl.tar.gz`（2026-11-02 20:26:25，31,176,937 bytes，sha256 `b7086bd2…96969b`）；解包后 `pact --help` 含 `ref`。`dist/Dockerfile` 与 `dist/pact.container.toml` 的“v1 无 TLS”注释改为 v2 TLS/mTLS 说明，后者补注释态 `[tls]` 配置。
+- **测试**：新增 5 项（`pact-cli` e2e 1 项、`pact-runtime` bin 单测 4 项）；全量 **389 passed / 0 failed**（基线 384）。
+- **验证**：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` 全绿；打包二进制实测 analyze 明细、runtime 预检失败与 `linear.pact` 正常终止路径。改动留在工作区，未 commit / 未 push。
+
 ## 2026-11-02（第 102 轮，域作者工作台可用性修复；无新编号）
 
 - **范围**：只改 `web/authoring/template.html` 与其构建产物 `web/authoring/index.html`，并同步 `docs/manual.md` §3.5；不改 wasm、引擎、语法、母本与 `web/shared/recipes.js`。按仓库构建流程重跑 `./web/build.sh` 时，`web/sandbox/index.html` 的 wasm glue 也从旧快照更新到当前导出（补齐 `set_ref_bindings`/`remove_ref_bindings`/`clear_ref_bindings`），sandbox 模板与行为未改。

@@ -5,7 +5,56 @@
 > 依据列只引用权威文档编号；新编号先登记到 `docs/architecture.md` 附录 A 再使用。
 > 修复顺序以本文件为准；调整、降级或拆分必须写明原因。
 
-当前状态（2026-10-31，第 101 轮完成并已推送；跨仓库 CI 与 Security 均通过）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` scheme adapter（FR38/D54）、conformance runner 与 `entry/` 入口用例均已落地。本轮完成物引专题 gap 审视与文档补齐（附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`、D53 与 FR36 状态、治理 §13.1 阶段 6 触发条件、`pact-ref/README.md` 状态），并显式登记 3 个未启动项：可选注册表、`revoke`、conformance 的 resolve/invoke 用例（均有触发条件，见下表）。第 101 轮为这三项补立项/设计前置建议（治理 §13.9.1–§13.9.3：立项问题、设计硬约束、建议拆分与代码落点），其中 `revoke` 的结论是建议不立项——四类撤销对象均已有既有承载。第 102 轮（2026-11-02）修复域作者工作台五处可用性问题，无新编号，已推送 `origin/main`（`a9e947b..83b7814`）。
+当前状态（2026-10-31，第 101 轮完成并已推送；跨仓库 CI 与 Security 均通过）：P0 入口校验（REST + WASM，D50）、P1 的 `pinning` / `onUnknownScheme` / `value`、B0 卡片加载（FR32/D47）、B1 显式重载（FR33/D48）、`declarationDigest` v1 两步（FR34/D49）、物引治理 SKILL、`refd` 的 `/v1/resolve`、`/v1/describe` 实现（身份/scope+ACL/审计 fail-closed、`file`/`https` adapter）、`refd` OIDC 验证器（FR35/D51）、`refd` 动态只读调用（FR36/D52）、动态写契约（FR37/D53）、`mcp-mutating` 规范层卡片校验、动态写端点与台账（实现②）、witness/compensation 示例（实现③）、`git`/`oci` scheme adapter（FR38/D54）、conformance runner 与 `entry/` 入口用例均已落地。本轮完成物引专题 gap 审视与文档补齐（附录 A 补登记 `FR27`–`FR29`/`D41`–`D44`、D53 与 FR36 状态、治理 §13.1 阶段 6 触发条件、`pact-ref/README.md` 状态），并显式登记 3 个未启动项：可选注册表、`revoke`、conformance 的 resolve/invoke 用例（均有触发条件，见下表）。第 101 轮为这三项补立项/设计前置建议（治理 §13.9.1–§13.9.3：立项问题、设计硬约束、建议拆分与代码落点），其中 `revoke` 的结论是建议不立项——四类撤销对象均已有既有承载。第 102 轮（2026-11-02）修复域作者工作台五处可用性问题，无新编号，已推送 `origin/main`（`a9e947b..83b7814`）。第 103 轮（2026-11-02）按角色走查结论重建 musl 分发产物、补 `analyze` 人类模式违规明细、加 `pact-runtime` 启动期参与者预检；改动留在工作区（未提交/未推送），全量 **389 passed / 0 failed**（基线 384，+5）。第 104 轮（2026-11-02）修复压缩后离线 replay 断点：`pact replay --snapshot` 从快照起播并应用保留尾部，无快照时给出指路错误；改动留在工作区（未提交/未推送），全量 **390 passed / 0 failed**（基线 389，+1；`lifecycle_through_real_daemon` 扩展断言不新增测试数）。第 105 轮（2026-11-02）固化 runtime 黄金路径：`examples/runtime/{linear.pact, runtime.toml, run.sh}`，33 项硬断言覆盖 analyze/load/seed/四 agent 自驱至 Rule-T/status/replay 三方计数一致；改动留在工作区（未提交/未推送），全量 **390 passed / 0 failed**（基线 390，+0：shell/文档资产，无新增 Rust 测试）。第 106 轮（2026-11-02）文档一致性收尾：REST 表补 `request_id?`、「GET /tokens/{id}」改指 POST read 端点、`GET /active` 的 ts/by 写明为 null、README 测试数 245→390 与步骤数 14→15；零代码改动（能靠文档对齐就不改接口），全量 **390 passed / 0 failed**（基线 390，+0）。
+
+## 当前批次：文档一致性收尾（第 106 轮，2026-11-02，工作区未提交）
+
+依据：一致性走查三处断点；原则「能靠文档对齐就不改接口」，本轮零代码改动、不动决策文档。
+
+| 状态 | 事项 | 依据 | 验收方式 |
+|---|---|---|---|
+| [x] | manual REST 表：`consume` 补 `request_id?`（幂等语义）；两处「GET /tokens/{id}」改为真实端点 `POST .../tokens/{id}/read`；`SKILL.md` 同步 | 手册 §7.9/§8.1；`dto.rs::ConsumeReq` | 与 `server.rs` 路由表逐行核对（无 GET tokens 路由）；选择文档对齐而非实现 GET（读取语义已被 POST read 承载，避免重复契约） |
+| [x] | `GET /active` 文档「ts/by 省略」→「为 null」（实测 `ActiveResp` Option 无 skip 即 null）；不改代码（公开 JSON 形状零变化） | 手册 §8.1 | 对照 `dto.rs::ActiveResp` 与 `active()` 处理器 |
+| [x] | 数字对齐：README×2 测试数 245→390；examples README×2 步骤数 14→15；`linear.pact` 四项咨询→五项 | 实测（`cargo test --workspace`、脚本 step 0–14、五项咨询枚举） | 全库扫描确认 MCP 21 工具 / 512 用例 / 12 行 fixtures / 200 行 trace / 5 示例域均与实测相符，无需改 |
+| [x] | 验证：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` | `AGENTS.md` | 全绿；390 passed / 0 failed（基线 390，+0：零代码改动） |
+
+## 当前批次：runtime 黄金路径资产（第 105 轮，2026-11-02，工作区未提交）
+
+依据：走查结论的「最值得固化的黄金路径」建议；约束不改决策文档、不新增 FR/D，CI 无 examples 钩子则只登记手动命令。
+
+| 状态 | 事项 | 依据 | 验收方式 |
+|---|---|---|---|
+| [x] | `examples/runtime/linear.pact`：0 违规 / 0 咨询最小线性流水线（seeder+worker+finisher+sink，覆盖 Rule-S/P/R/E/W/T） | 手册 §3/§5；D22 | `pact analyze` 实测 8 项全 0（run.sh 断言 01–08） |
+| [x] | `examples/runtime/runtime.toml`：四 agent 配置，注释说明每参与者角色与 gate；seeder 不配 `[agents.seed]`（CLI 预载，重复 load 会 DomainBusy） | D24 / 手册 §8.4 | run.sh 断言 15–27：exit 0、全员 saw/notified_terminated、各角色产/消/读 |
+| [x] | `examples/runtime/run.sh`：mktemp + trap 清理、curl `/ready` 轮询（10s 上限）、jq/python3 双栈断言、只断言稳定量、`--keep` 保留现场 | 本轮任务书 | 连跑 3 次 PASS=33 FAIL=0（约 1s）；`--keep` 验证；执行后无进程与 `/tmp` 残留 |
+| [x] | `se_lifecycle.pact` 头部标注教学反例（仅注释，不动语义）；README×2、manual §12、examples README×2 登记黄金路径为主推 | D22 / `AGENTS.md` 文档纪律 | 文档与实现逐条对照；`pact analyze` 复核 se_lifecycle 仍可解析 |
+| [x] | CI：`ci.yml` 无 examples 钩子，不重构；手动命令登记于 README 快速开始与手册 §12 | 本轮任务书 | 静态核对 ci.yml 与文档 |
+| [x] | 验证：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` | `AGENTS.md` | 全绿；390 passed / 0 failed（基线 390，+0：shell/文档资产无新增 Rust 测试） |
+
+## 当前批次：压缩后离线重放（第 104 轮，2026-11-02，工作区未提交）
+
+依据：角色走查 gap「压缩之后离线 replay 失败、审计前缀不可查」；按约束不改决策文档、不新增 FR/D，黄金路径示例不在本轮。
+
+| 状态 | 事项 | 依据 | 验收方式 |
+|---|---|---|---|
+| [x] | 可行性判定：快照为实例自足锚（`seq`/`dl_seq`/声明/Counter+Archive/幂等表），保留尾部事件自带 token 全量，读审计独立留存 | 设计 §7.2/§7.5；`pact-store-model::Snapshot` | 源码核对 + 临时 daemon 实测 |
+| [x] | `pact replay --snapshot <path>`：装载快照状态，跳过 `seq ≤ 快照.seq`，从 `快照.seq+1` 起逐行应用并要求连续；快照缺失/损坏/未覆盖 `base_seq` 报错 | 手册 §7.3/§7.4 | `lifecycle_through_real_daemon` 压缩前后逐字段一致；`replay_after_compaction_with_snapshot_applies_tail` |
+| [x] | 无快照且日志已压缩：`Replay` 指路错误（`--snapshot` 或 daemon 视图），不再静默 0/0 或「token 不在当前 Counter」 | 手册 §7.3/§10 | CLI e2e 断言 JSON 与人类模式均含 `--snapshot`；实测 `base_seq=4, first_seq=5` 错误原文 |
+| [x] | 文档同步：`manual.md` §7.3（压缩后重放语义）、§7.4（代价段）、§8.1（命令表）、§10（排障）；本台账与 `design-change.md` 第 104 轮 | `AGENTS.md` | 文档与实现逐条对照 |
+| [x] | 验证：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` | `AGENTS.md` | 全绿；390 passed / 0 failed（+1：新增 `replay_after_compaction_with_snapshot_applies_tail`；既有 `lifecycle_through_real_daemon` 仅扩展断言） |
+
+## 当前批次：走查结论修复（第 103 轮，2026-11-02，工作区未提交）
+
+依据：角色视角端到端走查结论；不改决策文档、不扩大范围（压缩后 replay/审计出口与黄金路径示例不在本轮）。
+
+| 状态 | 事项 | 依据 | 验收方式 |
+|---|---|---|---|
+| [x] | 重建 musl 分发产物：`rustup target add x86_64-unknown-linux-musl` 后运行 `dist/build-static.sh`，产物来自当前工作区而非旧构建 | FR18 / D26 | `stat`：2026-11-02 20:26:25，31,176,937 bytes；sha256 `b7086bd2…96969b`；解包后 `pact --help` 含 `ref` |
+| [x] | `dist/Dockerfile`、`dist/pact.container.toml` 去除“v1 无 TLS”过时注释，改为 v2 TLS/mTLS 说明并给出注释态 `[tls]` 配置 | NFR6 v2 / D34 | 静态核对两份文件；`pact.container.toml` 仍可被 `pactd` 解析（注释不影响） |
+| [x] | `pact analyze` 人类模式对 `WellFormedness` 逐条打印违规明细；`--json` 输出格式不变 | FR3 / 手册 §3.4 | `pact analyze bad.pact` → `error [WellFormedness]` + `- p 的 produces b 携带条件…`；CLI e2e `analyze_human_lists_wellformedness_violations` |
+| [x] | `pact-runtime` 启动期参与者预检：未知参与者、仅 seed_authority 且无 `seed` 引导、声明不可装载 → 明确错误并列出合法参与者；带 `seed` 的 seed-only 参与者放行 | D24 / FR16 / 手册 §8.4 | bin 单测 4 项；打包二进制实测 `参与者 operator 不在域 demo…合法参与者：seeder, sink, worker`；正常用例 `linear.pact` → `RUNTIME_EXIT=0`、3 agent 全部 Terminated |
+| [x] | 文档同步：`manual.md` §3.4（analyze 明细）与 §8.4（runtime 预检语义）；本台账与 `design-change.md` 第 103 轮 | `AGENTS.md` | 文档与实现逐条对照 |
+| [x] | 验证：`cargo fmt --all --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace` | `AGENTS.md` | 全绿；389 passed / 0 failed（+5：CLI e2e 1 + runtime bin 4） |
 
 ## 当前批次：域作者工作台可用性修复（第 102 轮，2026-11-02）
 
